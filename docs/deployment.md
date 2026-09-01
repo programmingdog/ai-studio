@@ -101,7 +101,17 @@ git status --short
 - 数据库备份、真实密码、证书和私钥
 - `node_modules`、`.codex-tmp`、`binaries`、`release`
 
-然后提交：
+第一次使用 Git 时，为当前仓库设置提交身份。邮箱应从 GitHub 的 `Settings → Emails` 复制已验证邮箱或 GitHub 提供的隐私邮箱，不要照抄示例地址：
+
+```powershell
+git config user.name "programmingdog"
+git config user.email "替换为GitHub中已验证的邮箱或隐私邮箱"
+
+git config --get user.name
+git config --get user.email
+```
+
+这里不使用 `--global`，因此只影响当前项目。确认输出正确后提交：
 
 ```powershell
 git commit -m "Add platform deployment pipeline"
@@ -153,17 +163,21 @@ ls -ld /opt/aivs /opt/aivs/shared
 在 Windows PowerShell 生成密钥：
 
 ```powershell
-ssh-keygen -t ed25519 `
-  -f "$env:USERPROFILE\.ssh\aivs_github_deploy" `
-  -C "github-actions-ai-studio" `
-  -N '""'
+$sshDirectory = Join-Path $env:USERPROFILE ".ssh"
+$keyPath = Join-Path $sshDirectory "aivs_github_deploy"
+$publicKeyPath = "${keyPath}.pub"
+
+New-Item -ItemType Directory -Force -Path $sshDirectory | Out-Null
+ssh-keygen -t ed25519 -f $keyPath -C "github-actions-ai-studio"
 ```
+
+出现 `Enter passphrase` 和确认提示时都直接按 Enter，生成无口令的专用自动部署密钥。如果提示目标文件已经存在，先停止并确认它是不是之前需要保留的密钥，不要直接覆盖。
 
 将 `服务器地址` 和 `SSH端口` 替换为真实值，上传公钥：
 
 ```powershell
 scp -P SSH端口 `
-  "$env:USERPROFILE\.ssh\aivs_github_deploy.pub" `
+  $publicKeyPath `
   root@服务器地址:/tmp/aivs_github_deploy.pub
 ```
 
@@ -188,7 +202,7 @@ rm -f /tmp/aivs_github_deploy.pub
 回到 Windows 测试：
 
 ```powershell
-ssh -i "$env:USERPROFILE\.ssh\aivs_github_deploy" `
+ssh -i $keyPath `
   -p SSH端口 aivs-deploy@服务器地址
 ```
 
@@ -221,6 +235,27 @@ cp backup.cnf.example backup.cnf
 chmod 600 api.env backup.cnf
 chmod 700 backup.sh
 vi api.env
+```
+
+如果文件是通过宝塔文件管理器上传或编辑，所有者可能变成 `www:www`。这会导致部署账号无法读取密钥。上传和编辑完成后，在 root 终端执行：
+
+```bash
+chown aivs-deploy:aivs-deploy \
+  /opt/aivs/shared/api.env \
+  /opt/aivs/shared/backup.cnf \
+  /opt/aivs/shared/backup.sh
+
+chmod 600 /opt/aivs/shared/api.env
+chmod 600 /opt/aivs/shared/backup.cnf
+chmod 700 /opt/aivs/shared/backup.sh
+```
+
+再以 `aivs-deploy` 登录检查，不需要 sudo：
+
+```bash
+test -r /opt/aivs/shared/api.env && echo "api.env readable"
+test -r /opt/aivs/shared/backup.cnf && echo "backup.cnf readable"
+test -x /opt/aivs/shared/backup.sh && echo "backup.sh executable"
 ```
 
 填写：
@@ -318,12 +353,39 @@ ls -lh /opt/aivs/backups/
 
 ## 第 7 步：让服务器登录 GHCR
 
-在 GitHub 创建一个只读 Classic PAT，只授予 `read:packages`。
+Classic PAT（Personal Access Token Classic）是 GitHub 生成的一串访问令牌。这里把它当作服务器登录 GHCR 的专用只读密码，只允许拉取 Docker 镜像，不能用来上传或删除镜像。GitHub Packages 当前要求使用 Classic PAT。
+
+按以下步骤创建：
+
+1. 登录 `programmingdog` 账号，打开 <https://github.com/settings/tokens>。
+2. 点击 `Generate new token`。
+3. 选择 `Generate new token (classic)`，不是 Fine-grained token。
+4. `Note` 填写 `ai-studio-server-ghcr-read`。
+5. `Expiration` 建议先选 90 天，并设置到期提醒；令牌到期后需要重新创建和登录。
+6. 在权限列表中只勾选 `read:packages`（Download packages from GitHub Package Registry）。
+7. 不勾选 `write:packages`、`delete:packages`、`admin:*`。如果 GitHub 自动附加了不需要的宽泛权限，取消后再次确认只保留读取镜像所需权限。
+8. 点击页面底部 `Generate token`。
+9. 立即复制以 `ghp_` 开头的令牌并放进密码管理器；离开页面后 GitHub 不会再次显示完整令牌。
+
+不要把令牌粘贴到聊天、代码、`api.env` 或 GitHub 仓库。它只用于服务器上 `aivs-deploy` 用户的 Docker 登录。
 
 服务器使用 `aivs-deploy` 执行：
 
 ```bash
 read -r -s -p 'GHCR Token: ' GHCR_PAT
+```
+
+此时命令会停在 `GHCR Token:` 后面等待输入。现在才粘贴以 `ghp_` 开头的令牌并按 Enter；输入不会显示在屏幕上。**不要把令牌写在上述命令的末尾**，`GHCR_PAT` 是固定的变量名。
+
+确认变量确实接收到内容（只显示长度，不显示令牌）：
+
+```bash
+if [[ -n "${GHCR_PAT:-}" ]]; then
+  echo "Token captured, length: ${#GHCR_PAT}"
+else
+  echo "Token is empty; repeat the read command"
+fi
+
 printf '\n'
 printf '%s' "$GHCR_PAT" | \
   docker login ghcr.io -u programmingdog --password-stdin
@@ -336,7 +398,14 @@ unset GHCR_PAT
 Login Succeeded
 ```
 
-不要将 PAT 写进命令参数、脚本或仓库。
+不要将 PAT 写进命令参数、脚本或仓库。登录信息会保存在该用户的 `~/.docker/config.json`；限制权限：
+
+```bash
+chmod 700 ~/.docker
+chmod 600 ~/.docker/config.json
+```
+
+令牌到期或被撤销后，部署会在拉镜像阶段失败，但不会修改数据库。创建新令牌后重新执行本步骤即可。
 
 ## 第 8 步：配置 GitHub production Secrets
 
@@ -352,7 +421,7 @@ https://github.com/programmingdog/ai-studio/settings/environments
 
 | Secret | 内容 |
 | --- | --- |
-| `DEPLOY_HOST` | 服务器域名或 IPv4，不带协议 |
+| `DEPLOY_HOST` | GitHub Actions 的 SSH 目标；优先填固定公网 IPv4，不带协议和端口。也可填未经过 CDN/代理且直接解析到该服务器的域名 |
 | `DEPLOY_PORT` | SSH 端口，如 `22` |
 | `DEPLOY_USER` | `aivs-deploy` |
 | `DEPLOY_SSH_KEY` | `aivs_github_deploy` 私钥完整内容 |
@@ -361,7 +430,8 @@ https://github.com/programmingdog/ai-studio/settings/environments
 Windows 读取私钥：
 
 ```powershell
-Get-Content "$env:USERPROFILE\.ssh\aivs_github_deploy" -Raw
+$keyPath = Join-Path (Join-Path $env:USERPROFILE ".ssh") "aivs_github_deploy"
+Get-Content $keyPath -Raw
 ```
 
 将包括 `BEGIN/END OPENSSH PRIVATE KEY` 在内的完整内容放入 `DEPLOY_SSH_KEY`。
@@ -386,6 +456,8 @@ ssh-keyscan -p SSH端口 服务器地址 2>$null |
 ```
 
 指纹一致后，才把 `ssh-keyscan` 的完整输出行放进 `DEPLOY_KNOWN_HOSTS`。
+
+`DEPLOY_HOST`、测试 SSH 命令和 `DEPLOY_KNOWN_HOSTS` 必须使用同一个名称。例如 `DEPLOY_HOST` 填 IP，就用该 IP 执行 `ssh-keyscan`；填 `ai-studio.yuntianxing.net`，就用该域名扫描。若域名经过 Cloudflare/CDN 代理，不能用于 SSH，请改用服务器固定公网 IP 或单独的 DNS-only 部署域名。`DEPLOY_HOST` 中不要填写 `https://`、路径或 `:端口`，端口只放 `DEPLOY_PORT`。
 
 最后进入：
 

@@ -1,5 +1,7 @@
+.gitattributes text eol=lf
 *.sh text eol=lf
 *.yml text eol=lf
+*.md text eol=lf
 Dockerfile text eol=lf
 # Applied migration checksums are byte-sensitive. Keep existing CRLF bytes
 # when first importing this Windows workspace into Git; never normalize SQL.

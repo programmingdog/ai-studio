@@ -49,7 +49,9 @@ fi
 
 [[ $# == 3 ]] || fail 'Expected release id, API digest and admin digest'
 valid_release "$1" || fail 'Invalid release id'
-valid_image "$2" && valid_image "$3" || fail 'Use ghcr.io image references pinned by sha256 digest'
+if ! valid_image "$2" || ! valid_image "$3"; then
+  fail 'Use ghcr.io image references pinned by sha256 digest'
+fi
 release="$releases/$1"
 [[ ! -e "$release" ]] || fail 'Release already exists; use a new run id (or explicit rollback)'
 [[ -x "$root/shared/backup.sh" ]] || fail 'Install and test /opt/aivs/shared/backup.sh first'
