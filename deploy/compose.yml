@@ -1,0 +1,58 @@
+name: aivs
+services:
+  api:
+    image: ${API_IMAGE:?Set an immutable API image reference}
+    # Linux only: share host networking to reach Baota MySQL at 127.0.0.1.
+    # BOTH processes are explicitly bound to loopback. Do not add ports mappings.
+    network_mode: host
+    env_file:
+      - path: /opt/aivs/shared/api.env
+        format: raw
+    environment:
+      NODE_ENV: production
+      BIND_HOST: 127.0.0.1
+      PORT: "3101"
+      TRUST_PROXY: loopback
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, node, /app/healthcheck.cjs, api]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: local
+      options: {max-size: "20m", max-file: "5"}
+  admin:
+    image: ${ADMIN_IMAGE:?Set an immutable admin image reference}
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      HOSTNAME: 127.0.0.1
+      PORT: "3200"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /app/apps/admin-web/.next/cache:rw,nosuid,size=128m,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, node, /app/healthcheck.cjs, admin]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    logging:
+      driver: local
+      options: {max-size: "20m", max-file: "5"}

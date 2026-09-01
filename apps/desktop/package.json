@@ -1,0 +1,38 @@
+{
+  "name": "@aivs/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:media": "node scripts/prepare-media-binaries.mjs",
+    "prepare:worker": "node scripts/prepare-worker-sidecar.mjs",
+    "dev": "vite --port 1420",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:theme": "node --test test/light-theme.test.cjs",
+    "test:registration": "node --test test/email-registration.test.cjs",
+    "test:low-credit": "node --test test/low-credit-reminder.test.cjs",
+    "test:credit-copy": "node --test test/credit-copy.test.cjs",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@aivs/schemas": "*",
+    "@tanstack/react-query": "^5.85.5",
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "lucide-react": "^0.541.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

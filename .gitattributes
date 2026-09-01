@@ -1,0 +1,6 @@
+*.sh text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
+# Applied migration checksums are byte-sensitive. Keep existing CRLF bytes
+# when first importing this Windows workspace into Git; never normalize SQL.
+apps/server/src/database/migrations/*.sql -text

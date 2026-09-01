@@ -1,0 +1,47 @@
+{
+  "name": "@aivs/server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:gateway": "npm run build && node --test test/media-resolution.test.cjs",
+    "test:registration": "npm run build && node --test test/registration-verification.test.cjs test/registration-mail.test.cjs test/mail-config.test.cjs",
+    "test:referrals": "npm run build && node --test test/referrals.test.cjs test/referrals-db.test.cjs",
+    "test:credit-confirmation": "npm run build && node --test test/credit-confirmation.test.cjs",
+    "test:multipliers": "npm run build && node --test test/model-credit-multiplier.test.cjs",
+    "test:pricing": "npm run build && node --test test/provider-pricing.test.cjs test/credit-price-calculator.test.cjs test/credit-pricing-service.test.cjs",
+    "db:inspect": "tsx src/scripts/inspect-database.ts",
+    "db:migrate": "tsx src/database/migrate.ts",
+    "db:backfill-invites": "tsx src/scripts/backfill-invite-codes.ts",
+    "db:seed-config": "tsx src/scripts/seed-default-configs.ts",
+    "db:bootstrap-admin": "tsx src/scripts/bootstrap-admin.ts",
+    "db:sync-wagaai-models": "tsx src/scripts/sync-wagaai-models.ts",
+    "db:sync-allaiin-models": "tsx src/scripts/sync-allaiin-models.ts",
+    "db:sync-client-prompts": "tsx src/scripts/sync-client-prompt-configs.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-express": "^11.1.6",
+    "@nestjs/swagger": "^11.4.7",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^17.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.4",
+    "nodemailer": "^9.0.6",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "svg-captcha": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^24.3.0",
+    "@types/nodemailer": "^8.0.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

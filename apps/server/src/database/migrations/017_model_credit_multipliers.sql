@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS model_credit_multipliers (
+  id TINYINT UNSIGNED NOT NULL,
+  text_generation DECIMAL(12,6) NOT NULL DEFAULT 1,
+  video_understanding DECIMAL(12,6) NOT NULL DEFAULT 1,
+  image_generation DECIMAL(12,6) NOT NULL DEFAULT 1,
+  video_generation DECIMAL(12,6) NOT NULL DEFAULT 1,
+  revision INT UNSIGNED NOT NULL DEFAULT 0,
+  updated_by CHAR(36) NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO model_credit_multipliers (id) VALUES (1);

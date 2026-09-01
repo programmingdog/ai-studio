@@ -1,0 +1,29 @@
+{
+  "name": "ai-video-studio",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @aivs/desktop",
+    "dev:server": "npm run dev --workspace @aivs/server",
+    "dev:admin": "npm run dev --workspace @aivs/admin-web",
+    "tauri:dev": "npm run tauri:dev --workspace @aivs/desktop",
+    "build": "npm run build --workspace @aivs/desktop",
+    "build:platform": "npm run build --workspace @aivs/server && npm run build --workspace @aivs/admin-web",
+    "build:all": "npm run typecheck && npm run build --workspace @aivs/desktop && npm run build:platform",
+    "build:installers:windows": "npm run tauri:build --workspace @aivs/desktop -- --bundles nsis,msi",
+    "build:installers:macos": "npm run tauri:build --workspace @aivs/desktop -- --bundles app,dmg",
+    "typecheck": "npm run typecheck --workspace @aivs/schemas && npm run typecheck --workspace @aivs/desktop && npm run typecheck --workspace @aivs/server && npm run typecheck --workspace @aivs/admin-web",
+    "db:inspect": "npm run db:inspect --workspace @aivs/server",
+    "db:migrate": "npm run db:migrate --workspace @aivs/server",
+    "db:seed-config": "npm run db:seed-config --workspace @aivs/server",
+    "db:bootstrap-admin": "npm run db:bootstrap-admin --workspace @aivs/server",
+    "test:python": "python -m unittest discover -s python-engine/tests -v"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

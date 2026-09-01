@@ -1,0 +1,183 @@
+name: Platform CI and deployment
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy to the configured production server after tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-root-password
+          MYSQL_DATABASE: aivs_ci
+          MYSQL_USER: aivs_ci
+          MYSQL_PASSWORD: ci-only-password
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-only-root-password"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_NAME: aivs_ci
+      DB_USER: aivs_ci
+      DB_PASSWORD: ci-only-password
+      JWT_SECRET: ci-only-jwt-secret-at-least-32-characters
+      CREDENTIAL_ENCRYPTION_KEY: ci-only-encryption-key-at-least-32-characters
+      NEXT_PUBLIC_API_BASE_URL: /api/v1
+      NEXT_TELEMETRY_DISABLED: "1"
+      AIVS_TEST_DB: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: {node-version: "24", cache: npm}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck && npm run build:platform
+      - name: Fresh DB migrations and full application tests (disposable DB only)
+        run: |
+          npm run db:migrate
+          npm run db:migrate
+          node --test apps/server/test/*.test.cjs apps/admin-web/test/*.test.cjs apps/desktop/test/*.test.cjs tests/deployment/*.test.cjs
+      - name: Check deployment scripts
+        run: |
+          bash -n deploy/deploy.sh deploy/backup.sh
+          shellcheck deploy/deploy.sh deploy/backup.sh
+      - name: Build production images
+        run: |
+          docker build -f deploy/Dockerfile --target api -t aivs-api:ci .
+          docker build -f deploy/Dockerfile --target admin -t aivs-admin:ci .
+      - name: Smoke-test exact runtime image contents against disposable DB
+        run: |
+          mkdir -p /tmp/aivs-ci
+          printenv | grep -E '^(DB_|JWT_SECRET=|CREDENTIAL_ENCRYPTION_KEY=)' > /tmp/aivs-ci/api.env
+          docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/database/migrate.js
+          docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/seed-default-configs.js
+          docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/backfill-invite-codes.js
+          sudo install -d -m 700 /opt/aivs/shared
+          sudo install -m 600 /tmp/aivs-ci/api.env /opt/aivs/shared/api.env
+          # The runner's user owns Docker; use sudo only for the protected env file.
+          sudo API_IMAGE=aivs-api:ci ADMIN_IMAGE=aivs-admin:ci docker compose -f deploy/compose.yml config --quiet
+          sudo API_IMAGE=aivs-api:ci ADMIN_IMAGE=aivs-admin:ci docker compose -f deploy/compose.yml up -d --wait --wait-timeout 120
+          curl --fail http://127.0.0.1:3101/api/v1/health
+          curl --fail http://127.0.0.1:3200/ >/dev/null
+          curl --fail http://127.0.0.1:3200/invite/TEST1234 >/dev/null
+      - name: Stop disposable smoke-test containers
+        if: always()
+        run: |
+          if [ -f /opt/aivs/shared/api.env ]; then
+            sudo API_IMAGE=aivs-api:ci ADMIN_IMAGE=aivs-admin:ci docker compose -f deploy/compose.yml down
+          fi
+      - name: Export the exact tested images for publishing
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: docker save aivs-api:ci aivs-admin:ci | gzip > /tmp/aivs-images.tar.gz
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: platform-images
+          path: /tmp/aivs-images.tar.gz
+          compression-level: 0
+          retention-days: 2
+
+  publish:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      api: ${{ steps.images.outputs.api }}
+      admin: ${{ steps.images.outputs.admin }}
+      release: ${{ steps.images.outputs.release }}
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: {name: platform-images, path: /tmp/aivs-images}
+      - name: Publish the exact tested images with immutable release references
+        id: images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          registry="ghcr.io/${REPOSITORY,,}"
+          release="$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker load -i /tmp/aivs-images/aivs-images.tar.gz
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          for service in api admin; do
+            image="$registry-$service:$release"
+            docker tag "aivs-$service:ci" "$image"
+            docker push "$image"
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$image")
+            printf '%s=%s\n' "$service" "$digest" >> "$GITHUB_OUTPUT"
+            printf '%s: `%s`\n\n' "$service" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          done
+          printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
+          printf 'Release: `%s`\n' "$release" >> "$GITHUB_STEP_SUMMARY"
+      - name: Log out of registry
+        if: always()
+        run: docker logout ghcr.io
+
+  deploy:
+    needs: publish
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.deploy) ||
+       (github.event_name == 'push' && vars.ENABLE_AUTODEPLOY == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: aivs-production
+      cancel-in-progress: false
+    steps:
+      - name: Reject a stale release before deployment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$current" == "$GITHUB_SHA" ]] || { echo 'main has advanced; deploy its newer workflow instead.'; exit 1; }
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: {persist-credentials: false}
+      - name: Stage release and deploy over verified SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          RELEASE: ${{ needs.publish.outputs.release }}
+          API_IMAGE: ${{ needs.publish.outputs.api }}
+          ADMIN_IMAGE: ${{ needs.publish.outputs.admin }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ ]]
+          [[ "$API_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+          [[ "$ADMIN_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
+          umask 077
+          sshdir=$(mktemp -d "$RUNNER_TEMP/aivs-ssh.XXXXXX")
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$sshdir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$sshdir/known_hosts"
+          opts=(-i "$sshdir/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$sshdir/known_hosts" -o ConnectTimeout=15)
+          ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/aivs/incoming/$RELEASE"
+          scp "${opts[@]}" -P "$DEPLOY_PORT" deploy/compose.yml deploy/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:/opt/aivs/incoming/$RELEASE/"
+          ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash /opt/aivs/incoming/$RELEASE/deploy.sh $RELEASE $API_IMAGE $ADMIN_IMAGE"

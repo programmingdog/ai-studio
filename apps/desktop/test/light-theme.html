@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="color-scheme" content="light" />
+  <title>客户端日间样式回归</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    /* Layout only: colors must come from the production stylesheet. */
+    body { min-width: 0; padding: 24px; }
+    main { max-width: 1100px; margin: auto; display: grid; gap: 24px; }
+    .sample-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .sample { min-width: 0; padding: 18px; }
+    .sample > h2 { font-size: 16px; margin: 0 0 14px; }
+    .sample-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+    .media-model-picker { width: 100%; max-height: none; }
+    .media-model-options { min-height: 0; }
+    .scene-card { min-height: 240px; }
+    .scene-info textarea { min-height: 80px; }
+    .application-log-export-toolbar { flex-wrap: wrap; padding: 12px; }
+    .agent-chat-empty { margin: 0; }
+    .visual-mention-menu, .visual-mention-hover, .character-lock-preview { position: relative; inset: auto; width: auto; margin: 10px 0; }
+    .character-lock-preview::after { display: none; }
+    .asset-lightbox-close { position: static; }
+    .generation-record-status { position: static; }
+    .bulk-video-task-row { grid-template-columns: 30px 1fr auto; }
+    .auto-workflow-body, .idea-workflow-body { padding: 0; }
+    .auto-workflow-task { grid-template-columns: 46px 1fr 100px 40px; }
+    .generation-record-progress i, .progress i, .auto-workflow-overall b { width: 60%; }
+    .account-summary { margin: 10px 0; }
+    .settings-tabs { grid-template-columns: 1fr 1fr; padding: 10px; }
+    .asset-library-card { width: 130px; min-height: 80px; }
+    .application-log-filters { flex-wrap: wrap; }
+    @media (max-width: 800px) { .sample-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>客户端日间样式回归</h1>
+  <p>仅复用生产样式的静态样例，不连接账户、项目或生成接口。</p>
+  <section class="media-model-picker" aria-label="模型选择回归">
+    <header><div><span class="eyebrow">SERVER MODEL</span><h2>选择角色图生成模型</h2><p>积分按所选分辨率和生成图片张数计算。</p></div><button aria-label="关闭模型样例">×</button></header>
+    <div class="media-model-options">
+      <article class="active"><button class="media-model-main"><strong>TT Image 2</strong><small>WagaAI · TT Image 2</small></button><div class="media-resolution-list">
+        <label><input type="radio" name="image" value="1K" /><span>1K</span><em>1 积分/张</em></label>
+        <label><input type="radio" name="image" value="2K" /><span>2K</span><em>2 积分/张</em></label>
+        <label><input type="radio" name="image" value="4K" checked /><span>4K</span><em>4 积分/张</em></label>
+      </div></article>
+      <article><button class="media-model-main"><strong>视频模型</strong><small>WagaAI · 视频生成</small></button><div class="media-resolution-list"><label><input type="radio" name="video" /><span>1080P</span><em>3 积分/秒</em></label></div></article>
+    </div><footer><button class="secondary-button">取消</button><button class="primary-button">确认使用</button></footer>
+  </section>
+  <article class="scene-card"><div class="scene-visual"><span>NIGHT</span>场景预览</div><div class="scene-info"><div class="entity-title"><div><span>SCENE_001</span><input aria-label="场景名称" value="高空夜景西餐厅" /></div><button class="lock active" aria-label="锁定场景">锁</button></div><div class="sample-row"><button class="asset-import-button">选择本地图片</button><button class="asset-generate-button">生图</button></div><textarea aria-label="场景描述">室内高级餐厅靠窗位置，落地窗外繁华城市璀璨夜景。</textarea><div class="scene-meta"><span>INTERIOR</span><span>室内高级餐厅靠窗位置，落地窗外繁华城市璀璨夜景。玻璃上有雨滴，餐桌上摆放烛台、红酒杯。</span></div></div></article>
+  <div class="sample-grid">
+    <section class="panel sample"><h2>日志与日期控件</h2><div class="application-log-filters"><button class="active critical">严重</button><button class="active error">错误</button><button class="active info">信息</button><button class="active debug">调试</button></div><div class="application-log-export-toolbar"><label>开始时间<input type="datetime-local" value="2026-08-30T12:00" /></label></div><article class="application-log-entry info"><header><span class="application-log-level info">INFO</span><strong>任务记录</strong><time>12:00</time></header><details open><summary>日志详情</summary><pre>任务初始化完成，等待下一步操作。</pre></details></article><div class="sample-row"><span class="application-log-level critical">CRITICAL</span><span class="application-log-level error">ERROR</span><span class="application-log-level debug">DEBUG</span></div></section>
+    <section class="panel sample"><h2>生成记录与任务状态</h2><div class="sample-row"><span class="generation-record-status">进行中</span><span class="generation-record-status completed">已完成</span><span class="generation-record-status failed">失败</span></div><div class="generation-record-progress"><i></i></div><div class="sample-row"><button class="secondary-button" disabled>等待任务</button><button class="danger-button">停止任务</button></div><div class="bulk-video-task-row failed"><span class="bulk-video-task-index">01</span><strong>视频生成失败</strong><em>失败</em></div><div class="bulk-video-task-row completed"><span class="bulk-video-task-index">02</span><strong>视频生成完成</strong><em>完成</em></div><div class="error-banner">任务失败，请检查输入。</div><div class="download-success">下载完成</div></section>
+    <section class="panel sample"><h2>Agent 消息</h2><article class="agent-message"><span>我</span><div><strong>用户</strong><p>帮我生成角色和场景。</p></div></article><article class="agent-message assistant"><span>AI</span><div><strong>制作 Agent</strong><p>已完成分镜规划，下一步生成场景图。</p></div></article><div class="agent-chat-empty"><div>AI</div><div><button>帮我检查项目</button></div></div><div class="agent-composer"><textarea placeholder="请输入指令" aria-label="Agent 指令"></textarea></div></section>
+    <section class="panel sample"><h2>设置、表单和创作类型</h2><div class="settings-tabs"><button class="active"><span><strong>界面设置</strong><small>日间模式</small></span></button><button>提示词</button></div><label>分辨率<select><option>1080P</option><option>720P</option></select></label><label>只读信息<input disabled value="由服务端配置" /></label><div class="sample-row"><button class="creative-type-card active" data-category="科幻奇幻"><span>科幻奇幻</span><strong>科幻冒险</strong><small>跨越星际的旅程</small><em>已选择</em></button></div><div class="settings-guidance"><div><strong>配置提示</strong><span>模型配置由服务端统一管理。</span></div></div></section>
+    <section class="panel sample"><h2>图片引用与预览浮层</h2><div class="visual-mention-editor" contenteditable="true" role="textbox" aria-label="提示词">参考 <span class="visual-mention-token">@主角</span> 的造型</div><div class="visual-mention-menu"><header><strong>可引用图片</strong><small>角色与场景</small></header><div class="visual-mention-options"><button class="active"><span>主角</span><small>角色参考图</small></button></div></div><aside class="character-lock-preview"><strong>角色外观</strong><small>已锁定造型</small></aside><button class="asset-lightbox-close" aria-label="关闭预览">×</button><div class="sample-row"><button class="asset-library-card selecting"><span class="asset-selection-check">□</span></button><button class="asset-library-card selecting selected"><span class="asset-selection-check">✓</span></button></div></section>
+    <section class="panel sample"><h2>账户、积分及支付</h2><div class="account-summary"><div class="account-avatar">用</div><div><strong>测试用户</strong><span>当前积分 120</span><small>账户中心</small></div></div><div class="sample-row"><span class="platform-status success">支付成功</span><span class="platform-status pending">等待支付</span><span class="platform-status error">支付失败</span></div><div class="relay-result"><details open><summary>任务返回结果</summary><pre>任务结果已保存</pre></details></div><button class="primary-button">保存信息</button></section>
+  </div>
+  <section class="panel sample"><h2>自动工作流与分步制作</h2><div class="guided-stepper"><div class="completed"><span>1</span><div><strong>故事</strong><small>已完成</small></div></div><div class="active"><span>2</span><div><strong>场景和角色</strong><small>进行中</small></div></div><div><span>3</span><strong>分镜</strong></div><div><span>4</span><strong>生成</strong></div></div><div class="auto-workflow-overall"><div><span>工作流进度</span><strong>60%</strong></div><i><b></b></i></div><div class="auto-workflow-body"><section class="active"><header><span>STEP 02</span><div><strong>角色图生成</strong><small>与场景并行</small></div></header><article class="auto-workflow-task completed"><div class="auto-workflow-preview">图</div><div><strong>角色 01</strong><span>生成成功</span></div><i><b></b></i><em>100%</em></article></section></div><div class="idea-workflow-body"><section class="failed"><span>03</span><div><strong>等待重试</strong><small>可安全继续操作</small></div></section></div></section>
+</main>
+</body>
+</html>

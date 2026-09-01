@@ -1,0 +1,7 @@
+# /opt/aivs/shared/backup.cnf, mode 600. MySQL option-file syntax (not dotenv).
+[client]
+host=127.0.0.1
+port=3306
+user=aivs_backup
+password="REPLACE_ME"
+protocol=tcp

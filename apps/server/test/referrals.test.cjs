@@ -1,0 +1,87 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+require('reflect-metadata');
+const rules = require('../dist/referrals/referral-rules');
+const { ReferralsService } = require('../dist/referrals/referrals.service');
+const { ReferralsController } = require('../dist/referrals/referrals.controller');
+const { ReferralsAdminController } = require('../dist/referrals/referrals-admin.controller');
+const { UserAuthGuard } = require('../dist/user-auth/user-auth.guard');
+const { AdminAuthGuard } = require('../dist/auth/admin-auth.guard');
+const { PermissionsGuard } = require('../dist/auth/permissions.guard');
+const { REQUIRED_PERMISSIONS } = require('../dist/auth/permissions.decorator');
+
+test('invitation generator produces eight mixed characters; normalizer rejects malformed input', () => {
+  const codes = new Set();
+  for (let i = 0; i < 2000; i++) {
+    const code = rules.generateInviteCode();
+    assert.match(code, /^[A-Z0-9]{8}$/); assert.match(code, /[A-Z]/); assert.match(code, /[0-9]/); codes.add(code);
+  }
+  assert.equal(codes.size, 2000);
+  assert.equal(rules.inviteCode(' abcd2345 '), 'ABCD2345');
+  for (const value of ['ABC', 'ABCDEFGH1', 'ABCD/123', '<script>']) assert.throws(() => rules.inviteCode(value));
+});
+test('commission uses integer fen, floors sub-fen, and never rounds via floating point', () => {
+  assert.equal(rules.commissionFen(1000, 1000), 100);
+  assert.equal(rules.commissionFen(1000, 500), 50);
+  assert.equal(rules.commissionFen(799, 3333), 266);
+  assert.equal(rules.commissionFen(1, 9999), 0);
+  assert.equal(rules.commissionFen(Number.MAX_SAFE_INTEGER, 10000), Number.MAX_SAFE_INTEGER);
+  for (const amount of [-1, 1.1, Infinity, NaN, '100', Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => rules.commissionFen(amount, 1000));
+  assert.throws(() => rules.commissionFen(100, 10001));
+});
+test('withdrawal opens exactly Friday 00:00 through 23:59:59 China time', () => {
+  assert.equal(rules.withdrawalWindow(new Date('2026-09-03T15:59:59.999Z')).withdrawal_open, false);
+  assert.equal(rules.withdrawalWindow(new Date('2026-09-03T16:00:00Z')).withdrawal_open, true);
+  assert.equal(rules.withdrawalWindow(new Date('2026-09-04T15:59:59.999Z')).withdrawal_open, true);
+  const closed = rules.withdrawalWindow(new Date('2026-09-04T16:00:00Z'));
+  assert.equal(closed.withdrawal_open, false); assert.equal(closed.next_open_at, '2026-09-10T16:00:00.000Z');
+  assert.equal(closed.timezone, 'Asia/Shanghai');
+});
+test('public links reject scripts, embedded credentials, HTTP in production, and fragments', () => {
+  assert.equal(rules.publicUrl('https://example.com/invite', 'url'), 'https://example.com/invite');
+  assert.equal(rules.publicUrl('http://localhost:3200/invite', 'url'), 'http://localhost:3200/invite');
+  for (const value of ['javascript:alert(1)', 'https://user:pass@example.com/', 'http://example.com/', 'https://example.com/#x', '//example.com']) assert.throws(() => rules.publicUrl(value, 'url'));
+});
+test('receipt accepts small raster data only, rejects SVG, spoofed type and oversized payloads', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1kAAAAASUVORK5CYII=';
+  assert.equal(rules.receiptImage(png), png);
+  for (const value of ['https://example.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=', png.replace('image/png', 'image/jpeg'), png + 'a', 'data:image/png;base64,' + Buffer.alloc(262145).toString('base64')]) assert.throws(() => rules.receiptImage(value));
+});
+test('user endpoints take identity only from authenticated principal', async () => {
+  const calls = [];
+  const c = new ReferralsController({ summary: id => calls.push(id), records: (...args) => calls.push(args), applyWithdrawal: (...args) => calls.push(args) });
+  const req = { user: { sub: 'current-user' } };
+  await c.me(req); await c.records(req, 'withdrawals', '2'); await c.apply(req, { user_id: 'someone-else', amount_fen: 100 });
+  assert.equal(calls[0], 'current-user'); assert.deepEqual(calls[1], ['withdrawals', 'current-user', '2']); assert.equal(calls[2][0], 'current-user');
+  for (const method of ['me', 'records', 'apply']) assert.ok(Reflect.getMetadata('__guards__', ReferralsController.prototype[method]).includes(UserAuthGuard));
+});
+test('admin config, audit and payout actions require distinct server permissions', () => {
+  const guards = Reflect.getMetadata('__guards__', ReferralsAdminController);
+  assert.ok(guards.includes(AdminAuthGuard)); assert.ok(guards.includes(PermissionsGuard));
+  for (const method of ['claim', 'release', 'paid', 'payee']) assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype[method]), ['payouts.manage']);
+  assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.review), ['distribution.manage']);
+  assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.save), ['configs.manage', 'distribution.manage']);
+});
+test('record pagination is bounded, allowlisted, ownership-filtered and excludes payee secrets', async () => {
+  const calls = [];
+  const service = new ReferralsService({ query: async (sql, args) => { calls.push([sql, args]); return Array.from({ length: 51 }, (_, i) => ({ id: String(i) })); } }, {}, {});
+  const result = await service.records('withdrawals', 'my-user', '2', 'PROCESSING');
+  assert.equal(result.items.length, 50); assert.equal(result.has_more, true);
+  assert.match(calls[0][0], /user_id = \? AND status = \?/); assert.match(calls[0][0], /OFFSET 50$/);
+  assert.doesNotMatch(calls[0][0], /payee_ciphertext|request_hash|SELECT \*/); assert.deepEqual(calls[0][1], ['my-user', 'PROCESSING']);
+  for (const page of ['0', '-1', '1.5', 'Infinity', '100001', '1; DROP TABLE users']) await assert.rejects(service.records('withdrawals', 'my-user', page));
+  await assert.rejects(service.records('users')); await assert.rejects(service.records('withdrawals', 'my-user', '1', 'INVALID'));
+});
+test('invite collision retries and already assigned codes are stable', async () => {
+  let attempts = 0;
+  const connection = { query: async () => [[{ invite_code: null }]], execute: async () => { if (++attempts === 1) throw Object.assign(Error('collision'), { code: 'ER_DUP_ENTRY' }); } };
+  const service = new ReferralsService({}, {}, {});
+  assert.match(await service.ensureInviteCode('u', connection), /^[A-Z0-9]{8}$/); assert.equal(attempts, 2);
+  connection.query = async () => [[{ invite_code: 'ABCD2345' }]];
+  assert.equal(await service.ensureInviteCode('u', connection), 'ABCD2345'); assert.equal(attempts, 2);
+});
+test('invalid distribution configuration is rejected before entering transaction', async () => {
+  const service = new ReferralsService({ transaction: () => { throw Error('unexpected transaction'); } }, {}, {});
+  const valid = { enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invite_page_base_url: 'https://example.com/invite', windows_download_url: '', macos_download_url: '', revision: 0 };
+  for (const patch of [{ direct_rate_bps: 9900, indirect_rate_bps: 101 }, { direct_rate_bps: 0, indirect_rate_bps: 0 }, { minimum_withdrawal_fen: 0 }, { invitation_reward_credits: 1.5 }, { enabled: 'true' }, { invite_page_base_url: 'https://example.com/invite?code=abc' }]) await assert.rejects(service.saveConfig('admin', { ...valid, ...patch }), error => error.getStatus() === 400);
+});

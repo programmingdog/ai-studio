@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>账户中心布局回归测试</title>
+<link rel="stylesheet" href="../../src/styles.css">
+<div class="modal-backdrop account-modal-backdrop">
+  <section class="account-modal" role="dialog" aria-label="账户中心布局测试">
+    <header><div><span class="eyebrow">LAYOUT TEST</span><h2>账户与积分中心</h2><p>仅测试布局，不连接账户或支付接口。</p></div></header>
+    <nav class="account-tabs">
+      <button type="button" data-section="account">账户资料</button>
+      <button type="button" data-section="credits" class="active">积分与购买</button>
+    </nav>
+    <div class="account-body" tabindex="0" aria-label="账户内容"></div>
+  </section>
+</div>
+<script>
+  const body = document.querySelector('.account-body');
+  function show(section) {
+    document.querySelectorAll('.account-tabs button').forEach(button => button.classList.toggle('active', button.dataset.section === section));
+    body.replaceChildren();
+    const heading = document.createElement('h3');
+    heading.textContent = section === 'credits' ? '积分购买与消耗记录' : '账户资料';
+    body.append(heading);
+    for (let index = 0; index < (section === 'credits' ? 45 : 2); index++) {
+      const row = document.createElement('p');
+      row.textContent = `布局测试内容 ${index + 1}`;
+      body.append(row);
+    }
+  }
+  document.querySelectorAll('.account-tabs button').forEach(button => button.addEventListener('click', () => show(button.dataset.section)));
+  show('credits');
+</script>
+</html>
