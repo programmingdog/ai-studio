@@ -53,7 +53,7 @@ export interface PlatformConsumption {
   id: string; consumption_no: string; task_id: string | null; provider_model_id: string | null; model_alias: string | null;
   model_code: string | null; category: string; credits_consumed: number; status: string; description: string; occurred_at: string;
 }
-export interface WechatQrSession { state: string; login_url: string; expires_at: string; status?: string }
+export interface WechatQrSession { state: string; login_url: string; expires_at: string; status?: string; requires_follow?: boolean }
 export interface CatalogCategory { id: string; code: string; name: string; description: string; sort_order: number }
 export interface PlatformMediaResolutionPrice { resolution: string; credit_cost: number; label?: string }
 export interface PlatformMediaModel {

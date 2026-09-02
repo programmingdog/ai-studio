@@ -13,7 +13,7 @@ OpenAPI JSON：`http://localhost:3101/api-docs/openapi.json`
 - AI 供应商目录和 Adapter 类型配置
 - 使用数据库加密 API Key 执行模型创建/查询测试，并保存脱敏测试记录
 - MySQL 5.7 兼容迁移、默认配置初始化和超级管理员引导
-- 用户邮箱/手机密码注册登录、微信开放平台扫码登录、可轮换会话和资料维护
+- 用户邮箱/手机密码注册登录、微信公众号关注/扫码事件登录、可轮换会话和资料维护
 - 积分套餐购买、微信 Native 支付回调验签/解密、幂等发放与双分录账本
 - AI 任务创建/查询中转、积分预占/结算，以及供应商 API Key 的服务端隔离
 
@@ -71,7 +71,7 @@ npm.cmd run dev:server
 - `POST /api/v1/auth/register/phone`
 - `POST /api/v1/auth/login|refresh|logout`
 - `POST /api/v1/auth/wechat/qr-sessions`
-- `GET /api/v1/auth/wechat/callback`
+- `GET|POST /api/v1/auth/wechat/events`（公众平台服务器验证、关注和扫码事件）
 - `GET /api/v1/auth/wechat/qr-sessions/status`
 - `GET|PATCH /api/v1/users/me`
 - `GET /api/v1/credits/packages|balance`
@@ -86,7 +86,9 @@ npm.cmd run dev:server
 
 客户端模型目录不返回供应商地址、接口路径、协议配置或 API Key。客户端只把参数和远程媒体 URL 交给任务接口；服务端转发响应但不持久化提示词、媒体文件或完整模型结果。
 
-微信 Native 支付启用前，需要在管理后台同时配置公众号 AppID、商户号、32 字节 APIv3 Key、商户证书/私钥、微信支付平台证书及 HTTPS 支付回调地址。PC 扫码登录另需微信开放平台“网站应用”的 AppID、AppSecret 与 HTTPS 回调地址。
+微信 Native 支付启用前，需要在管理后台配置公众号 AppID、商户号、32 字节 APIv3 Key、商户 `apiclient_cert.pem`/`apiclient_key.pem`、微信支付公钥及公钥 ID，以及 HTTPS 支付通知地址。商户证书和私钥用于签署 APIv3 请求；微信支付公钥用于验证微信支付的 API 应答和异步通知。新接入使用官方推荐的微信支付公钥模式；已有平台证书配置仅保留兼容读取。
+
+微信公众号扫码登录使用同一公众号的 AppID/AppSecret，不再依赖微信开放平台网站应用。管理后台还需填写公众号服务器 Token、事件回调地址和可选 EncodingAESKey。将公众平台“服务器配置”的 URL 设为 `https://你的域名/api/v1/auth/wechat/events`，Token 与后台一致，并将服务器固定公网出口 IP 加入公众号 IP 白名单；明文模式不填 EncodingAESKey，兼容/安全模式必须填写同一个 43 位 EncodingAESKey。客户端创建 5 分钟带参二维码：未关注用户扫码并关注后触发 `subscribe`（`EventKey=qrscene_...`），已关注用户扫码触发 `SCAN`，两种事件都会完成同一登录会话。
 
 ## 邮箱注册验证码
 

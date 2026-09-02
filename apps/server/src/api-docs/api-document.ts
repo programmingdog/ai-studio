@@ -229,8 +229,9 @@ const schemas: Record<string, JsonSchema> = {
     type: "object",
     properties: {
       state: { type: "string" },
-      login_url: { type: "string", format: "uri" },
+      login_url: { type: "string", format: "uri", description: "公众号带参数二维码的原始内容，客户端应将该 URL 编码成二维码" },
       expires_at: { type: "string", format: "date-time" },
+      requires_follow: { type: "boolean", description: "未关注用户扫码后需要先关注公众号" },
     },
   },
   CreditPackage: {
@@ -406,18 +407,19 @@ const schemas: Record<string, JsonSchema> = {
   },
   WechatPaymentConfigRequest: {
     type: "object",
-    required: ["merchant_id", "payment_notify_url", "official_account_name", "app_id", "open_platform_app_id", "open_platform_redirect_uri"],
+    required: ["merchant_id", "payment_notify_url", "official_account_name", "app_id", "official_account_callback_url"],
     properties: {
       merchant_id: { type: "string" }, payment_notify_url: { type: "string", format: "uri" },
       merchant_key: { type: "string", format: "password", description: "32 字节 APIv3 Key；留空保留现值" },
-      certificate_content: { type: "string", description: "商户证书 PEM" }, certificate_filename: { type: "string" },
-      private_key_content: { type: "string", description: "商户私钥 PEM" }, private_key_filename: { type: "string" },
-      platform_certificate_content: { type: "string", description: "微信支付平台证书 PEM" }, platform_certificate_filename: { type: "string" },
+      certificate_base64: { type: "string", format: "byte", description: "商户 X.509 证书，支持 PEM 或 DER" }, certificate_filename: { type: "string" },
+      private_key_base64: { type: "string", format: "byte", description: "商户 RSA 私钥 PEM" }, private_key_filename: { type: "string" },
+      wechatpay_public_key_base64: { type: "string", format: "byte", description: "微信支付公钥 PEM，用于 APIv3 应答和回调验签" },
+      wechatpay_public_key_filename: { type: "string" }, wechatpay_public_key_id: { type: "string", example: "PUB_KEY_ID_..." },
       official_account_name: { type: "string" }, app_id: { type: "string", example: "wx..." },
       app_secret: { type: "string", format: "password", description: "留空保留现值" },
-      open_platform_app_id: { type: "string", example: "wx..." },
-      open_platform_app_secret: { type: "string", format: "password", description: "留空保留现值" },
-      open_platform_redirect_uri: { type: "string", format: "uri" },
+      official_account_token: { type: "string", format: "password", description: "公众号服务器配置 Token；留空保留现值" },
+      official_account_encoding_aes_key: { type: "string", format: "password", description: "安全模式的 43 位 EncodingAESKey；明文模式可留空" },
+      official_account_callback_url: { type: "string", format: "uri" },
       status: { type: "string", enum: ["ACTIVE", "DISABLED"], default: "DISABLED" },
     },
   },
@@ -612,10 +614,11 @@ export function createApiDocument(): OpenAPIObject {
       post: operation({ id: "userLogout", tag: "用户身份", summary: "退出当前会话", security: true }),
     },
     "/auth/wechat/qr-sessions": {
-      post: operation({ id: "createWechatQrSession", tag: "微信登录", summary: "创建微信扫码登录会话", description: "可选JSON请求体含invite_code；服务端将邀请人与扫码会话绑定，仅新微信账户注册时生效，既有账户不重新绑定。", success: ref("WechatQrSession") }),
+      post: operation({ id: "createWechatQrSession", tag: "微信登录", summary: "创建公众号带参二维码登录会话", description: "可选JSON请求体含invite_code；未关注用户关注后触发 subscribe 事件，已关注用户扫码触发 SCAN 事件。邀请关系仅在创建新微信账户时生效。", success: ref("WechatQrSession") }),
     },
-    "/auth/wechat/callback": {
-      get: operation({ id: "wechatLoginCallback", tag: "微信登录", summary: "微信开放平台登录回调", parameters: [query("code", "微信授权 code", { type: "string" }, true), query("state", "扫码会话 state", { type: "string" }, true)] }),
+    "/auth/wechat/events": {
+      get: operation({ id: "verifyWechatOfficialAccount", tag: "微信登录", summary: "验证微信公众号服务器回调", parameters: [query("signature", "公众号签名"), query("timestamp", "时间戳"), query("nonce", "随机串"), query("echostr", "验证字符串")] }),
+      post: operation({ id: "receiveWechatOfficialAccountEvent", tag: "微信登录", summary: "接收公众号关注与扫码事件", description: "接收微信公众平台推送的 XML；支持明文模式及配置 EncodingAESKey 后的安全模式。" }),
     },
     "/auth/wechat/qr-sessions/status": {
       get: operation({ id: "wechatQrStatus", tag: "微信登录", summary: "轮询微信扫码登录状态并领取令牌", description: "完成后的登录令牌只能领取一次。", parameters: [query("state", "扫码会话 state", { type: "string" }, true), query("device_name", "设备名称")] }),
@@ -740,8 +743,8 @@ export function createApiDocument(): OpenAPIObject {
       patch: operation({ id: "saveMailConfig", tag: "管理配置", summary: "保存邮箱配置", description: "需要 configs.manage 权限；发件密码加密保存、留空保留。携带当前 revision 防止并发覆盖。保存后新邮件请求立即使用配置。", security: true, body: ref("MailConfigRequest"), success: ref("MailConfig") }),
     },
     "/admin/configs/wechat-payment": {
-      get: operation({ id: "getWechatPaymentConfig", tag: "管理微信配置", summary: "读取脱敏的微信支付与开放平台配置", security: true }),
-      patch: operation({ id: "updateWechatPaymentConfig", tag: "管理微信配置", summary: "更新微信支付与开放平台配置", description: "密钥和证书加密写入数据库；已配置的敏感字段可留空以保留现值。", security: true, body: ref("WechatPaymentConfigRequest") }),
+      get: operation({ id: "getWechatPaymentConfig", tag: "管理微信配置", summary: "读取脱敏的微信公众号与微信支付配置", security: true }),
+      patch: operation({ id: "updateWechatPaymentConfig", tag: "管理微信配置", summary: "更新微信公众号与微信支付配置", description: "密钥、商户私钥及微信支付公钥加密写入数据库；已配置的敏感字段可留空以保留现值。", security: true, body: ref("WechatPaymentConfigRequest") }),
     },
     "/admin/providers": {
       get: operation({ id: "listProviders", tag: "管理供应商", summary: "读取 AI 供应商", security: true }),
@@ -881,7 +884,7 @@ export function createApiDocument(): OpenAPIObject {
       { name: "系统", description: "运行状态" },
       { name: "客户端配置", description: "客户端引导配置和模型目录" },
       { name: "用户身份", description: "邮箱/手机号注册登录和会话管理" },
-      { name: "微信登录", description: "微信开放平台网站应用扫码登录" },
+      { name: "微信登录", description: "微信公众号带参二维码及关注/扫码事件登录" },
       { name: "用户资料", description: "当前用户资料" },
       { name: "用户积分", description: "套餐、余额和购买" },
       { name: "邀请与分润", description: "邀请关系、两级分润及提现申请" },

@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Header, HttpCode, Inject, Patch, Post, Query, Req, UseGuards } from "@nestjs/common";
-import type { Request } from "express";
+import { BadRequestException, Body, Controller, Get, Header, HttpCode, Inject, Patch, Post, Query, Req, Res, UseGuards } from "@nestjs/common";
+import type { Request, Response } from "express";
 import { asRecord, optionalString, requiredString } from "../common/input";
 import { UserAuthGuard, UserRequest } from "./user-auth.guard";
 import { UserAuthService } from "./user-auth.service";
@@ -61,8 +61,27 @@ export class UserAuthController {
   @Post("auth/wechat/qr-sessions")
   createWechatQrSession(@Body() input?: unknown) { return this.auth.createWechatQrSession(optionalString(asRecord(input || {}), "invite_code", 8)); }
 
-  @Get("auth/wechat/callback")
-  completeWechatLogin(@Query("code") code: string, @Query("state") state: string) { return this.auth.completeWechatLogin(code, state); }
+  @Get("auth/wechat/events")
+  async verifyWechatOfficialAccount(
+    @Query("signature") signature: string, @Query("timestamp") timestamp: string, @Query("nonce") nonce: string,
+    @Query("echostr") echo: string, @Query("msg_signature") messageSignature: string | undefined,
+    @Query("encrypt_type") encryptType: string | undefined, @Res() response: Response,
+  ) {
+    const result = await this.auth.verifyOfficialAccountServer(signature, timestamp, nonce, echo, messageSignature, encryptType === "aes");
+    response.type("text/plain").send(result);
+  }
+
+  @Post("auth/wechat/events")
+  @HttpCode(200)
+  async receiveWechatOfficialAccountEvent(
+    @Query("signature") signature: string, @Query("timestamp") timestamp: string, @Query("nonce") nonce: string,
+    @Query("msg_signature") messageSignature: string | undefined, @Query("encrypt_type") encryptType: string | undefined,
+    @Body() body: unknown, @Res() response: Response,
+  ) {
+    if (typeof body !== "string") throw new BadRequestException("公众号事件正文必须是 XML");
+    const result = await this.auth.handleOfficialAccountEvent({ signature, timestamp, nonce, messageSignature, encrypted: encryptType === "aes", body });
+    response.type("text/plain").send(result);
+  }
 
   @Get("auth/wechat/qr-sessions/status")
   pollWechatSession(@Query("state") state: string, @Query("device_name") deviceName?: string) { return this.auth.pollWechatSession(state, deviceName); }

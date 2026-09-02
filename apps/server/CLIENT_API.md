@@ -23,8 +23,10 @@ Content-Type: application/json
 
 1. `POST /auth/wechat/qr-sessions` 获取 `login_url`、`state` 和过期时间。
 2. 客户端展示 `login_url` 对应二维码，并轮询 `GET /auth/wechat/qr-sessions/status?state=...`。
-3. 微信回调 `GET /auth/wechat/callback?code=...&state=...` 完成创建或绑定用户。
+3. 未关注用户扫码并关注公众号后，微信推送 `subscribe` 事件；已关注用户扫码时推送 `SCAN` 事件。服务端在 `GET|POST /auth/wechat/events` 验证服务器配置并处理事件。
 4. 状态成为 `COMPLETED` 时，轮询响应只发放一次登录令牌。
+
+公众平台服务器 URL 使用 `https://你的域名/api/v1/auth/wechat/events`。Token 必须与管理后台一致；安全模式还必须配置相同的 EncodingAESKey。公众号事件接口只供微信服务器调用，客户端不得伪造调用。
 
 ## 用户资料
 

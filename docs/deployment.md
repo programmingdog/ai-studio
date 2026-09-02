@@ -594,6 +594,17 @@ https://ai-studio.yuntianxing.net/
 - 邀请页面和下载链接。
 - 后台邮件和分销配置仍然存在。
 
+后台“微信公众号与微信支付”使用以下生产地址：
+
+```text
+支付通知地址：https://ai-studio.yuntianxing.net/api/v1/payments/wechat/notify
+公众号事件回调地址：https://ai-studio.yuntianxing.net/api/v1/auth/wechat/events
+```
+
+公众号扫码登录使用公众号带参数二维码，不使用微信开放平台网站应用。在微信公众平台的服务器配置中填写上述公众号事件回调地址，并保证 Token 与后台完全相同；同时把服务器访问 `api.weixin.qq.com` 时使用的固定公网出口 IP 加入公众号 IP 白名单。先使用明文模式时后台 EncodingAESKey 留空；使用兼容或安全模式时，两边填写同一个 43 位 EncodingAESKey。未关注用户扫码关注后触发 `subscribe`，已关注用户扫码触发 `SCAN`，两种情况都应使客户端自动登录。
+
+微信支付 API v3 的商户 `apiclient_cert.pem` 和 `apiclient_key.pem` 用于商户请求签名，仍然需要配置。异步通知和 Native 下单应答支持两种验签方式：未使用过平台证书的独立商户号可选择“微信支付公钥”，上传公钥 PEM 并填写以 `PUB_KEY_ID_` 开头的公钥 ID；已经由其他应用使用平台证书的共用商户号，不要单独发起公钥切换，应选择“微信支付平台证书”并上传当前有效的 `wechatpay_*.pem`，平台证书序列号由后台自动读取。等同一商户号下所有应用都支持公钥后，再按微信支付官方流程统一灰度迁移。证书上传支持 PEM 和 DER，并会检查商户 cert 与 key 是否匹配。
+
 邀请页基础地址应填写：
 
 ```text

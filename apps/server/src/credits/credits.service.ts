@@ -10,10 +10,13 @@ interface PackageRow extends RowDataPacket { id: string; code: string; name: str
 interface WechatRuntimeRow extends RowDataPacket {
   merchant_id: string; payment_notify_url: string; merchant_key_ciphertext: string | null;
   certificate_ciphertext: string | null; private_key_ciphertext: string | null;
-  platform_certificate_ciphertext: string | null; official_account_name: string; app_id: string; status: string;
+  platform_certificate_ciphertext: string | null; platform_certificate_serial: string | null;
+  wechatpay_public_key_ciphertext: string | null; wechatpay_public_key_id: string;
+  payment_verification_mode: string;
+  official_account_name: string; app_id: string; status: string;
 }
 
-type WechatRuntime = { merchantId: string; notifyUrl: string; apiV3Key: string; merchantCertificate: string; merchantPrivateKey: string; platformCertificate: string; appId: string };
+type WechatRuntime = { merchantId: string; notifyUrl: string; apiV3Key: string; merchantCertificate: string; merchantPrivateKey: string; verifierKey: string; verifierId: string; appId: string };
 
 function orderNumber(): string { return `AV${Date.now()}${randomBytes(5).toString("hex")}`.slice(0, 32); }
 function transactionNumber(prefix: string): string { return `${prefix}${Date.now()}${randomBytes(5).toString("hex")}`; }
@@ -83,11 +86,14 @@ export class CreditsService {
   private async wechatRuntime(requireActive = true): Promise<WechatRuntime> {
     const rows = await this.database.query<WechatRuntimeRow[]>(
       `SELECT merchant_id, payment_notify_url, merchant_key_ciphertext, certificate_ciphertext,
-              private_key_ciphertext, platform_certificate_ciphertext, official_account_name, app_id, status
+              private_key_ciphertext, platform_certificate_ciphertext, platform_certificate_serial,
+              wechatpay_public_key_ciphertext, wechatpay_public_key_id, payment_verification_mode, official_account_name, app_id, status
        FROM wechat_payment_configs LIMIT 1`,
     );
     const row = rows[0];
-    if (!row || (requireActive && row.status !== "ACTIVE") || !row.merchant_id || !row.payment_notify_url || !row.merchant_key_ciphertext || !row.certificate_ciphertext || !row.private_key_ciphertext || !row.platform_certificate_ciphertext || !row.app_id) {
+    const usePublicKey = row?.payment_verification_mode === "WECHATPAY_PUBLIC_KEY";
+    const verifierConfigured = usePublicKey ? Boolean(row?.wechatpay_public_key_ciphertext) : Boolean(row?.platform_certificate_ciphertext);
+    if (!row || (requireActive && row.status !== "ACTIVE") || !row.merchant_id || !row.payment_notify_url || !row.merchant_key_ciphertext || !row.certificate_ciphertext || !row.private_key_ciphertext || !verifierConfigured || !row.app_id) {
       throw new ServiceUnavailableException("微信 Native 支付尚未完整配置");
     }
     const apiV3Key = this.secretCrypto.decrypt(row.merchant_key_ciphertext);
@@ -96,7 +102,9 @@ export class CreditsService {
       merchantId: row.merchant_id, notifyUrl: row.payment_notify_url, apiV3Key,
       merchantCertificate: this.secretCrypto.decrypt(row.certificate_ciphertext),
       merchantPrivateKey: this.secretCrypto.decrypt(row.private_key_ciphertext),
-      platformCertificate: this.secretCrypto.decrypt(row.platform_certificate_ciphertext), appId: row.app_id,
+      verifierKey: this.secretCrypto.decrypt(usePublicKey ? row.wechatpay_public_key_ciphertext! : row.platform_certificate_ciphertext!),
+      verifierId: usePublicKey ? row.wechatpay_public_key_id : String(row.platform_certificate_serial || "").replaceAll(":", "").toUpperCase(),
+      appId: row.app_id,
     };
   }
 
@@ -109,11 +117,12 @@ export class CreditsService {
     return `WECHATPAY2-SHA256-RSA2048 mchid="${config.merchantId}",nonce_str="${nonce}",timestamp="${timestamp}",serial_no="${serial}",signature="${signature}"`;
   }
 
-  private verifyWechatSignature(config: WechatRuntime, timestamp: string | null, nonce: string | null, signature: string | null, body: string): void {
-    if (!timestamp || !nonce || !signature) throw new UnauthorizedException("微信支付签名请求头不完整");
+  private verifyWechatSignature(config: WechatRuntime, timestamp: string | null, nonce: string | null, signature: string | null, serial: string | null, body: string): void {
+    if (!timestamp || !nonce || !signature || !serial) throw new UnauthorizedException("微信支付签名请求头不完整");
+    if (!config.verifierId || serial.toUpperCase() !== config.verifierId.toUpperCase()) throw new UnauthorizedException("微信支付验签公钥 ID 或平台证书序列号不匹配");
     if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new UnauthorizedException("微信支付签名时间戳已过期");
     const verifier = createVerify("RSA-SHA256"); verifier.update(`${timestamp}\n${nonce}\n${body}\n`); verifier.end();
-    if (!verifier.verify(config.platformCertificate, signature, "base64")) throw new UnauthorizedException("微信支付签名验证失败");
+    if (!verifier.verify(config.verifierKey, signature, "base64")) throw new UnauthorizedException("微信支付签名验证失败");
   }
 
   private decryptNotification(config: WechatRuntime, resource: Record<string, unknown>): Record<string, unknown> {
@@ -182,11 +191,17 @@ export class CreditsService {
     const path = "/v3/pay/transactions/native";
     const requestBody = JSON.stringify({ appid: config.appId, mchid: config.merchantId, description: `${creditPackage.name} - ${credits}积分`, out_trade_no: outTradeNo, time_expire: expiresAt.toISOString(), attach: purchaseId, notify_url: config.notifyUrl, amount: { total: amountFen, currency: creditPackage.currency } });
     try {
-      const response = await fetch(`https://api.mch.weixin.qq.com${path}`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: this.authorization(config, "POST", path, requestBody) }, body: requestBody });
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: this.authorization(config, "POST", path, requestBody),
+      };
+      if (config.verifierId.startsWith("PUB_KEY_ID_")) headers["Wechatpay-Serial"] = config.verifierId;
+      const response = await fetch(`https://api.mch.weixin.qq.com${path}`, { method: "POST", headers, body: requestBody });
       const raw = await response.text();
       const result = responseJson(raw);
       if (!response.ok || typeof result.code_url !== "string") throw new ServiceUnavailableException(`微信支付下单失败：${String(result.message || result.code || response.status)}`);
-      this.verifyWechatSignature(config, response.headers.get("wechatpay-timestamp"), response.headers.get("wechatpay-nonce"), response.headers.get("wechatpay-signature"), raw);
+      this.verifyWechatSignature(config, response.headers.get("wechatpay-timestamp"), response.headers.get("wechatpay-nonce"), response.headers.get("wechatpay-signature"), response.headers.get("wechatpay-serial"), raw);
       await this.database.execute("UPDATE payment_orders SET code_url = ? WHERE id = ?", [result.code_url, paymentId]);
       return { id: purchaseId, payment_order_id: paymentId, out_trade_no: outTradeNo, package_id: packageId, credits, amount_fen: amountFen, currency: creditPackage.currency, status: "CREATED", code_url: result.code_url, expires_at: expiresAt };
     } catch (error) {
@@ -215,7 +230,7 @@ export class CreditsService {
   async handleWechatNotification(headers: Record<string, string | string[] | undefined>, rawBody: string): Promise<{ code: "SUCCESS"; message: "成功" }> {
     const config = await this.wechatRuntime(false);
     const header = (name: string) => { const value = headers[name]; return Array.isArray(value) ? value[0] || null : value || null; };
-    this.verifyWechatSignature(config, header("wechatpay-timestamp"), header("wechatpay-nonce"), header("wechatpay-signature"), rawBody);
+    this.verifyWechatSignature(config, header("wechatpay-timestamp"), header("wechatpay-nonce"), header("wechatpay-signature"), header("wechatpay-serial"), rawBody);
     const envelope = JSON.parse(rawBody) as Record<string, unknown>;
     const notificationId = String(envelope.id || "");
     if (!notificationId) throw new BadRequestException("微信支付通知 ID 缺失");

@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
-import { json, Request } from "express";
+import { json, Request, text } from "express";
 import { AppModule } from "./app.module";
 import { setupApiDocs } from "./api-docs/setup-api-docs";
 import { EnvironmentService } from "./config/environment.service";
@@ -18,6 +18,8 @@ async function bootstrap(): Promise<void> {
     allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key"],
     credentials: false,
   });
+  // WeChat Official Account pushes signed XML events to the public callback.
+  app.use(text({ type: ["text/xml", "application/xml"], limit: "1mb" }));
   app.use(json({
     // Desktop media tasks may contain local reference images encoded as data URLs.
     limit: "120mb",

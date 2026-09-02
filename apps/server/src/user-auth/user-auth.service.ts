@@ -10,6 +10,7 @@ import { UserPrincipal } from "./user-auth.types";
 import { RegistrationVerificationService } from "./registration-verification.service";
 import { normalizedEmail, validatePassword } from "./registration-validation";
 import { ReferralsService } from "../referrals/referrals.service";
+import { decryptWechatMessage, verifyWechatMessageSignature, xmlValue } from "./wechat-official-account";
 
 interface UserRow extends RowDataPacket {
   id: string;
@@ -25,14 +26,16 @@ interface UserRow extends RowDataPacket {
 }
 
 interface WechatConfigRow extends RowDataPacket {
-  open_platform_app_id: string;
-  open_platform_app_secret_ciphertext: string | null;
-  open_platform_redirect_uri: string;
+  app_id: string;
+  app_secret_ciphertext: string | null;
+  official_account_token_ciphertext: string | null;
+  official_account_encoding_aes_key_ciphertext: string | null;
   status: string;
 }
 
-interface WechatTokenResponse { access_token?: string; openid?: string; unionid?: string; errcode?: number; errmsg?: string }
-interface WechatUserResponse { openid?: string; unionid?: string; nickname?: string; headimgurl?: string; errcode?: number; errmsg?: string }
+interface WechatAccessTokenResponse { access_token?: string; expires_in?: number; errcode?: number; errmsg?: string }
+interface WechatQrTicketResponse { ticket?: string; expire_seconds?: number; url?: string; errcode?: number; errmsg?: string }
+interface WechatUserResponse { subscribe?: number; openid?: string; unionid?: string; nickname?: string; headimgurl?: string; errcode?: number; errmsg?: string }
 
 const phonePattern = /^\+?[1-9]\d{7,14}$/;
 
@@ -55,6 +58,8 @@ function duplicateError(error: unknown): never {
 
 @Injectable()
 export class UserAuthService {
+  private wechatAccessTokenCache: { credentialHash: string; value: string; expiresAt: number } | null = null;
+
   constructor(
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(EnvironmentService) private readonly environment: EnvironmentService,
@@ -219,16 +224,33 @@ export class UserAuthService {
     return this.profile(userId);
   }
 
-  private async wechatConfig(): Promise<{ appId: string; appSecret: string; redirectUri: string }> {
+  private async wechatConfig(): Promise<{ appId: string; appSecret: string; token: string; encodingAesKey: string | null }> {
     const rows = await this.database.query<WechatConfigRow[]>(
-      `SELECT open_platform_app_id, open_platform_app_secret_ciphertext, open_platform_redirect_uri, status
+      `SELECT app_id, app_secret_ciphertext, official_account_token_ciphertext,
+              official_account_encoding_aes_key_ciphertext, status
        FROM wechat_payment_configs LIMIT 1`,
     );
     const row = rows[0];
-    if (!row || row.status !== "ACTIVE" || !row.open_platform_app_id || !row.open_platform_app_secret_ciphertext || !row.open_platform_redirect_uri) {
-      throw new ServiceUnavailableException("微信开放平台扫码登录尚未配置");
+    if (!row || row.status !== "ACTIVE" || !row.app_id || !row.app_secret_ciphertext || !row.official_account_token_ciphertext) {
+      throw new ServiceUnavailableException("微信公众号扫码登录尚未完整配置");
     }
-    return { appId: row.open_platform_app_id, appSecret: this.secretCrypto.decrypt(row.open_platform_app_secret_ciphertext), redirectUri: row.open_platform_redirect_uri };
+    return {
+      appId: row.app_id,
+      appSecret: this.secretCrypto.decrypt(row.app_secret_ciphertext),
+      token: this.secretCrypto.decrypt(row.official_account_token_ciphertext),
+      encodingAesKey: row.official_account_encoding_aes_key_ciphertext ? this.secretCrypto.decrypt(row.official_account_encoding_aes_key_ciphertext) : null,
+    };
+  }
+
+  private async wechatAccessToken(config: { appId: string; appSecret: string }): Promise<string> {
+    const credentialHash = tokenHash(`${config.appId}\0${config.appSecret}`);
+    if (this.wechatAccessTokenCache?.credentialHash === credentialHash && this.wechatAccessTokenCache.expiresAt > Date.now()) return this.wechatAccessTokenCache.value;
+    const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
+    url.searchParams.set("grant_type", "client_credential"); url.searchParams.set("appid", config.appId); url.searchParams.set("secret", config.appSecret);
+    const result = await fetch(url, { signal: AbortSignal.timeout(10_000) }).then((response) => response.json() as Promise<WechatAccessTokenResponse>);
+    if (!result.access_token) throw new ServiceUnavailableException(`获取公众号 access_token 失败：${result.errmsg || result.errcode || "未知错误"}`);
+    this.wechatAccessTokenCache = { credentialHash, value: result.access_token, expiresAt: Date.now() + Math.max(60, Number(result.expires_in || 7200) - 300) * 1000 };
+    return result.access_token;
   }
 
   async createWechatQrSession(inviteCode?: string): Promise<Record<string, unknown>> {
@@ -236,43 +258,68 @@ export class UserAuthService {
     const inviterId = inviteCode ? await this.referrals.inviter(inviteCode) : null;
     const state = randomBytes(24).toString("base64url");
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const accessToken = await this.wechatAccessToken(config);
+    const qrUrl = new URL("https://api.weixin.qq.com/cgi-bin/qrcode/create");
+    qrUrl.searchParams.set("access_token", accessToken);
+    const qrResponse = await fetch(qrUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal: AbortSignal.timeout(10_000),
+      body: JSON.stringify({ expire_seconds: 300, action_name: "QR_STR_SCENE", action_info: { scene: { scene_str: state } } }),
+    }).then((response) => response.json() as Promise<WechatQrTicketResponse>);
+    if (!qrResponse.ticket || !qrResponse.url) throw new ServiceUnavailableException(`生成公众号带参二维码失败：${qrResponse.errmsg || qrResponse.errcode || "未知错误"}`);
     await this.database.execute(
       "INSERT INTO wechat_auth_sessions (id, state_hash, expires_at, inviter_id) VALUES (?, ?, ?, ?)",
       [randomUUID(), tokenHash(state), expiresAt, inviterId],
     );
-    const url = new URL("https://open.weixin.qq.com/connect/qrconnect");
-    url.searchParams.set("appid", config.appId);
-    url.searchParams.set("redirect_uri", config.redirectUri);
-    url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", "snsapi_login");
-    url.searchParams.set("state", state);
-    return { state, login_url: `${url.toString()}#wechat_redirect`, expires_at: expiresAt };
+    return { state, login_url: qrResponse.url, expires_at: expiresAt, requires_follow: true };
   }
 
-  async completeWechatLogin(code: string, state: string): Promise<{ success: true }> {
-    if (!code?.trim() || !state?.trim()) throw new BadRequestException("微信登录回调缺少 code 或 state");
-    const stateHash = tokenHash(state);
-    const sessions = await this.database.query<RowDataPacket[]>(
-      `SELECT id, status FROM wechat_auth_sessions WHERE state_hash = ? AND expires_at > CURRENT_TIMESTAMP(3) LIMIT 1`,
-      [stateHash],
-    );
-    const session = sessions[0];
-    if (!session || session.status !== "PENDING") throw new BadRequestException("微信登录会话无效或已过期");
+  async verifyOfficialAccountServer(signature: string, timestamp: string, nonce: string, echo: string, messageSignature?: string, encrypted = false): Promise<string> {
     const config = await this.wechatConfig();
-    const tokenUrl = new URL("https://api.weixin.qq.com/sns/oauth2/access_token");
-    tokenUrl.searchParams.set("appid", config.appId); tokenUrl.searchParams.set("secret", config.appSecret);
-    tokenUrl.searchParams.set("code", code); tokenUrl.searchParams.set("grant_type", "authorization_code");
-    const tokenResponse = await fetch(tokenUrl).then((response) => response.json() as Promise<WechatTokenResponse>);
-    if (!tokenResponse.access_token || !tokenResponse.openid) throw new UnauthorizedException(`微信授权失败：${tokenResponse.errmsg || tokenResponse.errcode || "未知错误"}`);
-    const userUrl = new URL("https://api.weixin.qq.com/sns/userinfo");
-    userUrl.searchParams.set("access_token", tokenResponse.access_token); userUrl.searchParams.set("openid", tokenResponse.openid); userUrl.searchParams.set("lang", "zh_CN");
-    const wechatUser = await fetch(userUrl).then((response) => response.json() as Promise<WechatUserResponse>);
-    if (!wechatUser.openid) throw new UnauthorizedException(`读取微信用户资料失败：${wechatUser.errmsg || wechatUser.errcode || "未知错误"}`);
-    const wechatOpenId = wechatUser.openid;
+    if (encrypted) {
+      if (!config.encodingAesKey) throw new ServiceUnavailableException("公众号 EncodingAESKey 尚未配置");
+      verifyWechatMessageSignature(config.token, timestamp, nonce, messageSignature || "", echo);
+      return decryptWechatMessage(echo, config.encodingAesKey, config.appId);
+    }
+    verifyWechatMessageSignature(config.token, timestamp, nonce, signature);
+    return echo;
+  }
+
+  async handleOfficialAccountEvent(input: { signature: string; timestamp: string; nonce: string; messageSignature?: string; encrypted?: boolean; body: string }): Promise<"success"> {
+    const config = await this.wechatConfig();
+    let xml = input.body;
+    if (input.encrypted) {
+      const encrypted = xmlValue(xml, "Encrypt");
+      if (!encrypted || !config.encodingAesKey) throw new BadRequestException("公众号加密事件缺少 Encrypt 或 EncodingAESKey");
+      verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.messageSignature || "", encrypted);
+      xml = decryptWechatMessage(encrypted, config.encodingAesKey, config.appId);
+    } else verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.signature);
+    if (xmlValue(xml, "MsgType").toLowerCase() !== "event") return "success";
+    const event = xmlValue(xml, "Event").toUpperCase();
+    if (event !== "SUBSCRIBE" && event !== "SCAN") return "success";
+    const rawEventKey = xmlValue(xml, "EventKey");
+    const state = rawEventKey.startsWith("qrscene_") ? rawEventKey.slice("qrscene_".length) : rawEventKey;
+    const wechatOpenId = xmlValue(xml, "FromUserName");
+    if (!state || !wechatOpenId) return "success";
+    const sessions = await this.database.query<RowDataPacket[]>(
+      `SELECT id, status FROM wechat_auth_sessions WHERE state_hash = ? AND expires_at > CURRENT_TIMESTAMP(3) LIMIT 1`, [tokenHash(state)]);
+    const session = sessions[0];
+    if (!session || session.status === "COMPLETED") return "success";
+    if (session.status !== "PENDING") return "success";
+    let wechatUser: WechatUserResponse = { openid: wechatOpenId };
+    try {
+      const accessToken = await this.wechatAccessToken(config);
+      const userUrl = new URL("https://api.weixin.qq.com/cgi-bin/user/info");
+      userUrl.searchParams.set("access_token", accessToken); userUrl.searchParams.set("openid", wechatOpenId); userUrl.searchParams.set("lang", "zh_CN");
+      const result = await fetch(userUrl, { signal: AbortSignal.timeout(10_000) }).then((response) => response.json() as Promise<WechatUserResponse>);
+      if (result.openid) wechatUser = result;
+    } catch { /* Profile permission/network failure must not prevent OpenID login. */ }
     await this.database.transaction(async (connection) => {
       const [lockedSessions] = await connection.query<RowDataPacket[]>("SELECT id, status, inviter_id FROM wechat_auth_sessions WHERE id = ? AND expires_at > CURRENT_TIMESTAMP(3) FOR UPDATE", [session.id]);
-      if (lockedSessions[0]?.status !== "PENDING") throw new BadRequestException("微信登录会话已完成或过期");
-      const [identityRows] = await connection.query<RowDataPacket[]>("SELECT user_id FROM user_external_identities WHERE provider = 'WECHAT' AND provider_user_id = ? LIMIT 1 FOR UPDATE", [wechatOpenId]);
+      if (lockedSessions[0]?.status !== "PENDING") return;
+      let [identityRows] = await connection.query<RowDataPacket[]>("SELECT id, user_id FROM user_external_identities WHERE provider = 'WECHAT' AND provider_user_id = ? LIMIT 1 FOR UPDATE", [wechatOpenId]);
+      if (!identityRows.length && wechatUser.unionid) {
+        [identityRows] = await connection.query<RowDataPacket[]>("SELECT id, user_id FROM user_external_identities WHERE provider = 'WECHAT' AND union_id = ? LIMIT 1 FOR UPDATE", [wechatUser.unionid]);
+      }
       let userId = identityRows.length ? String(identityRows[0]!.user_id) : "";
       if (!userId) {
         userId = randomUUID();
@@ -282,13 +329,19 @@ export class UserAuthService {
         await connection.execute(
           `INSERT INTO user_external_identities (id, user_id, provider, provider_user_id, union_id, display_name_snapshot, avatar_url_snapshot)
            VALUES (?, ?, 'WECHAT', ?, ?, ?, ?)`,
-          [randomUUID(), userId, wechatOpenId, wechatUser.unionid || tokenResponse.unionid || null, wechatUser.nickname || "", wechatUser.headimgurl || null],
+          [randomUUID(), userId, wechatOpenId, wechatUser.unionid || null, wechatUser.nickname || "", wechatUser.headimgurl || null],
+        );
+      } else {
+        await connection.execute(
+          `UPDATE user_external_identities SET provider_user_id = ?, union_id = COALESCE(?, union_id),
+                  display_name_snapshot = ?, avatar_url_snapshot = ? WHERE id = ?`,
+          [wechatOpenId, wechatUser.unionid || null, wechatUser.nickname || "", wechatUser.headimgurl || null, identityRows[0]!.id],
         );
       }
       await connection.execute("UPDATE users SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId]);
       await connection.execute("UPDATE wechat_auth_sessions SET user_id = ?, status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId, session.id]);
     });
-    return { success: true };
+    return "success";
   }
 
   async pollWechatSession(state: string, deviceName = ""): Promise<Record<string, unknown>> {

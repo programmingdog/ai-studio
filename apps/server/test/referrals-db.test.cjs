@@ -185,7 +185,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
     });
     await t.test('real signature/decryption callback uses payer_total excluding coupon; duplicate notifications are harmless', async () => {
       const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-      const runtime = { merchantId: 'test-merchant', appId: 'test-app', platformCertificate: publicKey.export({ type: 'spki', format: 'pem' }), apiV3Key: '12345678901234567890123456789012' };
+      const runtime = { merchantId: 'test-merchant', appId: 'test-app', verifierKey: publicKey.export({ type: 'spki', format: 'pem' }), verifierId: 'PUB_KEY_ID_TEST', apiV3Key: '12345678901234567890123456789012' };
       const credits = new CreditsService(db, crypto, service);
       credits.wechatRuntime = async () => runtime; // Only merchant config replaced, actual RSA/AES code runs.
       const signed = (purchase, overrides = {}, notificationId = randomUUID()) => {
@@ -196,7 +196,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
         const body = JSON.stringify({ id: notificationId, resource: { algorithm: 'AEAD_AES_256_GCM', ciphertext, nonce, associated_data: aad } });
         const timestamp = String(Math.floor(Date.now() / 1000)), headerNonce = randomUUID();
         const signature = createSign('RSA-SHA256').update(`${timestamp}\n${headerNonce}\n${body}\n`).sign(privateKey, 'base64');
-        return [{ 'wechatpay-timestamp': timestamp, 'wechatpay-nonce': headerNonce, 'wechatpay-signature': signature }, body];
+        return [{ 'wechatpay-timestamp': timestamp, 'wechatpay-nonce': headerNonce, 'wechatpay-signature': signature, 'wechatpay-serial': runtime.verifierId }, body];
       };
       const purchase = await order(); const payload = signed(purchase);
       await assert.rejects(credits.handleWechatNotification(payload[0], payload[1] + ' '), /签名/);
