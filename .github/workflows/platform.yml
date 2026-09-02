@@ -140,7 +140,10 @@ jobs:
       ((github.event_name == 'workflow_dispatch' && inputs.deploy) ||
        (github.event_name == 'push' && vars.ENABLE_AUTODEPLOY == 'true'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Pulling from GHCR and backing up a production DB can exceed 20 minutes,
+    # especially from a CentOS host in mainland China. The remote script still
+    # has its own bounded health wait and an exclusive deployment lock.
+    timeout-minutes: 60
     environment: production
     concurrency:
       group: aivs-production
@@ -176,7 +179,7 @@ jobs:
           sshdir=$(mktemp -d "$RUNNER_TEMP/aivs-ssh.XXXXXX")
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$sshdir/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$sshdir/known_hosts"
-          opts=(-i "$sshdir/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$sshdir/known_hosts" -o ConnectTimeout=15)
+          opts=(-i "$sshdir/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$sshdir/known_hosts" -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes)
           ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/aivs/incoming/$RELEASE"
           scp "${opts[@]}" -P "$DEPLOY_PORT" deploy/compose.yml deploy/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:/opt/aivs/incoming/$RELEASE/"
           ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \

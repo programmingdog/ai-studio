@@ -4,6 +4,7 @@ umask 077
 readonly root=/opt/aivs
 readonly releases="$root/releases"
 fail() { echo "$*" >&2; exit 1; }
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 valid_release() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$ ]]; }
 valid_image() { [[ "$1" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; }
 compose() { docker compose --project-name aivs --env-file "$1/release.env" -f "$1/compose.yml" "${@:2}"; }
@@ -61,7 +62,9 @@ cp "$source_dir/compose.yml" "$source_dir/deploy.sh" "$release/"
 printf 'API_IMAGE=%s\nADMIN_IMAGE=%s\n' "$2" "$3" > "$release/release.env"
 # Validate and pull BEFORE stopping the running version.
 compose "$release" config --quiet
+log "Pulling immutable API and admin images; the running release is still untouched."
 compose "$release" pull api admin
+log "Images downloaded and verified."
 phase=prepared
 recover() {
   local status=$?
@@ -79,7 +82,11 @@ recover() {
   exit "$status"
 }
 trap recover EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 phase=stopped
+log "Stopping the current application for the maintenance window."
 if [[ -n "$previous" ]]; then
   compose "$previous" stop api admin
 else
@@ -87,13 +94,18 @@ else
   compose "$release" stop api admin
 fi
 "$root/shared/backup.sh"
+log "Pre-deployment database backup completed."
 phase=migrating
+log "Applying idempotent schema migrations to the existing database."
 compose "$release" run --rm --no-deps -T api node dist/database/migrate.js 2>&1 | tee "$release/migration.log"
+log "Schema migration command completed; backfilling only missing invite codes."
 compose "$release" run --rm --no-deps -T api node dist/scripts/backfill-invite-codes.js
 phase=starting
+log "Starting the new release and waiting up to 180 seconds for health checks."
 compose "$release" up -d --wait --wait-timeout 180 api admin
 touch "$release/healthy"
 [[ -z "$previous" ]] || point_to previous "$previous"
 point_to current "$release"
 phase=complete
+trap - HUP INT TERM
 echo "Deployment healthy: $1. Verify HTTPS and business flows before announcing release."

@@ -638,6 +638,7 @@ ls -lh /opt/aivs/backups/
 | 备份失败 | 修复 backup.cnf，不能跳过备份 |
 | 迁移失败 | 服务会保持停止；查看 migration.log，不要删除 schema_migrations |
 | 新镜像不健康 | 先确认数据库结构，不要直接启动旧代码 |
+| deploy 在约 20 分钟显示 `The operation was canceled` | 旧工作流超时；不要直接重跑。先检查服务器最新 release、migration.log、备份和容器状态，再提交包含 60 分钟超时的新工作流 |
 
 MySQL 的部分 `ALTER TABLE` 会隐式提交，迁移失败不代表表结构一定自动恢复。
 
