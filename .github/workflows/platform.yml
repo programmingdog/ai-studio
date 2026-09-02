@@ -143,7 +143,7 @@ jobs:
     # Pulling from GHCR and backing up a production DB can exceed 20 minutes,
     # especially from a CentOS host in mainland China. The remote script still
     # has its own bounded health wait and an exclusive deployment lock.
-    timeout-minutes: 60
+    timeout-minutes: 120
     environment: production
     concurrency:
       group: aivs-production
