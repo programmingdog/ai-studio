@@ -8,4 +8,9 @@ export const platformApiBaseUrl = (
   || (import.meta.env.PROD ? PRODUCTION_API_BASE_URL : DEVELOPMENT_API_BASE_URL)
 ).replace(/\/+$/, "");
 
-export const platformApiEnvironment = import.meta.env.PROD ? "production" : "development";
+const platformApiHostname = new URL(platformApiBaseUrl).hostname;
+const isLocalPlatformApi = platformApiHostname === "localhost" || platformApiHostname === "127.0.0.1";
+
+export const platformApiEnvironment = import.meta.env.PROD
+  ? "production"
+  : isLocalPlatformApi ? "development" : "remote-development";

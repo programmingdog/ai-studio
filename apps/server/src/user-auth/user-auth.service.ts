@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { compare, hash } from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import jwt, { SignOptions } from "jsonwebtoken";
@@ -58,6 +58,7 @@ function duplicateError(error: unknown): never {
 
 @Injectable()
 export class UserAuthService {
+  private readonly logger = new Logger(UserAuthService.name);
   private wechatAccessTokenCache: { credentialHash: string; value: string; expiresAt: number } | null = null;
 
   constructor(
@@ -287,24 +288,39 @@ export class UserAuthService {
   async handleOfficialAccountEvent(input: { signature: string; timestamp: string; nonce: string; messageSignature?: string; encrypted?: boolean; body: string }): Promise<"success"> {
     const config = await this.wechatConfig();
     let xml = input.body;
-    if (input.encrypted) {
-      const encrypted = xmlValue(xml, "Encrypt");
-      if (!encrypted || !config.encodingAesKey) throw new BadRequestException("公众号加密事件缺少 Encrypt 或 EncodingAESKey");
-      verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.messageSignature || "", encrypted);
-      xml = decryptWechatMessage(encrypted, config.encodingAesKey, config.appId);
-    } else verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.signature);
+    try {
+      if (input.encrypted) {
+        const encrypted = xmlValue(xml, "Encrypt");
+        if (!encrypted || !config.encodingAesKey) throw new BadRequestException("公众号加密事件缺少 Encrypt 或 EncodingAESKey");
+        verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.messageSignature || "", encrypted);
+        xml = decryptWechatMessage(encrypted, config.encodingAesKey, config.appId);
+      } else verifyWechatMessageSignature(config.token, input.timestamp, input.nonce, input.signature);
+    } catch (error) {
+      this.logger.warn(`Rejected WeChat official-account event: ${error instanceof Error ? error.message : "verification failed"}`);
+      throw error;
+    }
     if (xmlValue(xml, "MsgType").toLowerCase() !== "event") return "success";
     const event = xmlValue(xml, "Event").toUpperCase();
     if (event !== "SUBSCRIBE" && event !== "SCAN") return "success";
+    this.logger.log(`Received WeChat official-account ${event} event (${input.encrypted ? "encrypted" : "plaintext"})`);
     const rawEventKey = xmlValue(xml, "EventKey");
     const state = rawEventKey.startsWith("qrscene_") ? rawEventKey.slice("qrscene_".length) : rawEventKey;
     const wechatOpenId = xmlValue(xml, "FromUserName");
-    if (!state || !wechatOpenId) return "success";
+    if (!state || !wechatOpenId) {
+      this.logger.warn(`Ignored WeChat ${event} event without ${!state ? "scene" : "sender"}`);
+      return "success";
+    }
     const sessions = await this.database.query<RowDataPacket[]>(
-      `SELECT id, status FROM wechat_auth_sessions WHERE state_hash = ? AND expires_at > CURRENT_TIMESTAMP(3) LIMIT 1`, [tokenHash(state)]);
+      `SELECT id, status FROM wechat_auth_sessions WHERE state_hash = ? AND expires_at > ? LIMIT 1`, [tokenHash(state), new Date()]);
     const session = sessions[0];
-    if (!session || session.status === "COMPLETED") return "success";
-    if (session.status !== "PENDING") return "success";
+    if (!session) {
+      this.logger.warn(`No unexpired WeChat QR session matched the ${event} event`);
+      return "success";
+    }
+    if (session.status !== "PENDING") {
+      this.logger.log(`Ignored WeChat ${event} event for session ${session.id} in status ${session.status}`);
+      return "success";
+    }
     let wechatUser: WechatUserResponse = { openid: wechatOpenId };
     try {
       const accessToken = await this.wechatAccessToken(config);
@@ -312,9 +328,9 @@ export class UserAuthService {
       userUrl.searchParams.set("access_token", accessToken); userUrl.searchParams.set("openid", wechatOpenId); userUrl.searchParams.set("lang", "zh_CN");
       const result = await fetch(userUrl, { signal: AbortSignal.timeout(10_000) }).then((response) => response.json() as Promise<WechatUserResponse>);
       if (result.openid) wechatUser = result;
-    } catch { /* Profile permission/network failure must not prevent OpenID login. */ }
+    } catch { this.logger.warn("Could not load WeChat profile; continuing with OpenID-only login"); }
     await this.database.transaction(async (connection) => {
-      const [lockedSessions] = await connection.query<RowDataPacket[]>("SELECT id, status, inviter_id FROM wechat_auth_sessions WHERE id = ? AND expires_at > CURRENT_TIMESTAMP(3) FOR UPDATE", [session.id]);
+      const [lockedSessions] = await connection.query<RowDataPacket[]>("SELECT id, status, inviter_id FROM wechat_auth_sessions WHERE id = ? AND expires_at > ? FOR UPDATE", [session.id, new Date()]);
       if (lockedSessions[0]?.status !== "PENDING") return;
       let [identityRows] = await connection.query<RowDataPacket[]>("SELECT id, user_id FROM user_external_identities WHERE provider = 'WECHAT' AND provider_user_id = ? LIMIT 1 FOR UPDATE", [wechatOpenId]);
       if (!identityRows.length && wechatUser.unionid) {
@@ -341,6 +357,7 @@ export class UserAuthService {
       await connection.execute("UPDATE users SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId]);
       await connection.execute("UPDATE wechat_auth_sessions SET user_id = ?, status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId, session.id]);
     });
+    this.logger.log(`Completed WeChat QR login session ${session.id} via ${event}`);
     return "success";
   }
 

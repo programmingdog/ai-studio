@@ -273,7 +273,7 @@ JWT_EXPIRES_IN=8h
 CREDENTIAL_ENCRYPTION_KEY=现有系统使用的原始加密密钥
 
 ADMIN_ORIGIN=https://ai-studio.yuntianxing.net
-CLIENT_ORIGINS=tauri://localhost,http://tauri.localhost,https://tauri.localhost
+CLIENT_ORIGINS=http://localhost:1420,http://127.0.0.1:1420,tauri://localhost,http://tauri.localhost,https://tauri.localhost
 MAIL_API_TIMEOUT_MS=30000
 ```
 

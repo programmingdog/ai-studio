@@ -84,6 +84,9 @@ for (const event of [{ name: '未关注用户 subscribe', type: 'subscribe', pre
     } finally { global.fetch = originalFetch; }
     const expectedHash = createHash('sha256').update(state).digest('hex');
     assert.ok(queried.some(([, params]) => params?.includes(expectedHash)), 'event scene must select the matching login session');
+    const sessionQueries = queried.filter(([sql]) => sql.includes('wechat_auth_sessions'));
+    assert.ok(sessionQueries.every(([sql]) => !sql.includes('CURRENT_TIMESTAMP')), 'session expiry must not depend on the MySQL server timezone');
+    assert.ok(sessionQueries.every(([, params]) => params?.some(value => value instanceof Date)), 'session expiry queries must compare against an explicit UTC-safe Date');
     assert.ok(executed.some(([sql]) => sql.includes("status = 'COMPLETED'")), 'event must complete the login session');
   });
 }
