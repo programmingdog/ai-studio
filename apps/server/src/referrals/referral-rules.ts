@@ -1,6 +1,9 @@
 import { BadRequestException } from "@nestjs/common";
 import { randomInt } from "node:crypto";
 
+const MAX_RECEIPT_IMAGE_BYTES = 2 * 1024 * 1024;
+const MAX_RECEIPT_DATA_URL_LENGTH = Math.ceil(MAX_RECEIPT_IMAGE_BYTES / 3) * 4 + 32;
+
 export function generateInviteCode(): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   for (;;) {
@@ -37,11 +40,11 @@ export function publicUrl(value: unknown, name: string, maxLength = 1000): strin
   return result;
 }
 export function receiptImage(value: unknown): string {
-  if (typeof value !== "string" || value.length > 360000) throw new BadRequestException("收款码须为不超过 256KB 的 PNG/JPEG 图片");
+  if (typeof value !== "string" || value.length > MAX_RECEIPT_DATA_URL_LENGTH) throw new BadRequestException("收款码须为不超过 2MB 的 PNG/JPEG 图片");
   const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
   if (!match) throw new BadRequestException("只支持 PNG/JPEG 收款码，不接受链接或 SVG");
   const bytes = Buffer.from(match[2]!, "base64");
   const valid = match[1] === "png" ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-  if (!valid || bytes.length > 262144 || bytes.length < 20 || bytes.toString("base64") !== match[2]) throw new BadRequestException("收款码图片无效或超过 256KB");
+  if (!valid || bytes.length > MAX_RECEIPT_IMAGE_BYTES || bytes.length < 20 || bytes.toString("base64") !== match[2]) throw new BadRequestException("收款码图片无效或超过 2MB");
   return value;
 }

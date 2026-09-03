@@ -15,6 +15,14 @@ export class ReferralsAdminController {
   @Patch("config")
   @RequirePermissions("configs.manage", "distribution.manage")
   save(@Req() req: AdminRequest, @Body() body: unknown) { return this.referrals.saveConfig(req.admin.sub, asRecord(body)); }
+  @Get("downloads")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  downloads() { return this.referrals.downloadConfig(); }
+  @Patch("downloads")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  saveDownloads(@Req() req: AdminRequest, @Body() body: unknown) { return this.referrals.saveDownloadConfig(req.admin.sub, asRecord(body)); }
   @Get("records/:kind")
   @RequirePermissions("distribution.manage")
   @Header("Cache-Control", "no-store")

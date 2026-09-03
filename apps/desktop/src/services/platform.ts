@@ -54,6 +54,18 @@ export interface PlatformConsumption {
   model_code: string | null; category: string; credits_consumed: number; status: string; description: string; occurred_at: string;
 }
 export interface WechatQrSession { state: string; login_url: string; expires_at: string; status?: string; requires_follow?: boolean }
+export interface ClientAuthMethods {
+  email_enabled: boolean;
+  phone_otp_enabled: boolean;
+  phone_otp_available: boolean;
+  wechat_enabled: boolean;
+}
+export interface ClientProductBrand {
+  chinese_name: string;
+  english_name: string;
+  revision: number;
+  updated_at?: string;
+}
 export interface CatalogCategory { id: string; code: string; name: string; description: string; sort_order: number }
 export interface PlatformMediaResolutionPrice { resolution: string; credit_cost: number; label?: string }
 export interface PlatformMediaModel {
@@ -172,6 +184,8 @@ async function acceptToken(result: PlatformTokenResult): Promise<PlatformTokenRe
 
 export interface RegistrationCaptcha { captcha_id: string; image_data_url: string; expires_in: number }
 export const checkRegistrationEmail = (email: string) => publicRequest<{ email: string; registered: boolean }>("/auth/email/status", { method: "POST", body: JSON.stringify({ email }) });
+export const getClientAuthMethods = () => publicRequest<ClientAuthMethods>("/client-config/auth-methods");
+export const getClientProductBrand = () => publicRequest<ClientProductBrand>("/client-config/product-brand");
 export interface RegistrationCaptchaVerification { captcha_token: string; expires_in: number }
 export interface RegistrationEmailCodeResult { sent: boolean; expires_in: number; retry_after_seconds: number }
 export const createRegistrationCaptcha = (email: string) => publicRequest<RegistrationCaptcha>("/auth/register/email/captcha", { method: "POST", body: JSON.stringify({ email }) });
@@ -211,11 +225,12 @@ export const createWechatQrSession = (invite_code?: string) => publicRequest<Wec
 
 export interface ReferralSummary {
   invite_code: string; invitation_url: string; invited_count: number; reward_credits: number; invitation_reward_credits: number;
+  invitation_anti_abuse_enabled: boolean;
   enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number;
   available_fen: number; frozen_fen: number; earned_fen: number; paid_fen: number;
   withdrawal_open: boolean; timezone: string; server_time: string; next_open_at: string;
 }
-export interface ReferralRecord { id: string; amount_fen?: number | string; base_amount_fen?: number | string; rate_bps?: number; level?: number; status?: string; review_note?: string; created_at: string; paid_at?: string; credits?: number; payer_id?: string; invited_user_id?: string; alipay_trade_no?: string }
+export interface ReferralRecord { id: string; amount_fen?: number | string; base_amount_fen?: number | string; rate_bps?: number; level?: number; status?: string; status_note?: string; review_note?: string; created_at: string; paid_at?: string; credits?: number; payer_id?: string; invited_user_id?: string; alipay_trade_no?: string }
 export interface ReferralPage { items: ReferralRecord[]; page: number; has_more: boolean }
 export const getReferralSummary = () => authenticatedRequest<ReferralSummary>("/referrals/me");
 export const getReferralRecords = (kind: string, page = 1) => authenticatedRequest<ReferralPage>(`/referrals/me/${encodeURIComponent(kind)}?page=${page}`);

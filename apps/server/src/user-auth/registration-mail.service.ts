@@ -6,6 +6,7 @@ import { MailConfigService, validateMailApiUrl, validateSmtpSettings, type MailD
 import nodemailer from "nodemailer";
 import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import { MailDeliveryUnconfirmedException } from "./mail-delivery-unconfirmed.exception";
+import { ProductBrandConfigService } from "../common/product-brand-config.service";
 
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
@@ -25,6 +26,7 @@ export class RegistrationMailService {
   constructor(
     @Inject(EnvironmentService) private readonly environment: EnvironmentService,
     @Inject(MailConfigService) private readonly mailConfig: MailConfigService,
+    @Inject(ProductBrandConfigService) private readonly productBrand: ProductBrandConfigService,
   ) {}
 
   private async config() {
@@ -46,9 +48,10 @@ export class RegistrationMailService {
   async sendCode(email: string, code: string): Promise<void> {
     const recipient = normalizedEmail(email);
     const config = await this.config();
-    const subject = "AI Video Studio 注册邮箱验证码";
-    const content = `您正在注册 AI Video Studio。\n\n邮箱验证码：${code}\n\n验证码 10 分钟内有效，仅可使用一次。重新发送后旧验证码失效。请勿向他人透露验证码。\n如果不是您本人操作，请忽略此邮件。`;
-    if (config.method === "SMTP") return this.sendSmtp(config, recipient, subject, content);
+    const brand = await this.productBrand.get();
+    const subject = `${brand.chinese_name} 注册邮箱验证码`;
+    const content = `您正在注册 ${brand.chinese_name}。\n\n邮箱验证码：${code}\n\n验证码 10 分钟内有效，仅可使用一次。重新发送后旧验证码失效。请勿向他人透露验证码。\n如果不是您本人操作，请忽略此邮件。`;
+    if (config.method === "SMTP") return this.sendSmtp(config, recipient, subject, content, brand.chinese_name);
     const diagnosticId = randomUUID(), started = Date.now();
     let httpStatus: number | null = null, responseShape = "unknown", reason = "TRANSPORT_ERROR", rejected = false;
     let outerStatus: boolean | null = null, innerStatus: boolean | null = null;
@@ -105,7 +108,7 @@ export class RegistrationMailService {
     }
   }
 
-  private async sendSmtp(config: Extract<MailDeliveryConfig, { method: "SMTP" }> & { timeoutMs: number }, recipient: string, subject: string, text: string): Promise<void> {
+  private async sendSmtp(config: Extract<MailDeliveryConfig, { method: "SMTP" }> & { timeoutMs: number }, recipient: string, subject: string, text: string, brandName: string): Promise<void> {
     const options: SMTPTransport.Options & { dnsTimeout: number } = {
       host: config.host, port: config.port,
       secure: config.security === "TLS",
@@ -120,7 +123,7 @@ export class RegistrationMailService {
     };
     const transport = nodemailer.createTransport(options);
     try {
-      const info = await transport.sendMail({ from: { name: "AI Video Studio", address: config.from }, to: recipient, envelope: { from: config.from, to: [recipient] }, subject, text });
+      const info = await transport.sendMail({ from: { name: brandName, address: config.from }, to: recipient, envelope: { from: config.from, to: [recipient] }, subject, text });
       if (!info.accepted?.some((value) => (typeof value === "string" ? value : value.address).toLowerCase() === recipient) || info.rejected?.length) throw Object.assign(new Error(), { code: "EENVELOPE" });
     } catch (error) {
       // No raw server response, credentials, or message contents are exposed/logged.

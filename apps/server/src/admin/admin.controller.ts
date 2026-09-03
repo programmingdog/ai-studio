@@ -3,7 +3,10 @@ import { AdminAuthGuard, AdminRequest } from "../auth/admin-auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { RequirePermissions } from "../auth/permissions.decorator";
 import { CatalogService, type CatalogKind } from "../catalog/catalog.service";
-import { asRecord, jsonValue, optionalString, requiredString } from "../common/input";
+import { asRecord, jsonValue, optionalString, requiredBoolean, requiredString } from "../common/input";
+import { AuthMethodConfigService } from "../common/auth-method-config.service";
+import { IpAccessControlService } from "../common/ip-access-control.service";
+import { ProductBrandConfigService } from "../common/product-brand-config.service";
 import { AdminService } from "./admin.service";
 import { CreditAdminService } from "./credit-admin.service";
 import { ModelTestService } from "./model-test.service";
@@ -26,6 +29,9 @@ export class AdminController {
     @Inject(CreditPricingService) private readonly creditPricing: CreditPricingService,
     @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
     @Inject(MailConfigService) private readonly mailConfig: MailConfigService,
+    @Inject(AuthMethodConfigService) private readonly authMethods: AuthMethodConfigService,
+    @Inject(IpAccessControlService) private readonly ipAccess: IpAccessControlService,
+    @Inject(ProductBrandConfigService) private readonly productBrand: ProductBrandConfigService,
   ) {}
 
   @Get("catalogs/:kind/categories")
@@ -80,7 +86,7 @@ export class AdminController {
 
   @Get("dashboard/overview")
   @RequirePermissions("dashboard.read")
-  overview(): Promise<Record<string, number>> {
+  overview(): Promise<Record<string, unknown>> {
     return this.admin.overview();
   }
 
@@ -135,6 +141,78 @@ export class AdminController {
   @RequirePermissions("payments.manage")
   getWechatPaymentConfig() {
     return this.wechatPaymentConfig.get();
+  }
+
+  @Get("configs/auth-methods")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  getAuthMethods() {
+    return this.authMethods.get();
+  }
+
+  @Patch("configs/auth-methods")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  updateAuthMethods(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.authMethods.update(request.admin.sub, {
+      emailEnabled: requiredBoolean(body, "email_enabled"),
+      phoneOtpEnabled: requiredBoolean(body, "phone_otp_enabled"),
+      wechatEnabled: requiredBoolean(body, "wechat_enabled"),
+    });
+  }
+
+  @Get("configs/product-brand")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  getProductBrand() {
+    return this.productBrand.get();
+  }
+
+  @Patch("configs/product-brand")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  updateProductBrand(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.productBrand.update(request.admin.sub, {
+      chineseName: requiredString(body, "chinese_name", 32),
+      englishName: requiredString(body, "english_name", 64),
+    });
+  }
+
+  @Get("configs/ip-access-rules")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  listIpAccessRules(@Req() request: AdminRequest) {
+    return this.ipAccess.list(request.ip || request.socket.remoteAddress);
+  }
+
+  @Post("configs/ip-access-rules")
+  @RequirePermissions("configs.manage")
+  createIpAccessRule(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.ipAccess.create(request.admin.sub, {
+      cidr: requiredString(body, "cidr", 64),
+      note: optionalString(body, "note", 200),
+      enabled: requiredBoolean(body, "enabled"),
+    }, request.ip || request.socket.remoteAddress);
+  }
+
+  @Patch("configs/ip-access-rules/:ruleId")
+  @RequirePermissions("configs.manage")
+  updateIpAccessRule(@Req() request: AdminRequest, @Param("ruleId") ruleId: string, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.ipAccess.update(request.admin.sub, ruleId, {
+      cidr: requiredString(body, "cidr", 64),
+      note: optionalString(body, "note", 200),
+      enabled: requiredBoolean(body, "enabled"),
+    }, request.ip || request.socket.remoteAddress);
+  }
+
+  @Delete("configs/ip-access-rules/:ruleId")
+  @RequirePermissions("configs.manage")
+  deleteIpAccessRule(@Req() request: AdminRequest, @Param("ruleId") ruleId: string) {
+    return this.ipAccess.remove(request.admin.sub, ruleId);
   }
 
   @Patch("configs/wechat-payment")

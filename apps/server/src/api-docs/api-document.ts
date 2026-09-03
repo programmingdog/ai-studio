@@ -52,6 +52,7 @@ function operation(input: {
       },
       "400": { description: "请求参数错误", content: { "application/json": { schema: ref("ErrorResponse") } } },
       ...(input.security ? { "401": { description: "未登录、令牌过期或会话已撤销", content: { "application/json": { schema: ref("ErrorResponse") } } } } : {}),
+      "403": { description: "权限不足，或当前 IP 已被全局风控规则拦截", content: { "application/json": { schema: ref("ErrorResponse") } } },
       "409": { description: "资源状态或幂等键冲突", content: { "application/json": { schema: ref("ErrorResponse") } } },
       "429": { description: "请求过于频繁，retry_after_seconds 表示等待秒数", content: { "application/json": { schema: ref("ErrorResponse") } } },
       "503": { description: "依赖服务尚未配置、失败或超时", content: { "application/json": { schema: ref("ErrorResponse") } } },
@@ -86,6 +87,72 @@ const schemas: Record<string, JsonSchema> = {
       },
       media_storage: { type: "string", example: "disabled" },
       timestamp: { type: "string", format: "date-time" },
+    },
+  },
+  ClientAuthMethods: {
+    type: "object",
+    required: ["email_enabled", "phone_otp_enabled", "phone_otp_available", "wechat_enabled"],
+    properties: {
+      email_enabled: { type: "boolean", description: "是否显示邮箱注册登录" },
+      phone_otp_enabled: { type: "boolean", description: "是否显示手机验证码注册登录" },
+      phone_otp_available: { type: "boolean", description: "服务端是否已接入短信服务" },
+      wechat_enabled: { type: "boolean", description: "是否显示微信公众号扫码注册登录" },
+    },
+  },
+  ProductBrand: {
+    type: "object",
+    required: ["chinese_name", "english_name", "revision"],
+    properties: {
+      chinese_name: { type: "string", maxLength: 32, example: "影匠" },
+      english_name: { type: "string", maxLength: 64, example: "Yingjiang" },
+      revision: { type: "integer", minimum: 0 },
+      updated_at: { type: "string", format: "date-time" },
+    },
+  },
+  ProductBrandRequest: {
+    type: "object",
+    required: ["chinese_name", "english_name"],
+    properties: {
+      chinese_name: { type: "string", minLength: 1, maxLength: 32, example: "影匠" },
+      english_name: { type: "string", minLength: 1, maxLength: 64, example: "Yingjiang" },
+    },
+  },
+  DashboardOverview: {
+    type: "object",
+    required: ["users", "new_users_30d", "active_tasks", "paid_orders", "revenue_fen", "invitations", "commissions", "withdrawals", "payouts", "revenue_trend", "user_growth_trend", "recent", "generated_at"],
+    properties: {
+      users: { type: "integer" }, new_users_30d: { type: "integer" }, active_tasks: { type: "integer" }, paid_orders: { type: "integer" }, revenue_fen: { type: "integer", description: "累计实收金额，单位分" },
+      invitations: { type: "object", additionalProperties: { type: "integer" }, description: "邀请总量、近30天、待首购、已奖励、受限与奖励积分汇总" },
+      commissions: { type: "object", additionalProperties: { type: "integer" }, description: "分润笔数、各层级金额、近30天、可用及冻结金额汇总，金额单位分" },
+      withdrawals: { type: "object", additionalProperties: { type: "integer" }, description: "提现各状态数量及申请、待处理金额汇总，金额单位分" },
+      payouts: { type: "object", additionalProperties: { type: "integer" }, description: "打款累计与近30天笔数、金额汇总，金额单位分" },
+      revenue_trend: { type: "array", minItems: 30, maxItems: 30, items: { type: "object", required: ["date", "revenue_fen", "paid_orders"], properties: { date: { type: "string", format: "date" }, revenue_fen: { type: "integer" }, paid_orders: { type: "integer" } } } },
+      user_growth_trend: { type: "array", minItems: 30, maxItems: 30, items: { type: "object", required: ["date", "new_users", "total_users"], properties: { date: { type: "string", format: "date" }, new_users: { type: "integer" }, total_users: { type: "integer" } } } },
+      recent: { type: "object", description: "邀请、分润、提现与打款各最近3条记录", additionalProperties: { type: "array", items: { type: "object", additionalProperties: true } } },
+      generated_at: { type: "string", format: "date-time" },
+    },
+  },
+  IpAccessRule: {
+    type: "object",
+    required: ["id", "cidr", "address_family", "prefix_length", "note", "enabled", "created_at", "updated_at"],
+    properties: {
+      id: { type: "string", format: "uuid" },
+      cidr: { type: "string", example: "203.0.113.0/24" },
+      address_family: { type: "integer", enum: [4, 6] },
+      prefix_length: { type: "integer", minimum: 0, maximum: 128 },
+      note: { type: "string", maxLength: 200 },
+      enabled: { type: "boolean" },
+      created_at: { type: "string", format: "date-time" },
+      updated_at: { type: "string", format: "date-time" },
+    },
+  },
+  IpAccessRuleRequest: {
+    type: "object",
+    required: ["cidr", "enabled"],
+    properties: {
+      cidr: { type: "string", maxLength: 64, description: "单个 IPv4/IPv6 地址或 CIDR 网段" },
+      note: { type: "string", maxLength: 200 },
+      enabled: { type: "boolean" },
     },
   },
   User: {
@@ -131,21 +198,34 @@ const schemas: Record<string, JsonSchema> = {
     },
   },
   DistributionConfig: {
-    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "minimum_withdrawal_fen", "invitation_reward_credits", "invite_page_base_url", "windows_download_url", "macos_download_url", "revision"],
+    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "minimum_withdrawal_fen", "invitation_reward_credits", "invitation_anti_abuse_enabled", "invitation_daily_reward_limit", "invitation_monthly_reward_limit", "invite_page_base_url", "windows_download_url", "macos_download_url", "revision"],
     properties: {
       enabled: { type: "boolean", default: false },
       direct_rate_bps: { type: "integer", minimum: 0, maximum: 10000, description: "基点，1000=10%；与间接比例合计不超过10000" },
       indirect_rate_bps: { type: "integer", minimum: 0, maximum: 10000 },
       minimum_withdrawal_fen: { type: "integer", minimum: 1, maximum: 1000000000, default: 10000, description: "人民币分" },
       invitation_reward_credits: { type: "integer", minimum: 0, maximum: 100000, default: 20 },
+      invitation_anti_abuse_enabled: { type: "boolean", default: false, description: "开启后注册只创建待确认奖励，首笔真实支付后按日/月人数限额发放；关闭时注册成功立即发放" },
+      invitation_daily_reward_limit: { type: "integer", minimum: 1, maximum: 100000, default: 20 },
+      invitation_monthly_reward_limit: { type: "integer", minimum: 1, maximum: 1000000, default: 200 },
       invite_page_base_url: { type: "string", maxLength: 500, description: "公开邀请页基础地址，不带查询参数、片段或邀请码；生产须HTTPS" },
       windows_download_url: { type: "string", maxLength: 1000 }, macos_download_url: { type: "string", maxLength: 1000 },
       revision: { type: "integer", minimum: 0, description: "乐观锁版本；保存冲突时须重读，不能强制覆盖" },
     },
   },
+  SoftwareDownloadConfig: {
+    type: "object",
+    required: ["windows_download_url", "macos_download_url", "revision"],
+    properties: {
+      windows_download_url: { type: "string", maxLength: 1000, description: "Windows 安装包或下载页面的 HTTPS 地址" },
+      macos_download_url: { type: "string", maxLength: 1000, description: "macOS 安装包或下载页面的 HTTPS 地址" },
+      revision: { type: "integer", minimum: 0, description: "乐观锁版本" },
+      updated_at: { type: "string", format: "date-time" },
+    },
+  },
   ReferralSummary: {
     type: "object", properties: {
-      invite_code: { type: "string" }, invitation_url: { type: "string" }, invited_count: { type: "integer" }, reward_credits: { type: "integer" }, invitation_reward_credits: { type: "integer" },
+      invite_code: { type: "string" }, invitation_url: { type: "string" }, invited_count: { type: "integer" }, reward_credits: { type: "integer" }, invitation_reward_credits: { type: "integer" }, invitation_anti_abuse_enabled: { type: "boolean" },
       enabled: { type: "boolean" }, direct_rate_bps: { type: "integer" }, indirect_rate_bps: { type: "integer" }, minimum_withdrawal_fen: { type: "integer" },
       available_fen: { type: "integer" }, frozen_fen: { type: "integer" }, earned_fen: { type: "integer" }, paid_fen: { type: "integer" },
       withdrawal_open: { type: "boolean" }, timezone: { type: "string", example: "Asia/Shanghai" }, server_time: { type: "string", format: "date-time" }, next_open_at: { type: "string", format: "date-time" },
@@ -156,12 +236,12 @@ const schemas: Record<string, JsonSchema> = {
       amount_fen: { type: "integer", minimum: 1, maximum: 1000000000, description: "人民币分，须达到最低金额且不超过余额" },
       idempotency_key: { type: "string", pattern: "^[A-Za-z0-9_-]{16,64}$", description: "同用户同请求重试必须复用；资料变更须用新键" },
       alipay_real_name: { type: "string", maxLength: 100 }, alipay_account: { type: "string", maxLength: 191 },
-      alipay_qr_code: { type: "string", maxLength: 360000, description: "256KB以内PNG/JPEG的base64 data URL；不接受SVG/外部链接。资料加密保存。" },
+      alipay_qr_code: { type: "string", maxLength: 2796236, description: "2MB以内PNG/JPEG的base64 data URL；不接受SVG/外部链接。资料加密保存。" },
     },
   },
   ReferralRecordPage: {
     type: "object", properties: { items: { type: "array", items: { type: "object", additionalProperties: true } }, page: { type: "integer" }, has_more: { type: "boolean" } },
-    description: "每页最多50条。金额字段以分计（数据库BIGINT可能为字符串）；提现状态PENDING/APPROVED/PROCESSING/REJECTED/PAID。列表不包含收款实名、账号、收款码、密文或请求摘要。",
+    description: "每页最多50条。金额字段以分计（数据库BIGINT可能为字符串）；提现状态为PENDING/APPROVED/PROCESSING/REJECTED/PAID，邀请奖励状态为PENDING_PAYMENT/REWARDED/LIMITED。列表不包含收款实名、账号、收款码、密文或请求摘要。",
   },
   RegistrationCaptchaRequest: {
     type: "object", required: ["email"],
@@ -570,6 +650,12 @@ export function createApiDocument(): OpenAPIObject {
     "/client-config/bootstrap": {
       get: operation({ id: "clientBootstrap", tag: "客户端配置", summary: "读取客户端引导配置" }),
     },
+    "/client-config/auth-methods": {
+      get: operation({ id: "clientAuthMethods", tag: "客户端配置", summary: "读取客户端可显示的注册登录方式", success: ref("ClientAuthMethods") }),
+    },
+    "/client-config/product-brand": {
+      get: operation({ id: "clientProductBrand", tag: "客户端配置", summary: "读取产品中英文名称", success: ref("ProductBrand") }),
+    },
     "/client-config/releases/current": {
       get: operation({ id: "currentConfigRelease", tag: "客户端配置", summary: "读取当前发布配置", parameters: [query("channel", "发布渠道，默认 stable")] }),
     },
@@ -641,10 +727,14 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/admin/distribution/config": {
       get: operation({ id: "distributionConfig", tag: "管理分销", summary: "读取分销与邀请配置（configs.manage）", security: true, success: ref("DistributionConfig") }),
-      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。不重算历史分润。邀请积分奖励与分销开关独立。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
+      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。不重算历史分润。邀请积分奖励与分销开关独立；防刷开启后新奖励待首笔真实支付确认并受北京时间日/月人数上限约束。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
+    },
+    "/admin/distribution/downloads": {
+      get: operation({ id: "softwareDownloadConfig", tag: "管理配置", summary: "读取注册成功页的软件下载安装地址（configs.manage）", security: true, success: ref("SoftwareDownloadConfig") }),
+      patch: operation({ id: "saveSoftwareDownloadConfig", tag: "管理配置", summary: "保存软件下载安装地址（configs.manage）", description: "至少配置一个平台，保存后立即用于邀请注册成功页。", security: true, body: ref("SoftwareDownloadConfig"), success: ref("SoftwareDownloadConfig") }),
     },
     "/admin/distribution/records/{kind}": {
-      get: operation({ id: "adminDistributionRecords", tag: "管理分销", summary: "分页查询账本（distribution.manage）", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码", { type: "integer", minimum: 1, maximum: 100000 }), query("status", "提现状态", { type: "string", enum: ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID"] }), query("user_id", "收益用户ID")], success: ref("ReferralRecordPage") }),
+      get: operation({ id: "adminDistributionRecords", tag: "管理分销", summary: "分页查询账本（distribution.manage）", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码", { type: "integer", minimum: 1, maximum: 100000 }), query("status", "提现或邀请奖励状态", { type: "string", enum: ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID", "PENDING_PAYMENT", "REWARDED", "LIMITED"] }), query("user_id", "收益用户ID")], success: ref("ReferralRecordPage") }),
     },
     "/admin/distribution/withdrawals/{id}/review": {
       post: operation({ id: "reviewWithdrawal", tag: "管理分销", summary: "审核提现（distribution.manage）", security: true, parameters: [pathId("id", "提现ID")], body: { type: "object", required: ["decision"], properties: { decision: { type: "string", enum: ["APPROVED", "REJECTED"] }, note: { type: "string", maxLength: 500, description: "驳回必填原因" } } } }),
@@ -726,7 +816,7 @@ export function createApiDocument(): OpenAPIObject {
       post: operation({ id: "changeAdminPassword", tag: "管理身份", summary: "修改管理员密码", security: true, body: ref("AdminPasswordRequest") }),
     },
     "/admin/dashboard/overview": {
-      get: operation({ id: "adminOverview", tag: "管理概览", summary: "读取运营概览统计", security: true }),
+      get: operation({ id: "adminOverview", tag: "管理概览", summary: "读取运营概览、分销明细与最近30天趋势", security: true, success: ref("DashboardOverview") }),
     },
     "/admin/configs": {
       get: operation({ id: "listConfigs", tag: "管理配置", summary: "读取配置集合", security: true, parameters: [query("category", "按配置分类筛选")] }),
@@ -741,6 +831,22 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/configs/mail": {
       get: operation({ id: "getMailConfig", tag: "管理配置", summary: "读取邮箱配置（不含密码）", security: true, success: ref("MailConfig") }),
       patch: operation({ id: "saveMailConfig", tag: "管理配置", summary: "保存邮箱配置", description: "需要 configs.manage 权限；发件密码加密保存、留空保留。携带当前 revision 防止并发覆盖。保存后新邮件请求立即使用配置。", security: true, body: ref("MailConfigRequest"), success: ref("MailConfig") }),
+    },
+    "/admin/configs/auth-methods": {
+      get: operation({ id: "getAdminAuthMethods", tag: "管理配置", summary: "读取客户端登录方式配置", security: true, success: ref("ClientAuthMethods") }),
+      patch: operation({ id: "updateAdminAuthMethods", tag: "管理配置", summary: "保存客户端登录方式配置", security: true }),
+    },
+    "/admin/configs/product-brand": {
+      get: operation({ id: "getProductBrand", tag: "管理配置", summary: "读取产品中英文名称", security: true, success: ref("ProductBrand") }),
+      patch: operation({ id: "updateProductBrand", tag: "管理配置", summary: "保存产品中英文名称", security: true, body: ref("ProductBrandRequest"), success: ref("ProductBrand") }),
+    },
+    "/admin/configs/ip-access-rules": {
+      get: operation({ id: "listIpAccessRules", tag: "管理配置", summary: "读取 IP 风控规则和当前管理端 IP", security: true }),
+      post: operation({ id: "createIpAccessRule", tag: "管理配置", summary: "添加 IP 或 CIDR 全局拦截规则", description: "启用后命中的地址不能访问任何 API；不能添加会立即拦截当前管理员的启用规则。", security: true, body: ref("IpAccessRuleRequest"), success: ref("IpAccessRule") }),
+    },
+    "/admin/configs/ip-access-rules/{ruleId}": {
+      patch: operation({ id: "updateIpAccessRule", tag: "管理配置", summary: "更新或启停 IP 风控规则", security: true, parameters: [pathId("ruleId", "IP 风控规则 ID")], body: ref("IpAccessRuleRequest"), success: ref("IpAccessRule") }),
+      delete: operation({ id: "deleteIpAccessRule", tag: "管理配置", summary: "删除 IP 风控规则", security: true, parameters: [pathId("ruleId", "IP 风控规则 ID")] }),
     },
     "/admin/configs/wechat-payment": {
       get: operation({ id: "getWechatPaymentConfig", tag: "管理微信配置", summary: "读取脱敏的微信公众号与微信支付配置", security: true }),
@@ -866,15 +972,15 @@ export function createApiDocument(): OpenAPIObject {
   return {
     openapi: "3.0.3",
     info: {
-      title: "AI Video Studio API",
+      title: "影匠 API",
       version: "1.0.0",
       description: [
-        "AI Video Studio 客户端、积分支付、模型转发与运营后台接口。",
+        "影匠客户端、积分支付、模型转发与运营后台接口。",
         "",
         "用户和管理员均使用 Bearer JWT；在右上角 Authorize 中填入登录接口返回的 access_token。",
         "服务端不会在任务表中保存提示词、图片、音频、视频或完整模型结果。",
       ].join("\n"),
-      contact: { name: "AI Video Studio" },
+      contact: { name: "影匠" },
     },
     servers: [
       { url: "/api/v1", description: "当前服务" },

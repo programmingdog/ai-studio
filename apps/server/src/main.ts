@@ -4,12 +4,15 @@ import { json, Request, text } from "express";
 import { AppModule } from "./app.module";
 import { setupApiDocs } from "./api-docs/setup-api-docs";
 import { EnvironmentService } from "./config/environment.service";
+import { createIpAccessMiddleware, IpAccessControlService } from "./common/ip-access-control.service";
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   const environment = app.get(EnvironmentService).values;
   // Trust only explicitly configured proxy IPs/CIDRs, never arbitrary forwarded headers.
   if (environment.trustProxy.length) app.getHttpAdapter().getInstance().set("trust proxy", environment.trustProxy);
+  // Run before body parsing and routing so a blocked address cannot reach any API.
+  app.use(createIpAccessMiddleware(app.get(IpAccessControlService)));
   app.setGlobalPrefix("api/v1");
   setupApiDocs(app);
   app.enableCors({

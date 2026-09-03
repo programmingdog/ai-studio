@@ -17,11 +17,76 @@ const relationUserColumns = "u.id, u.pid, u.invite_code, u.display_name, u.email
 
 interface CountRow extends RowDataPacket {
   users: number | string;
+  new_users_30d: number | string;
   active_tasks: number | string;
   paid_orders: number | string;
   published_configs: number | string;
   enabled_providers: number | string;
   revenue_fen: number | string | null;
+  invitation_total: number | string;
+  invitation_30d: number | string;
+  invitation_pending: number | string | null;
+  invitation_rewarded: number | string | null;
+  invitation_limited: number | string | null;
+  invitation_credits: number | string | null;
+  commission_records: number | string;
+  commission_total_fen: number | string | null;
+  commission_direct_fen: number | string | null;
+  commission_indirect_fen: number | string | null;
+  commission_30d_fen: number | string | null;
+  commission_available_fen: number | string | null;
+  commission_frozen_fen: number | string | null;
+  withdrawal_total: number | string;
+  withdrawal_pending: number | string | null;
+  withdrawal_approved: number | string | null;
+  withdrawal_processing: number | string | null;
+  withdrawal_rejected: number | string | null;
+  withdrawal_paid: number | string | null;
+  withdrawal_requested_fen: number | string | null;
+  withdrawal_waiting_fen: number | string | null;
+  payout_total: number | string;
+  payout_total_fen: number | string | null;
+  payout_30d_count: number | string;
+  payout_30d_fen: number | string | null;
+}
+
+interface DashboardTrendRow extends RowDataPacket {
+  date_key: string;
+  value: number | string | null;
+  count: number | string | null;
+}
+
+const chinaDayStartSql = "DATE_SUB(DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)), INTERVAL 29 DAY), INTERVAL 8 HOUR)";
+
+function numberValue(value: unknown): number {
+  const result = Number(value || 0);
+  return Number.isFinite(result) ? result : 0;
+}
+
+export function buildThirtyDayOverviewTrends(
+  revenueRows: Array<{ date_key: string; value: unknown; count: unknown }>,
+  userRows: Array<{ date_key: string; value: unknown }>,
+  totalUsers: number,
+  now = new Date(),
+) {
+  const chinaNow = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  const today = Date.UTC(chinaNow.getUTCFullYear(), chinaNow.getUTCMonth(), chinaNow.getUTCDate());
+  const dates = Array.from({ length: 30 }, (_, index) => new Date(today - (29 - index) * 86_400_000).toISOString().slice(0, 10));
+  const revenueByDate = new Map(revenueRows.map((row) => [String(row.date_key), row]));
+  const usersByDate = new Map(userRows.map((row) => [String(row.date_key), numberValue(row.value)]));
+  const recentUsers = dates.reduce((sum, date) => sum + (usersByDate.get(date) || 0), 0);
+  let cumulativeUsers = Math.max(0, totalUsers - recentUsers);
+  return {
+    revenue_trend: dates.map((date) => {
+      const row = revenueByDate.get(date);
+      return { date, revenue_fen: numberValue(row?.value), paid_orders: numberValue(row?.count) };
+    }),
+    user_growth_trend: dates.map((date) => {
+      const newUsers = usersByDate.get(date) || 0;
+      cumulativeUsers += newUsers;
+      return { date, new_users: newUsers, total_users: cumulativeUsers };
+    }),
+  };
 }
 
 interface ConfigRow extends RowDataPacket {
@@ -179,24 +244,128 @@ export class AdminService {
     @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
   ) {}
 
-  async overview(): Promise<Record<string, number>> {
-    const rows = await this.database.query<CountRow[]>(`
+  async overview(): Promise<Record<string, unknown>> {
+    const [rows, revenueRows, userRows, recentInvitations, recentCommissions, recentWithdrawals, recentPayouts] = await Promise.all([
+      this.database.query<CountRow[]>(`
       SELECT
         (SELECT COUNT(*) FROM users) AS users,
+        (SELECT COUNT(*) FROM users WHERE created_at >= ${chinaDayStartSql}) AS new_users_30d,
         (SELECT COUNT(*) FROM ai_tasks WHERE status IN ('ACCEPTED','CREDIT_RESERVED','SUBMITTING','PROVIDER_ACCEPTED','PROCESSING','UNKNOWN')) AS active_tasks,
         (SELECT COUNT(*) FROM payment_orders WHERE status = 'PAID') AS paid_orders,
         (SELECT COUNT(*) FROM config_versions WHERE status = 'PUBLISHED') AS published_configs,
         (SELECT COUNT(*) FROM providers WHERE status = 'ACTIVE') AS enabled_providers,
-        (SELECT COALESCE(SUM(amount_fen), 0) FROM payment_orders WHERE status = 'PAID') AS revenue_fen
-    `);
+        (SELECT COALESCE(SUM(COALESCE(payer_paid_amount_fen, amount_fen)), 0) FROM payment_orders WHERE status = 'PAID') AS revenue_fen,
+        (SELECT COUNT(*) FROM referral_rewards) AS invitation_total,
+        (SELECT COUNT(*) FROM referral_rewards WHERE created_at >= ${chinaDayStartSql}) AS invitation_30d,
+        (SELECT COALESCE(SUM(status = 'PENDING_PAYMENT'), 0) FROM referral_rewards) AS invitation_pending,
+        (SELECT COALESCE(SUM(status = 'REWARDED'), 0) FROM referral_rewards) AS invitation_rewarded,
+        (SELECT COALESCE(SUM(status = 'LIMITED'), 0) FROM referral_rewards) AS invitation_limited,
+        (SELECT COALESCE(SUM(CASE WHEN status = 'REWARDED' THEN credits ELSE 0 END), 0) FROM referral_rewards) AS invitation_credits,
+        (SELECT COUNT(*) FROM commission_records) AS commission_records,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM commission_records) AS commission_total_fen,
+        (SELECT COALESCE(SUM(CASE WHEN level = 1 THEN amount_fen ELSE 0 END), 0) FROM commission_records) AS commission_direct_fen,
+        (SELECT COALESCE(SUM(CASE WHEN level = 2 THEN amount_fen ELSE 0 END), 0) FROM commission_records) AS commission_indirect_fen,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM commission_records WHERE created_at >= ${chinaDayStartSql}) AS commission_30d_fen,
+        (SELECT COALESCE(SUM(available_fen), 0) FROM commission_wallets) AS commission_available_fen,
+        (SELECT COALESCE(SUM(frozen_fen), 0) FROM commission_wallets) AS commission_frozen_fen,
+        (SELECT COUNT(*) FROM withdrawal_applications) AS withdrawal_total,
+        (SELECT COALESCE(SUM(status = 'PENDING'), 0) FROM withdrawal_applications) AS withdrawal_pending,
+        (SELECT COALESCE(SUM(status = 'APPROVED'), 0) FROM withdrawal_applications) AS withdrawal_approved,
+        (SELECT COALESCE(SUM(status = 'PROCESSING'), 0) FROM withdrawal_applications) AS withdrawal_processing,
+        (SELECT COALESCE(SUM(status = 'REJECTED'), 0) FROM withdrawal_applications) AS withdrawal_rejected,
+        (SELECT COALESCE(SUM(status = 'PAID'), 0) FROM withdrawal_applications) AS withdrawal_paid,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM withdrawal_applications) AS withdrawal_requested_fen,
+        (SELECT COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED','PROCESSING') THEN amount_fen ELSE 0 END), 0) FROM withdrawal_applications) AS withdrawal_waiting_fen,
+        (SELECT COUNT(*) FROM manual_payout_records) AS payout_total,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM manual_payout_records) AS payout_total_fen,
+        (SELECT COUNT(*) FROM manual_payout_records WHERE created_at >= ${chinaDayStartSql}) AS payout_30d_count,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM manual_payout_records WHERE created_at >= ${chinaDayStartSql}) AS payout_30d_fen
+    `),
+      this.database.query<DashboardTrendRow[]>(`
+        SELECT DATE_FORMAT(DATE_ADD(paid_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS date_key,
+               COALESCE(SUM(COALESCE(payer_paid_amount_fen, amount_fen)), 0) AS value,
+               COUNT(*) AS count
+        FROM payment_orders
+        WHERE status = 'PAID' AND paid_at >= ${chinaDayStartSql}
+        GROUP BY date_key ORDER BY date_key
+      `),
+      this.database.query<DashboardTrendRow[]>(`
+        SELECT DATE_FORMAT(DATE_ADD(created_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS date_key,
+               COUNT(*) AS value, COUNT(*) AS count
+        FROM users WHERE created_at >= ${chinaDayStartSql}
+        GROUP BY date_key ORDER BY date_key
+      `),
+      this.database.query<RowDataPacket[]>(`
+        SELECT rr.id, rr.status, rr.credits, rr.created_at,
+               COALESCE(NULLIF(inviter.display_name, ''), inviter.email, inviter.phone, '未命名用户') AS inviter_name,
+               COALESCE(NULLIF(invited.display_name, ''), invited.email, invited.phone, '未命名用户') AS invited_name
+        FROM referral_rewards rr
+        INNER JOIN users inviter ON inviter.id = rr.inviter_id
+        INNER JOIN users invited ON invited.id = rr.invited_user_id
+        ORDER BY rr.created_at DESC, rr.id DESC LIMIT 3
+      `),
+      this.database.query<RowDataPacket[]>(`
+        SELECT cr.id, cr.level, cr.amount_fen, cr.created_at,
+               COALESCE(NULLIF(beneficiary.display_name, ''), beneficiary.email, beneficiary.phone, '未命名用户') AS beneficiary_name,
+               COALESCE(NULLIF(payer.display_name, ''), payer.email, payer.phone, '未命名用户') AS payer_name
+        FROM commission_records cr
+        INNER JOIN users beneficiary ON beneficiary.id = cr.beneficiary_id
+        INNER JOIN users payer ON payer.id = cr.payer_id
+        ORDER BY cr.created_at DESC, cr.id DESC LIMIT 3
+      `),
+      this.database.query<RowDataPacket[]>(`
+        SELECT wa.id, wa.amount_fen, wa.status, wa.created_at,
+               COALESCE(NULLIF(u.display_name, ''), u.email, u.phone, '未命名用户') AS user_name
+        FROM withdrawal_applications wa INNER JOIN users u ON u.id = wa.user_id
+        ORDER BY wa.created_at DESC, wa.id DESC LIMIT 3
+      `),
+      this.database.query<RowDataPacket[]>(`
+        SELECT mp.id, mp.amount_fen, mp.created_at,
+               COALESCE(NULLIF(u.display_name, ''), u.email, u.phone, '未命名用户') AS user_name,
+               COALESCE(NULLIF(a.display_name, ''), a.email, '管理员') AS operator_name
+        FROM manual_payout_records mp
+        INNER JOIN users u ON u.id = mp.user_id
+        INNER JOIN admin_users a ON a.id = mp.operator_id
+        ORDER BY mp.created_at DESC, mp.id DESC LIMIT 3
+      `),
+    ]);
     const row = rows[0];
+    const users = numberValue(row?.users);
+    const trends = buildThirtyDayOverviewTrends(revenueRows, userRows, users);
     return {
-      users: Number(row?.users || 0),
-      active_tasks: Number(row?.active_tasks || 0),
-      paid_orders: Number(row?.paid_orders || 0),
-      published_configs: Number(row?.published_configs || 0),
-      enabled_providers: Number(row?.enabled_providers || 0),
-      revenue_fen: Number(row?.revenue_fen || 0),
+      users,
+      new_users_30d: numberValue(row?.new_users_30d),
+      active_tasks: numberValue(row?.active_tasks),
+      paid_orders: numberValue(row?.paid_orders),
+      published_configs: numberValue(row?.published_configs),
+      enabled_providers: numberValue(row?.enabled_providers),
+      revenue_fen: numberValue(row?.revenue_fen),
+      invitations: {
+        total: numberValue(row?.invitation_total), last_30d: numberValue(row?.invitation_30d), pending: numberValue(row?.invitation_pending),
+        rewarded: numberValue(row?.invitation_rewarded), limited: numberValue(row?.invitation_limited), reward_credits: numberValue(row?.invitation_credits),
+      },
+      commissions: {
+        records: numberValue(row?.commission_records), total_fen: numberValue(row?.commission_total_fen), direct_fen: numberValue(row?.commission_direct_fen),
+        indirect_fen: numberValue(row?.commission_indirect_fen), last_30d_fen: numberValue(row?.commission_30d_fen),
+        available_fen: numberValue(row?.commission_available_fen), frozen_fen: numberValue(row?.commission_frozen_fen),
+      },
+      withdrawals: {
+        total: numberValue(row?.withdrawal_total), pending: numberValue(row?.withdrawal_pending), approved: numberValue(row?.withdrawal_approved),
+        processing: numberValue(row?.withdrawal_processing), rejected: numberValue(row?.withdrawal_rejected), paid: numberValue(row?.withdrawal_paid),
+        requested_fen: numberValue(row?.withdrawal_requested_fen), waiting_fen: numberValue(row?.withdrawal_waiting_fen),
+      },
+      payouts: {
+        total: numberValue(row?.payout_total), total_fen: numberValue(row?.payout_total_fen),
+        last_30d_count: numberValue(row?.payout_30d_count), last_30d_fen: numberValue(row?.payout_30d_fen),
+      },
+      ...trends,
+      recent: {
+        invitations: recentInvitations.map((item) => ({ ...item, credits: numberValue(item.credits) })),
+        commissions: recentCommissions.map((item) => ({ ...item, level: numberValue(item.level), amount_fen: numberValue(item.amount_fen) })),
+        withdrawals: recentWithdrawals.map((item) => ({ ...item, amount_fen: numberValue(item.amount_fen) })),
+        payouts: recentPayouts.map((item) => ({ ...item, amount_fen: numberValue(item.amount_fen) })),
+      },
+      generated_at: new Date().toISOString(),
     };
   }
 

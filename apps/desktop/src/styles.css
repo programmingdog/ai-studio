@@ -456,6 +456,7 @@ html[dir="rtl"] input[type="url"], html[dir="rtl"] input[type="password"], html[
 .auth-form small, .task-submit small { color: var(--ui-text-muted); font-weight: 500; }
 .auth-submit { justify-content: center; margin-top: 4px; }
 .unified-auth-panel { padding-top: 36px; }
+.auth-methods-loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 120px; color: var(--ui-text-muted); font-size: 13px; }
 .auth-email-check { display: flex; align-items: center; gap: 7px; }
 .auth-new-account { line-height: 1.6; }
 .auth-check-retry { margin-left: 8px; border: 0; background: transparent; color: var(--ui-accent); text-decoration: underline; cursor: pointer; }
@@ -539,6 +540,35 @@ html[dir="rtl"] input[type="url"], html[dir="rtl"] input[type="password"], html[
 .payment-card > div:first-child { display: grid; place-items: center; min-height: 205px; background: #fff; border-radius: 12px; }
 .payment-card > div:last-child { display: grid; justify-items: start; gap: 9px; }
 .payment-card p { margin: 0; color: #676c78; }
+.payment-dialog-backdrop { z-index: 150; padding: 24px; background: rgba(234, 236, 243, .84) !important; }
+.close-behavior-backdrop { z-index: 900; padding: 24px; }
+.close-behavior-dialog { width: min(470px, calc(100vw - 32px)); padding: 27px; border: 1px solid var(--ui-border); border-radius: 20px; background: var(--ui-surface); box-shadow: 0 28px 90px rgba(27, 34, 48, .16); }
+.close-behavior-dialog > span { color: var(--ui-accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+.close-behavior-dialog h2 { margin: 8px 0 10px; font-size: 23px; }
+.close-behavior-dialog p { margin: 0; color: var(--ui-text-muted); font-size: 13px; line-height: 1.7; }
+.close-behavior-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.close-behavior-actions button { width: auto; }
+.payment-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--ui-border); border-radius: 22px; background: var(--ui-surface); box-shadow: 0 30px 100px rgba(19, 23, 35, .35); }
+.payment-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 24px 26px 18px; border-bottom: 1px solid var(--ui-border); }
+.payment-dialog > header h2 { margin: 5px 0 4px; }
+.payment-dialog > header p { margin: 0; color: var(--ui-text-muted); }
+.payment-dialog-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 26px; align-items: center; padding: 26px; }
+.payment-qr-panel { min-height: 250px; display: grid; place-items: center; padding: 20px; color: #a16c16; border: 1px solid #e3e5eb; border-radius: 18px; background: #fff; box-shadow: 0 10px 32px rgba(28, 34, 48, .08); }
+.payment-qr-panel.paid { color: #2b9859; background: #f3fbf6; border-color: #cfe8d8; }
+.payment-dialog-details { display: grid; justify-items: start; gap: 11px; min-width: 0; }
+.payment-dialog-details > strong { font-size: 19px; line-height: 1.4; }
+.payment-dialog-details > p { margin: 0; color: var(--ui-text-muted); font-size: 13px; line-height: 1.65; }
+.payment-countdown { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 3px; padding: 12px 14px; color: #7b5213; border-radius: 10px; background: #fff5df; }
+.payment-countdown span { font-size: 12px; }
+.payment-countdown b { font: 800 22px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .04em; }
+.payment-countdown.expired { color: #a33a31; background: #fff0ed; }
+.payment-dialog-details dl { width: 100%; display: grid; gap: 0; margin: 2px 0 0; }
+.payment-dialog-details dl > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--ui-border); }
+.payment-dialog-details dt { color: var(--ui-text-muted); font-size: 12px; }
+.payment-dialog-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 700; }
+.payment-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 26px 22px; border-top: 1px solid var(--ui-border); }
+.payment-dialog > footer span { color: var(--ui-text-muted); font-size: 11px; }
+.payment-dialog > footer button { flex: none; width: auto; }
 .records-columns { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .record-list { border: 1px solid #e2e4ea; border-radius: 14px; overflow: hidden; }
 .record-list > header { display: flex; justify-content: space-between; padding: 13px 15px; background: #f6f7f9; }
@@ -562,6 +592,7 @@ html[dir="rtl"] input[type="url"], html[dir="rtl"] input[type="password"], html[
 .task-history > article > div:last-child { justify-items: end; }
 .task-history small { color: var(--ui-text-muted); font-size: 11px; }
 @media (max-width: 760px) { .profile-grid, .records-columns, .tasks-panel, .payment-card { grid-template-columns: 1fr; } .package-grid, .balance-grid { grid-template-columns: 1fr; } .account-tabs { margin-inline: 18px; } .account-body, .auth-panel { padding-inline: 18px; } }
+@media (max-width: 620px) { .payment-dialog-body { grid-template-columns: 1fr; } .payment-qr-panel { min-height: 230px; } .payment-dialog > footer { align-items: stretch; flex-direction: column; } .payment-dialog > footer button { width: 100%; justify-content: center; } }
 
 /* Permanent Light theme. The desktop client intentionally has no dark variant. */
 :root { color-scheme: light; color: #20232d; background: #f5f6fa; }

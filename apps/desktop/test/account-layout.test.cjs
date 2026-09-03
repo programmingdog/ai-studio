@@ -34,7 +34,7 @@ test('required login fills the window without changing the optional account dial
   assert.equal(modal['box-shadow'], 'none');
 });
 
-test('fullscreen login and registration forms can scroll within the available height', () => {
+test('required login and registration forms can scroll within the compact window height', () => {
   const panel = declarations('.account-login-backdrop .auth-panel');
   assert.equal(panel.flex, '1 1 auto');
   assert.equal(panel['min-height'], '0');

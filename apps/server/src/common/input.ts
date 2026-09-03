@@ -31,6 +31,12 @@ export function jsonValue(body: Record<string, unknown>, key: string): unknown {
   return value;
 }
 
+export function requiredBoolean(body: Record<string, unknown>, key: string): boolean {
+  const value = body[key];
+  if (typeof value !== "boolean") throw new BadRequestException(`${key} must be a boolean`);
+  return value;
+}
+
 export function parseStoredJson<T>(value: unknown): T {
   if (typeof value === "string") return JSON.parse(value) as T;
   return value as T;

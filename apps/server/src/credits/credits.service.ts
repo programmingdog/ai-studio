@@ -54,7 +54,8 @@ export class CreditsService {
     const rows = await this.database.query<RowDataPacket[]>(
       `SELECT cpp.id, cpp.purchase_no, cpp.package_id, cpp.package_code_snapshot,
               cpp.package_name_snapshot, cpp.base_credits_snapshot, cpp.bonus_credits_snapshot,
-              cpp.credits_granted, cpp.paid_amount_fen, cpp.currency, cpp.status,
+              cpp.credits_granted, cpp.paid_amount_fen, cpp.currency,
+              CASE WHEN cpp.status = 'CREATED' AND po.expires_at <= UTC_TIMESTAMP(3) THEN 'EXPIRED' ELSE cpp.status END AS status,
               cpp.purchased_at, cpp.created_at, po.out_trade_no, po.code_url, po.expires_at, po.paid_at
        FROM credit_package_purchases cpp
        LEFT JOIN payment_orders po ON po.id = cpp.payment_order_id
@@ -139,7 +140,9 @@ export class CreditsService {
   private async purchaseByIdempotencyKey(userId: string, idempotencyKey: string, packageId: string): Promise<Record<string, unknown> | null> {
     const rows = await this.database.query<RowDataPacket[]>(
       `SELECT cpp.id, cpp.purchase_no, cpp.package_id, cpp.package_name_snapshot, cpp.credits_granted,
-              cpp.paid_amount_fen, cpp.currency, cpp.status, cpp.purchased_at,
+              cpp.paid_amount_fen, cpp.currency,
+              CASE WHEN cpp.status = 'CREATED' AND po.expires_at <= UTC_TIMESTAMP(3) THEN 'EXPIRED' ELSE cpp.status END AS status,
+              cpp.purchased_at,
               po.id AS payment_order_id, po.out_trade_no, po.code_url, po.expires_at, po.paid_at
        FROM payment_orders po INNER JOIN credit_package_purchases cpp ON cpp.payment_order_id = po.id
        WHERE po.user_id = ? AND po.client_idempotency_key = ? LIMIT 1`,
@@ -216,7 +219,9 @@ export class CreditsService {
   async purchase(userId: string, purchaseId: string): Promise<Record<string, unknown>> {
     const rows = await this.database.query<RowDataPacket[]>(
       `SELECT cpp.id, cpp.purchase_no, cpp.package_name_snapshot, cpp.credits_granted,
-              cpp.paid_amount_fen, cpp.currency, cpp.status, cpp.purchased_at,
+              cpp.paid_amount_fen, cpp.currency,
+              CASE WHEN cpp.status = 'CREATED' AND po.expires_at <= UTC_TIMESTAMP(3) THEN 'EXPIRED' ELSE cpp.status END AS status,
+              cpp.purchased_at,
               po.id AS payment_order_id, po.out_trade_no, po.code_url, po.expires_at, po.paid_at
        FROM credit_package_purchases cpp INNER JOIN payment_orders po ON po.id = cpp.payment_order_id
        WHERE cpp.id = ? AND cpp.user_id = ? LIMIT 1`,

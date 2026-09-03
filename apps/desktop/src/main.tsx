@@ -6,6 +6,8 @@ import { I18nProvider } from "./i18n";
 import "./styles.css";
 import { CreditConfirmationHost } from "./components/CreditConfirmationHost";
 import { LowCreditReminderHost } from "./components/LowCreditReminderHost";
+import { DesktopWindowLifecycle } from "./components/DesktopWindowLifecycle";
+import { ProductBrandProvider } from "./brand";
 
 const queryClient = new QueryClient();
 
@@ -39,7 +41,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Erro
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <I18nProvider><AppErrorBoundary><CreditConfirmationHost /><App /><LowCreditReminderHost /></AppErrorBoundary></I18nProvider>
+      <I18nProvider><ProductBrandProvider><AppErrorBoundary><DesktopWindowLifecycle /><CreditConfirmationHost /><App /><LowCreditReminderHost /></AppErrorBoundary></ProductBrandProvider></I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

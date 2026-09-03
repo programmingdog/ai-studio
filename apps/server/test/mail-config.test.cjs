@@ -162,7 +162,7 @@ test('revision rejects stale and simultaneous edits; audit failure rolls back co
 
 test('configuration changes affect the next mail request and disabled state fails closed', async t => {
   const h = harness(); await h.service.save('admin-id', h.input());
-  const mail = new RegistrationMailService(h.environment, h.service), sent = [];
+  const mail = new RegistrationMailService(h.environment, h.service, { get: async () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) }), sent = [];
   t.mock.method(global, 'fetch', async (url, init) => { sent.push({ url, body: new URLSearchParams(init.body) }); return new Response('{"status":true}'); });
   await mail.sendCode('user@example.com', '123456');
   await h.service.save('admin-id', h.input({ api_url: 'https://other.example.com/send', mail_from: 'other@example.com', password: 'second-password' }));

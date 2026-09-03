@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
-import { CheckCircle2, CircleUserRound, Coins, CreditCard, LoaderCircle, LogOut, Save, X } from "lucide-react";
+import { CheckCircle2, CircleUserRound, Clock3, Coins, CreditCard, LoaderCircle, LogOut, Save, X } from "lucide-react";
 import { UnifiedAuthPanel } from "./UnifiedAuthPanel";
 import { InvitationCard, ReferralPanel } from "./ReferralPanel";
 import {
@@ -10,13 +11,25 @@ import {
   loadPlatformSession, logoutPlatform, updatePlatformUser,
   PlatformApiError, type PlatformPurchase, type PlatformUser,
 } from "../services/platform";
+import { useI18n } from "../i18n";
+import { localizedStatusLabel } from "../i18n/statusLabels";
+import { useProductBrand } from "../brand";
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error || "请求失败"); }
 function date(value?: string | null): string { return value ? new Date(value).toLocaleString("zh-CN") : "—"; }
 function money(fen?: number): string { return `¥${((fen || 0) / 100).toFixed(2)}`; }
-function taskTone(status: string): string { return ["SUCCEEDED", "PAID"].includes(status) ? "success" : ["FAILED", "CANCELED", "EXPIRED"].includes(status) ? "error" : "pending"; }
+function taskTone(status: string): string { return ["SUCCEEDED", "COMPLETED", "CONFIRMED", "RELEASED", "PAID"].includes(status) ? "success" : ["FAILED", "CANCELED", "CANCELLED", "EXPIRED"].includes(status) ? "error" : "pending"; }
+const terminalPurchaseStatuses = ["PAID", "CANCELED", "EXPIRED", "FAILED"];
+function countdownText(seconds: number | null): string {
+  if (seconds === null) return "--:--";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return [hours, minutes, remainder].slice(hours ? 0 : 1).map(value => String(value).padStart(2, "0")).join(":");
+}
 
 export function AccountCenterModal({ onClose, required = false, initialSection = "account" }: { onClose: () => void; required?: boolean; initialSection?: "account" | "credits" }) {
+  const { productName } = useProductBrand();
   const queryClient = useQueryClient();
   const session = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
   const loggedIn = Boolean(session.data);
@@ -36,7 +49,7 @@ export function AccountCenterModal({ onClose, required = false, initialSection =
 
   return <div className={`modal-backdrop account-modal-backdrop${required ? " account-login-backdrop" : ""}`} onMouseDown={(event) => { if (!required && event.target === event.currentTarget) onClose(); }}>
     <section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-center-title">
-      <header><div><span className="eyebrow">PLATFORM ACCOUNT</span><h2 id="account-center-title">{loggedIn ? "账户与积分中心" : "登录 AI Video Studio"}</h2><p>{loggedIn ? "管理账户资料、积分和微信支付订单。" : "必须先登录；项目、资产和处理记录会按账户隔离保存。"}</p></div>{!required && <button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>}</header>
+      <header><div><span className="eyebrow">PLATFORM ACCOUNT</span><h2 id="account-center-title">{loggedIn ? "账户与积分中心" : `登录 ${productName}`}</h2><p>{loggedIn ? "管理账户资料、积分和微信支付订单。" : "必须先登录；项目、资产和处理记录会按账户隔离保存。"}</p></div>{!required && <button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>}</header>
       {session.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在读取安全登录会话…</div> : !loggedIn ? <UnifiedAuthPanel onAuthenticated={acceptLogin} /> : <>
         <nav className="account-tabs"><button className={section === "account" ? "active" : ""} onClick={() => setSection("account")}><CircleUserRound size={16} />账户资料</button><button className={section === "credits" ? "active" : ""} onClick={() => setSection("credits")}><Coins size={16} />积分与购买</button><button className={section === "referrals" ? "active" : ""} onClick={() => setSection("referrals")}><CreditCard size={16} />分润与提现</button></nav>
         <div className="account-body">
@@ -70,21 +83,66 @@ function CreditsPanel() {
   const purchases = useQuery({ queryKey: ["credit-purchases"], queryFn: listCreditPurchases });
   const consumptions = useQuery({ queryKey: ["credit-consumptions"], queryFn: listCreditConsumptions });
   const [activePurchase, setActivePurchase] = useState<PlatformPurchase | null>(null);
-  const purchase = useMutation({ mutationFn: createCreditPurchase, onSuccess: (result) => { setActivePurchase(result); void queryClient.invalidateQueries({ queryKey: ["credit-purchases"] }); } });
+  const purchase = useMutation({ mutationFn: createCreditPurchase, onSuccess: (result, packageId) => {
+    const selectedPackage = packages.data?.find(item => item.id === packageId);
+    setActivePurchase({ ...result, package_name_snapshot: result.package_name_snapshot || selectedPackage?.name, credits_granted: result.credits_granted ?? result.credits ?? selectedPackage?.total_credits });
+    void queryClient.invalidateQueries({ queryKey: ["credit-purchases"] });
+  } });
   useEffect(() => {
-    if (!activePurchase || ["PAID", "CANCELED", "EXPIRED", "FAILED"].includes(activePurchase.status)) return;
+    if (!activePurchase || terminalPurchaseStatuses.includes(activePurchase.status)) return;
+    if (activePurchase.expires_at && new Date(activePurchase.expires_at).getTime() <= Date.now()) {
+      setActivePurchase(current => current ? { ...current, status: "EXPIRED" } : current);
+      return;
+    }
     const timer = window.setInterval(async () => {
+      if (activePurchase.expires_at && new Date(activePurchase.expires_at).getTime() <= Date.now()) {
+        setActivePurchase(current => current ? { ...current, status: "EXPIRED" } : current);
+        return;
+      }
       try { const next = await getCreditPurchase(activePurchase.id); setActivePurchase(next); if (next.status === "PAID") { void queryClient.invalidateQueries({ queryKey: ["credit-balance"] }); void queryClient.invalidateQueries({ queryKey: ["credit-purchases"] }); } } catch { /* 下一轮继续 */ }
     }, 2500);
     return () => window.clearInterval(timer);
   }, [activePurchase, queryClient]);
   return <div className="credits-panel"><div className="balance-grid"><article><span>积分余额</span><strong>{balance.data?.balance ?? "—"}</strong></article><article><span>正在使用的积分</span><strong>{balance.data?.held ?? "—"}</strong></article><article className="available"><span>可用积分</span><strong>{balance.data?.available ?? "—"}</strong></article></div>
     <section className="platform-section"><header><div><strong>积分套餐</strong><span>使用微信扫码支付，支付成功后积分自动到账。</span></div></header><div className="package-grid">{packages.data?.map((item) => <article key={item.id}><span>{item.name}</span><strong>{item.total_credits}<small> 积分</small></strong><p>{item.description}</p>{item.bonus_credits > 0 && <em>含赠送 {item.bonus_credits}</em>}<button className="primary-button" onClick={() => purchase.mutate(item.id)} disabled={purchase.isPending}><CreditCard size={15} />{money(item.price_fen)} 购买</button></article>)}</div>{purchase.error && <div className="error-banner">{message(purchase.error)}</div>}</section>
-    {activePurchase && <section className="payment-card"><div>{activePurchase.code_url && !["PAID", "CANCELED", "EXPIRED", "FAILED"].includes(activePurchase.status) ? <QRCodeSVG value={activePurchase.code_url} size={190} level="M" /> : <CheckCircle2 size={62} />}</div><div><span className={`platform-status ${taskTone(activePurchase.status)}`}>{activePurchase.status}</span><strong>{activePurchase.package_name_snapshot || "积分购买订单"}</strong><p>{activePurchase.status === "PAID" ? "支付成功，积分已到账。" : "请使用微信扫码支付，支付成功后会自动更新积分。"}</p><small>{activePurchase.out_trade_no} · {money(activePurchase.paid_amount_fen ?? activePurchase.amount_fen)}</small><button className="secondary-button" onClick={() => setActivePurchase(null)}>关闭订单</button></div></section>}
+    {activePurchase && createPortal(<PaymentDialog purchase={activePurchase} onClose={() => setActivePurchase(null)} />, document.body)}
     <div className="records-columns"><RecordList title="购买记录" loading={purchases.isLoading} rows={(purchases.data || []).map((item) => ({ id: item.id, title: item.package_name_snapshot || "积分套餐", amount: `+${item.credits_granted || 0} 积分`, status: item.status, time: item.purchased_at || item.created_at }))} /><RecordList title="消耗记录" loading={consumptions.isLoading} rows={(consumptions.data || []).map((item) => ({ id: item.id, title: item.model_alias || item.description || item.category, amount: `-${item.credits_consumed} 积分`, status: item.status, time: item.occurred_at }))} /></div>
   </div>;
 }
 
 function RecordList({ title, loading, rows }: { title: string; loading: boolean; rows: Array<{ id: string; title: string; amount: string; status: string; time?: string }> }) {
-  return <section className="record-list"><header><strong>{title}</strong><span>{rows.length} 条</span></header>{loading ? <div className="account-loading"><LoaderCircle className="spin" /></div> : rows.length ? rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{date(row.time)}</small></div><div><b>{row.amount}</b><span className={`platform-status ${taskTone(row.status)}`}>{row.status}</span></div></article>) : <div className="account-empty">暂无记录</div>}</section>;
+  const { locale } = useI18n();
+  return <section className="record-list"><header><strong>{title}</strong><span>{rows.length} 条</span></header>{loading ? <div className="account-loading"><LoaderCircle className="spin" /></div> : rows.length ? rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{date(row.time)}</small></div><div><b>{row.amount}</b><span className={`platform-status ${taskTone(row.status)}`}>{localizedStatusLabel(row.status, locale)}</span></div></article>) : <div className="account-empty">暂无记录</div>}</section>;
+}
+
+function PaymentDialog({ purchase, onClose }: { purchase: PlatformPurchase; onClose: () => void }) {
+  const { locale } = useI18n();
+  const expiryTime = purchase.expires_at ? new Date(purchase.expires_at).getTime() : null;
+  const remaining = () => expiryTime === null || !Number.isFinite(expiryTime) ? null : Math.max(0, Math.ceil((expiryTime - Date.now()) / 1000));
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(remaining);
+  useEffect(() => {
+    setRemainingSeconds(remaining());
+    if (expiryTime === null || !Number.isFinite(expiryTime) || terminalPurchaseStatuses.includes(purchase.status)) return;
+    const timer = window.setInterval(() => setRemainingSeconds(remaining()), 1000);
+    return () => window.clearInterval(timer);
+  }, [expiryTime, purchase.status]);
+  const effectiveStatus = !terminalPurchaseStatuses.includes(purchase.status) && remainingSeconds === 0 ? "EXPIRED" : purchase.status;
+  const paid = effectiveStatus === "PAID";
+  const scannable = Boolean(purchase.code_url) && !terminalPurchaseStatuses.includes(effectiveStatus) && remainingSeconds !== 0;
+  return <div className="modal-backdrop payment-dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="payment-dialog" role="dialog" aria-modal="true" aria-labelledby="payment-dialog-title">
+      <header><div><span className="eyebrow">WECHAT PAY</span><h2 id="payment-dialog-title">微信扫码支付</h2><p>{purchase.package_name_snapshot || "积分购买订单"}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="关闭支付弹窗"><X size={18} /></button></header>
+      <div className="payment-dialog-body">
+        <div className={`payment-qr-panel${paid ? " paid" : ""}`}>{scannable ? <QRCodeSVG value={purchase.code_url!} size={210} level="M" /> : paid ? <CheckCircle2 size={76} /> : <Clock3 size={70} />}</div>
+        <div className="payment-dialog-details">
+          <span className={`platform-status ${taskTone(effectiveStatus)}`}>{localizedStatusLabel(effectiveStatus, locale)}</span>
+          <strong>{paid ? "支付成功，积分已到账" : effectiveStatus === "EXPIRED" ? "支付二维码已过期" : "请使用微信扫描二维码完成支付"}</strong>
+          <p>{paid ? "您可以关闭弹窗并继续使用积分。" : effectiveStatus === "EXPIRED" ? "请关闭弹窗后重新选择套餐生成新的二维码。" : "支付结果会自动刷新，请不要重复下单。"}</p>
+          <div className={`payment-countdown${remainingSeconds === 0 ? " expired" : ""}`}><span>支付剩余时间</span><b>{countdownText(remainingSeconds)}</b></div>
+          <dl><div><dt>支付金额</dt><dd>{money(purchase.paid_amount_fen ?? purchase.amount_fen)}</dd></div><div><dt>到账积分</dt><dd>{purchase.credits_granted ?? purchase.credits ?? "—"}</dd></div><div><dt>订单编号</dt><dd>{purchase.out_trade_no || purchase.purchase_no || "—"}</dd></div></dl>
+        </div>
+      </div>
+      <footer><span>{paid ? "支付已确认" : "关闭弹窗不会自动取消微信支付订单。"}</span><button className={paid ? "primary-button" : "secondary-button"} type="button" onClick={onClose}>{paid ? "完成并关闭" : "关闭弹窗"}</button></footer>
+    </section>
+  </div>;
 }

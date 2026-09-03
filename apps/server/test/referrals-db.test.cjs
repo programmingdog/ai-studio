@@ -64,7 +64,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
   try {
     for (const id of [admin, admin2]) await c.execute("INSERT INTO admin_users (id, email, password_hash, display_name) VALUES (?, ?, 'not-a-real-password-hash', 'Rollback test operator')", [id, `${id}@example.invalid`]);
     // The singleton is locked only during this short test, never committed.
-    await c.execute('UPDATE distribution_configs SET enabled = 1, direct_rate_bps = 1000, indirect_rate_bps = 500, minimum_withdrawal_fen = 10000, invitation_reward_credits = 20 WHERE id = 1');
+    await c.execute('UPDATE distribution_configs SET enabled = 1, direct_rate_bps = 1000, indirect_rate_bps = 500, minimum_withdrawal_fen = 10000, invitation_reward_credits = 20, invitation_anti_abuse_enabled = 0, invitation_daily_reward_limit = 20, invitation_monthly_reward_limit = 200 WHERE id = 1');
     const aCode = await user(a), bCode = await user(b), childCode = await user(child); await user(fourth); await user(other);
 
     await t.test('verified new users bind once and award exactly 20 credit ledger units', async () => {

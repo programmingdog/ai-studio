@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start -p 3200",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:mail-config": "node --test test/mail-config-panel.test.cjs"
+    "test:mail-config": "node --test test/mail-config-panel.test.cjs",
+    "test:ip-access": "node --test test/ip-access-rules.test.cjs",
+    "test:dashboard": "node --test test/dashboard-overview.test.cjs",
+    "test:product-brand": "node --test test/product-brand.test.cjs"
   },
   "dependencies": {
     "next": "^16.3.3",

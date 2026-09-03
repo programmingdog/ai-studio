@@ -9,7 +9,7 @@ const net = require('node:net');
 const { once } = require('node:events');
 
 const config = { method: 'HTTP', apiUrl: 'https://yuntianxing.net/mail_sys/send_mail_http.json', from: 'no-reply@yuntianxing.net', password: 'test-only & secret=值', timeoutMs: 25 };
-const service = (mail = config) => new RegistrationMailService({ values: { mailApiTimeoutMs: mail.timeoutMs } }, { deliveryConfig: async () => mail });
+const service = (mail = config) => new RegistrationMailService({ values: { mailApiTimeoutMs: mail.timeoutMs } }, { deliveryConfig: async () => mail }, { get: async () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) });
 const smtpConfig = { method: 'SMTP', host: 'mail.yuntianxing.net', port: 25, security: 'STARTTLS', from: config.from, password: config.password, timeoutMs: 1000 };
 
 test('SMTP enforces TLS, authenticates with full mailbox and sends one explicit recipient', async t => {
@@ -28,9 +28,9 @@ test('SMTP enforces TLS, authenticates with full mailbox and sends one explicit 
       assert.equal(options.disableFileAccess, true); assert.equal(options.disableUrlAccess, true);
       return { async sendMail(mail) {
         calls++;
-        assert.equal(mail.from.address, config.from); assert.equal(mail.to, 'user@example.com');
+        assert.equal(mail.from.address, config.from); assert.equal(mail.from.name, '影匠'); assert.equal(mail.to, 'user@example.com');
         assert.deepEqual(mail.envelope, { from: config.from, to: ['user@example.com'] });
-        assert.match(mail.subject, /注册邮箱验证码/); assert.match(mail.text, /012345/);
+        assert.match(mail.subject, /^影匠 注册邮箱验证码$/); assert.match(mail.text, /正在注册 影匠/); assert.match(mail.text, /012345/);
         assert.equal(mail.html, undefined); assert.equal(mail.attachments, undefined);
         return { accepted: ['user@example.com'], rejected: [] };
       }, close() { closed++; } };

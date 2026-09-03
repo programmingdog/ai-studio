@@ -13,6 +13,7 @@
     "test:registration": "node --test test/email-registration.test.cjs",
     "test:low-credit": "node --test test/low-credit-reminder.test.cjs",
     "test:credit-copy": "node --test test/credit-copy.test.cjs",
+    "test:product-brand": "node --test test/product-brand.test.cjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },

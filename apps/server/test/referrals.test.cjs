@@ -45,7 +45,11 @@ test('public links reject scripts, embedded credentials, HTTP in production, and
 test('receipt accepts small raster data only, rejects SVG, spoofed type and oversized payloads', () => {
   const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC1kAAAAASUVORK5CYII=';
   assert.equal(rules.receiptImage(png), png);
-  for (const value of ['https://example.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=', png.replace('image/png', 'image/jpeg'), png + 'a', 'data:image/png;base64,' + Buffer.alloc(262145).toString('base64')]) assert.throws(() => rules.receiptImage(value));
+  const maximum = Buffer.alloc(2 * 1024 * 1024);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(maximum);
+  const maximumPng = `data:image/png;base64,${maximum.toString('base64')}`;
+  assert.equal(rules.receiptImage(maximumPng), maximumPng);
+  for (const value of ['https://example.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=', png.replace('image/png', 'image/jpeg'), png + 'a', 'data:image/png;base64,' + Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64')]) assert.throws(() => rules.receiptImage(value));
 });
 test('user endpoints take identity only from authenticated principal', async () => {
   const calls = [];
@@ -61,6 +65,8 @@ test('admin config, audit and payout actions require distinct server permissions
   for (const method of ['claim', 'release', 'paid', 'payee']) assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype[method]), ['payouts.manage']);
   assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.review), ['distribution.manage']);
   assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.save), ['configs.manage', 'distribution.manage']);
+  assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.downloads), ['configs.manage']);
+  assert.deepEqual(Reflect.getMetadata(REQUIRED_PERMISSIONS, ReferralsAdminController.prototype.saveDownloads), ['configs.manage']);
 });
 test('record pagination is bounded, allowlisted, ownership-filtered and excludes payee secrets', async () => {
   const calls = [];
@@ -82,6 +88,90 @@ test('invite collision retries and already assigned codes are stable', async () 
 });
 test('invalid distribution configuration is rejected before entering transaction', async () => {
   const service = new ReferralsService({ transaction: () => { throw Error('unexpected transaction'); } }, {}, {});
-  const valid = { enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invite_page_base_url: 'https://example.com/invite', windows_download_url: '', macos_download_url: '', revision: 0 };
-  for (const patch of [{ direct_rate_bps: 9900, indirect_rate_bps: 101 }, { direct_rate_bps: 0, indirect_rate_bps: 0 }, { minimum_withdrawal_fen: 0 }, { invitation_reward_credits: 1.5 }, { enabled: 'true' }, { invite_page_base_url: 'https://example.com/invite?code=abc' }]) await assert.rejects(service.saveConfig('admin', { ...valid, ...patch }), error => error.getStatus() === 400);
+  const valid = { enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invitation_anti_abuse_enabled: true, invitation_daily_reward_limit: 20, invitation_monthly_reward_limit: 200, invite_page_base_url: 'https://example.com/invite', windows_download_url: '', macos_download_url: '', revision: 0 };
+  for (const patch of [{ direct_rate_bps: 9900, indirect_rate_bps: 101 }, { direct_rate_bps: 0, indirect_rate_bps: 0 }, { minimum_withdrawal_fen: 0 }, { invitation_reward_credits: 1.5 }, { enabled: 'true' }, { invitation_anti_abuse_enabled: 'true' }, { invitation_daily_reward_limit: 0 }, { invitation_daily_reward_limit: 201 }, { invite_page_base_url: 'https://example.com/invite?code=abc' }]) await assert.rejects(service.saveConfig('admin', { ...valid, ...patch }), error => error.getStatus() === 400);
+});
+
+test('anti-abuse mode keeps registration reward pending and first real payment releases it within caps', async () => {
+  const parent = 'parent', invited = 'invited', rewardId = 'reward', orderId = 'order';
+  const executed = [];
+  const config = { enabled: false, direct_rate_bps: 0, indirect_rate_bps: 0, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invitation_anti_abuse_enabled: true, invitation_daily_reward_limit: 2, invitation_monthly_reward_limit: 10, invite_page_base_url: '', windows_download_url: '', macos_download_url: '', revision: 1 };
+  const connection = {
+    async execute(sql, parameters) { executed.push([sql, parameters]); return [{ affectedRows: 1 }]; },
+    async query(sql) {
+      if (sql.startsWith('SELECT id FROM users')) return [[{ id: parent }]];
+      if (sql.startsWith('SELECT inviter_id')) return [[{ inviter_id: parent }]];
+      if (sql.startsWith('SELECT status FROM users')) return [[{ status: 'ACTIVE' }]];
+      if (sql.startsWith('SELECT * FROM referral_rewards')) return [[{ id: rewardId, inviter_id: parent, invited_user_id: invited, credits: 20, status: 'PENDING_PAYMENT', daily_limit_snapshot: 2, monthly_limit_snapshot: 10 }]];
+      if (sql.startsWith('SELECT period_type')) return [[{ period_type: 'DAY', rewarded_count: 0 }, { period_type: 'MONTH', rewarded_count: 0 }]];
+      if (sql.startsWith('SELECT id FROM ledger_accounts')) return [[{ id: 'account' }]];
+      if (sql.startsWith('SELECT payment_order_id')) return [[]];
+      return [[]];
+    },
+  };
+  const service = new ReferralsService({}, {}, { values: { adminOrigin: 'https://example.invalid' } });
+  service.ensureInviteCode = async () => 'CODE2345'; service.inviter = async () => parent; service.config = async () => config;
+  await service.newUser(connection, invited, 'CODE2345');
+  assert.ok(executed.some(([sql, parameters]) => sql.startsWith('INSERT INTO referral_rewards') && parameters.includes('PENDING_PAYMENT')));
+  assert.equal(executed.some(([sql]) => sql.startsWith('INSERT INTO ledger_entries')), false);
+  executed.length = 0;
+  await service.settlePayment(connection, orderId, invited, 100);
+  assert.ok(executed.some(([sql]) => sql.startsWith('INSERT INTO ledger_entries')));
+  assert.ok(executed.some(([sql, parameters]) => sql.startsWith("UPDATE referral_rewards SET status = 'REWARDED'") && parameters.includes(orderId)));
+});
+
+test('disabled anti-abuse mode preserves immediate registration rewards', async () => {
+  const executed = [], parent = 'parent', invited = 'invited';
+  const connection = {
+    async execute(sql, parameters) { executed.push([sql, parameters]); return [{ affectedRows: 1 }]; },
+    async query(sql) {
+      if (sql.startsWith('SELECT id FROM users')) return [[{ id: parent }]];
+      if (sql.startsWith('SELECT id FROM ledger_accounts')) return [[{ id: 'account' }]];
+      return [[]];
+    },
+  };
+  const service = new ReferralsService({}, {}, { values: { adminOrigin: 'https://example.invalid' } });
+  service.ensureInviteCode = async () => 'CODE2345'; service.inviter = async () => parent;
+  service.config = async () => ({ invitation_reward_credits: 20, invitation_anti_abuse_enabled: false, invitation_daily_reward_limit: 2, invitation_monthly_reward_limit: 10, revision: 1 });
+  await service.newUser(connection, invited, 'CODE2345');
+  assert.ok(executed.some(([sql, parameters]) => sql.startsWith('INSERT INTO referral_rewards') && parameters.includes('REWARDED')));
+  assert.ok(executed.some(([sql]) => sql.startsWith('INSERT INTO ledger_entries')));
+});
+
+test('anti-abuse cap marks a qualified invitation limited without issuing credits', async () => {
+  const executed = [], parent = 'parent', invited = 'invited', orderId = 'order';
+  const connection = {
+    async execute(sql, parameters) { executed.push([sql, parameters]); return [{ affectedRows: 1 }]; },
+    async query(sql) {
+      if (sql.startsWith('SELECT payment_order_id')) return [[]];
+      if (sql.startsWith('SELECT inviter_id')) return [[{ inviter_id: parent }]];
+      if (sql.startsWith('SELECT status FROM users')) return [[{ status: 'ACTIVE' }]];
+      if (sql.startsWith('SELECT * FROM referral_rewards')) return [[{ id: 'reward', inviter_id: parent, invited_user_id: invited, credits: 20, status: 'PENDING_PAYMENT', daily_limit_snapshot: 2, monthly_limit_snapshot: 10 }]];
+      if (sql.startsWith('SELECT period_type')) return [[{ period_type: 'DAY', rewarded_count: 2 }, { period_type: 'MONTH', rewarded_count: 2 }]];
+      return [[]];
+    },
+  };
+  const service = new ReferralsService({}, {}, {});
+  service.config = async () => ({ enabled: false, direct_rate_bps: 0, indirect_rate_bps: 0, revision: 1 });
+  await service.settlePayment(connection, orderId, invited, 100);
+  assert.equal(executed.some(([sql]) => sql.startsWith('INSERT INTO ledger_entries')), false);
+  assert.ok(executed.some(([sql, parameters]) => sql.startsWith("UPDATE referral_rewards SET status = 'LIMITED'") && parameters.includes('已达到每日邀请奖励人数上限')));
+});
+
+test('software download settings validate URLs and update without changing distribution rules', async () => {
+  const executed = [];
+  const connection = {
+    async query() { return [[{ revision: 5 }]]; },
+    async execute(sql, parameters) { executed.push([sql, parameters]); },
+  };
+  const row = { enabled: 0, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invite_page_base_url: 'https://example.invalid/invite', windows_download_url: 'https://download.example.invalid/app.exe', macos_download_url: '', revision: 6, updated_at: 'now' };
+  const database = { async transaction(operation) { return operation(connection); }, async query() { return [row]; } };
+  const service = new ReferralsService(database, {}, { values: { adminOrigin: 'https://example.invalid' } });
+  const result = await service.saveDownloadConfig('admin-1', { windows_download_url: row.windows_download_url, macos_download_url: '', revision: 5 });
+  assert.match(executed[0][0], /SET windows_download_url = \?, macos_download_url = \?/);
+  assert.deepEqual(executed[0][1], [row.windows_download_url, '', 'admin-1']);
+  assert.match(executed[1][0], /INSERT INTO audit_logs/);
+  assert.equal(result.revision, 6);
+  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_url: '', macos_download_url: '', revision: 6 }), /至少需要配置一个/);
+  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_url: 'http:\/\/example.invalid\/app.exe', macos_download_url: '', revision: 6 }), /HTTPS/);
 });

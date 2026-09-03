@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { apiRequest, ApiError } from "@/lib/api";
+import { useProductBrand } from "@/components/ProductBrand";
 
 type Invitation = { invite_code: string; windows_download_url: string; macos_download_url: string };
 type Captcha = { captcha_id: string; image_data_url: string };
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 
 export function InvitationRegister({ code }: { code: string }) {
+  const productBrand = useProductBrand();
   const [invitation, setInvitation] = useState<Invitation | null>(null), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [email, setEmail] = useState(""), [password, setPassword] = useState(""), [name, setName] = useState(""), [emailCode, setEmailCode] = useState("");
   const [complete, setComplete] = useState(false), [busy, setBusy] = useState(false), [phase, setPhase] = useState(""), [retryAt, setRetryAt] = useState(0), [now, setNow] = useState(Date.now());
@@ -24,6 +26,7 @@ export function InvitationRegister({ code }: { code: string }) {
     return () => { active = false; mounted.current = false; version.current++; };
   }, [code]);
   useEffect(() => { if (!retryAt) return; const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, [retryAt]);
+  useEffect(() => { if (typeof document !== "undefined") document.title = `好友邀请 · ${productBrand.chinese_name}`; }, [productBrand.chinese_name]);
   useEffect(() => {
     if (!open) return;
     const overflow = document.body.style.overflow; document.body.style.overflow = "hidden";
@@ -80,12 +83,12 @@ export function InvitationRegister({ code }: { code: string }) {
     } catch (cause) { if (mounted.current) failure(cause); }
     finally { lock.current = false; if (mounted.current) setBusy(false); }
   };
-  return <main className="invite-page"><section className="invite-intro"><div className="brand"><span className="brand-mark">AI</span><div><strong>AI Video Studio</strong><small>CREATE WITH A FRIEND</small></div></div><h1>从一次邀请，<br />开始你的创作。</h1><p>注册、绑定邀请关系，然后下载客户端。项目和生成素材保存在你的电脑。</p><ol><li>验证邮箱并创建账户</li><li>自动绑定邀请人</li><li>下载安装，用同一邮箱登录</li></ol></section>
-    <section className="invite-registration"><span className="kicker">好友邀请码 · {code}</span><h2>{complete ? "注册成功，欢迎加入" : "注册并下载"}</h2>
+  return <main className="invite-page"><section className="invite-intro"><div className="brand"><span className="brand-mark">{productBrand.chinese_name.slice(0, 1)}</span><div><strong>{productBrand.chinese_name}</strong><small>{productBrand.english_name}</small></div></div><h1>开启你的<br />AI 视频创作。</h1><p>注册账户并下载客户端。项目和生成素材保存在你的电脑。</p><ol><li>验证邮箱</li><li>创建创作账户</li><li>下载安装，用同一邮箱登录</li></ol></section>
+    <section className="invite-registration"><span className="kicker">专属注册通道</span><h2>{complete ? "注册成功，欢迎加入" : "注册并下载"}</h2>
       {error && !open && <div className="form-error" role="alert">{error}</div>}
-      {!invitation ? <p>{error ? "邀请链接暂不可用，请联系邀请人核对。" : "正在核对邀请链接…"}</p> : complete ? <><p>已为 {normalized} 创建账户并绑定邀请人。安装后请使用此邮箱和刚才设置的密码登录，无需再次注册。</p><div className="invite-downloads">{invitation.windows_download_url && <a className="primary" href={invitation.windows_download_url} rel="noreferrer">下载 Windows 客户端</a>}{invitation.macos_download_url && <a className="secondary" href={invitation.macos_download_url} rel="noreferrer">下载 macOS 客户端</a>}{!invitation.windows_download_url && !invitation.macos_download_url && <p>管理员尚未配置安装包下载地址，请联系邀请人获取安装包。账户与邀请关系已保存。</p>}</div></> : <form onSubmit={register}>
+      {!invitation ? <p>{error ? "注册链接暂不可用，请联系页面提供方核对。" : "正在核对注册链接…"}</p> : complete ? <><p>已为 {normalized} 创建账户。请立即下载客户端，并使用此邮箱和刚才设置的密码登录，无需再次注册。</p><div className="invite-downloads">{invitation.windows_download_url && <a className="primary" href={invitation.windows_download_url} rel="noreferrer">下载 Windows 客户端</a>}{invitation.macos_download_url && <a className="secondary" href={invitation.macos_download_url} rel="noreferrer">下载 macOS 客户端</a>}{!invitation.windows_download_url && !invitation.macos_download_url && <p>软件下载地址暂未配置，请稍后刷新页面或联系页面提供方。</p>}</div></> : <form onSubmit={register}>
         <fieldset disabled={busy || open}><label>邮箱<input type="email" value={email} onChange={e => { setEmail(e.target.value); setEmailCode(""); setNotice(""); setError(""); }} autoComplete="username" maxLength={191} required /></label><label>密码<input type="password" value={password} minLength={8} maxLength={128} onChange={e => setPassword(e.target.value)} autoComplete="new-password" required /><small>8～128 位，同时包含字母和数字。</small></label><label>昵称<input value={name} onChange={e => setName(e.target.value)} maxLength={100} placeholder="选填" /></label><label>邮箱验证码<div className="invite-code-row"><input ref={codeInput} value={emailCode} onChange={e => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required /><button ref={sendButton} className="secondary" type="button" disabled={!valid || busy || cooldown > 0} aria-haspopup="dialog" onClick={() => void loadCaptcha()}>{cooldown ? `${cooldown} 秒后重发` : "发送邮箱验证码"}</button></div></label></fieldset>
-        {notice && <p role="status">{notice}</p>}<p className="invite-disclosure">注册成功即绑定邀请码 {code} 对应的邀请人；已有账户不重新绑定。邀请人会获得平台配置的积分奖励。</p><button className="primary" disabled={busy || open || !valid || !/^\d{6}$/.test(emailCode)}>{busy ? "处理中…" : "创建账户并绑定邀请"}</button>
+        {notice && <p role="status">{notice}</p>}<button className="primary" disabled={busy || open || !valid || !/^\d{6}$/.test(emailCode)}>{busy ? "处理中…" : "创建账户"}</button>
       </form>}
     </section>
     {open && createPortal(<div className="distribution-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><section className="distribution-modal invite-captcha" ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="图形验证" onKeyDown={e => {

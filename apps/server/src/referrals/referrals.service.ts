@@ -8,14 +8,24 @@ import { requiredString } from "../common/input";
 import { commissionFen, generateInviteCode, integer, inviteCode, publicUrl, receiptImage, withdrawalWindow } from "./referral-rules";
 
 const withdrawalColumns = "id, user_id, amount_fen, status, review_note, reviewed_at, processing_by, processing_at, paid_at, created_at";
-type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number; invitation_reward_credits: number; invite_page_base_url: string; windows_download_url: string; macos_download_url: string; revision: number; updated_at?: unknown };
+type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_url: string; macos_download_url: string; revision: number; updated_at?: unknown };
+
+function chinaRewardPeriodKeys(now = new Date()) {
+  const shifted = new Date(now.getTime() + 8 * 3600_000);
+  const year = shifted.getUTCFullYear(), month = shifted.getUTCMonth(), day = shifted.getUTCDate();
+  const date = (value: number) => `${year}-${String(month + 1).padStart(2, "0")}-${String(value).padStart(2, "0")}`;
+  return {
+    dayKey: date(day),
+    monthKey: date(1),
+  };
+}
 
 @Injectable()
 export class ReferralsService {
   constructor(@Inject(DatabaseService) private readonly db: DatabaseService, @Inject(SecretCryptoService) private readonly crypto: SecretCryptoService, @Inject(EnvironmentService) private readonly environment: EnvironmentService) {}
 
   private configValue(row: RowDataPacket): Config {
-    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_url: row.windows_download_url, macos_download_url: row.macos_download_url, revision: Number(row.revision), updated_at: row.updated_at };
+    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invitation_anti_abuse_enabled: Boolean(row.invitation_anti_abuse_enabled), invitation_daily_reward_limit: Number(row.invitation_daily_reward_limit ?? 20), invitation_monthly_reward_limit: Number(row.invitation_monthly_reward_limit ?? 200), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_url: row.windows_download_url, macos_download_url: row.macos_download_url, revision: Number(row.revision), updated_at: row.updated_at };
   }
   async config(connection?: PoolConnection): Promise<Config> {
     const rows = connection ? (await connection.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1"))[0] : await this.db.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1");
@@ -29,6 +39,11 @@ export class ReferralsService {
     if (direct + indirect > 10000 || (input.enabled && direct + indirect === 0)) throw new BadRequestException("分润比例合计不得超过 100%，启用时不能都为零");
     const minimum = integer(input.minimum_withdrawal_fen, "最低提现金额（分）", 1);
     const reward = integer(input.invitation_reward_credits, "邀请奖励积分", 0, 100000);
+    if (typeof input.invitation_anti_abuse_enabled !== "boolean") throw new BadRequestException("邀请防刷开关必须为布尔值");
+    const antiAbuse = input.invitation_anti_abuse_enabled;
+    const dailyLimit = integer(input.invitation_daily_reward_limit, "每日邀请奖励人数上限", 1, 100000);
+    const monthlyLimit = integer(input.invitation_monthly_reward_limit, "每月邀请奖励人数上限", 1, 1000000);
+    if (monthlyLimit < dailyLimit) throw new BadRequestException("每月邀请奖励人数上限不能小于每日上限");
     const base = publicUrl(input.invite_page_base_url, "邀请页地址", 500).replace(/\/$/, "");
     if (base && new URL(base).search) throw new BadRequestException("邀请页地址不能包含查询参数");
     const windows = publicUrl(input.windows_download_url, "Windows 安装包地址"), macos = publicUrl(input.macos_download_url, "macOS 安装包地址");
@@ -36,10 +51,37 @@ export class ReferralsService {
     await this.db.transaction(async c => {
       const [rows] = await c.query<RowDataPacket[]>("SELECT revision FROM distribution_configs WHERE id = 1 FOR UPDATE");
       if (Number(rows[0]?.revision) !== input.revision) throw new ConflictException("配置已更新，请重新读取");
-      await c.execute("UPDATE distribution_configs SET enabled = ?, direct_rate_bps = ?, indirect_rate_bps = ?, minimum_withdrawal_fen = ?, invitation_reward_credits = ?, invite_page_base_url = ?, windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1", [enabled, direct, indirect, minimum, reward, base, windows, macos, adminId]);
-      await this.audit(c, adminId, "distribution.config", "1", { enabled: input.enabled, direct_rate_bps: direct, indirect_rate_bps: indirect, minimum_withdrawal_fen: minimum, invitation_reward_credits: reward, invite_page_base_url: base, windows_download_url: windows, macos_download_url: macos, revision: Number(input.revision) + 1 });
+      await c.execute("UPDATE distribution_configs SET enabled = ?, direct_rate_bps = ?, indirect_rate_bps = ?, minimum_withdrawal_fen = ?, invitation_reward_credits = ?, invitation_anti_abuse_enabled = ?, invitation_daily_reward_limit = ?, invitation_monthly_reward_limit = ?, invite_page_base_url = ?, windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1", [enabled, direct, indirect, minimum, reward, antiAbuse, dailyLimit, monthlyLimit, base, windows, macos, adminId]);
+      await this.audit(c, adminId, "distribution.config", "1", { enabled: input.enabled, direct_rate_bps: direct, indirect_rate_bps: indirect, minimum_withdrawal_fen: minimum, invitation_reward_credits: reward, invitation_anti_abuse_enabled: antiAbuse, invitation_daily_reward_limit: dailyLimit, invitation_monthly_reward_limit: monthlyLimit, invite_page_base_url: base, windows_download_url: windows, macos_download_url: macos, revision: Number(input.revision) + 1 });
     });
     return this.config();
+  }
+
+  async downloadConfig() {
+    const config = await this.config();
+    return {
+      windows_download_url: config.windows_download_url,
+      macos_download_url: config.macos_download_url,
+      revision: config.revision,
+      updated_at: config.updated_at,
+    };
+  }
+
+  async saveDownloadConfig(adminId: string, input: Record<string, unknown>) {
+    const windows = publicUrl(input.windows_download_url, "Windows 安装包地址");
+    const macos = publicUrl(input.macos_download_url, "macOS 安装包地址");
+    if (!windows && !macos) throw new BadRequestException("至少需要配置一个软件下载地址");
+    const revision = integer(input.revision, "配置版本");
+    await this.db.transaction(async c => {
+      const [rows] = await c.query<RowDataPacket[]>("SELECT revision FROM distribution_configs WHERE id = 1 FOR UPDATE");
+      if (Number(rows[0]?.revision) !== revision) throw new ConflictException("配置已更新，请重新读取");
+      await c.execute(
+        "UPDATE distribution_configs SET windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1",
+        [windows, macos, adminId],
+      );
+      await this.audit(c, adminId, "software_downloads.config", "1", { windows_download_url: windows, macos_download_url: macos, revision: revision + 1 });
+    });
+    return this.downloadConfig();
   }
 
   async ensureInviteCode(userId: string, connection?: PoolConnection): Promise<string> {
@@ -75,14 +117,71 @@ export class ReferralsService {
     const [update] = await c.execute<ResultSetHeader>("UPDATE users SET pid = ? WHERE id = ? AND pid IS NULL", [parent, userId]);
     if (update.affectedRows !== 1) throw new ConflictException("上级关系已绑定，不能重复绑定");
     const config = await this.config(c), rewardId = randomUUID();
-    await c.execute("INSERT INTO referral_rewards (id, inviter_id, invited_user_id, credits, config_revision) VALUES (?, ?, ?, ?, ?)", [rewardId, parent, userId, config.invitation_reward_credits, config.revision]);
-    if (config.invitation_reward_credits > 0) {
-      const [accounts] = await c.query<RowDataPacket[]>("SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' FOR UPDATE", [parent]);
-      if (!accounts[0]) throw new ConflictException("邀请人积分账户不存在");
-      const transaction = randomUUID();
-      await c.execute("INSERT INTO ledger_transactions (id, transaction_type, reference_type, reference_id, metadata_json) VALUES (?, 'INVITATION_REWARD', 'referral_reward', ?, ?)", [transaction, rewardId, JSON.stringify({ invited_user_id: userId })]);
-      await c.execute("INSERT INTO ledger_entries (id, transaction_id, account_id, amount) VALUES (?, ?, ?, ?)", [randomUUID(), transaction, accounts[0].id, config.invitation_reward_credits]);
+    const pending = config.invitation_anti_abuse_enabled;
+    await c.execute("INSERT INTO referral_rewards (id, inviter_id, invited_user_id, credits, config_revision, status, daily_limit_snapshot, monthly_limit_snapshot, rewarded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [rewardId, parent, userId, config.invitation_reward_credits, config.revision, pending ? "PENDING_PAYMENT" : "REWARDED", config.invitation_daily_reward_limit, config.invitation_monthly_reward_limit, pending ? null : new Date()]);
+    if (!pending) {
+      const reward = { id: rewardId, inviter_id: parent, invited_user_id: userId, credits: config.invitation_reward_credits };
+      await this.creditInvitationReward(c, reward);
+      await this.incrementInvitationRewardUsage(c, parent, Number(reward.credits));
     }
+  }
+
+  private async usageRows(c: PoolConnection, inviterId: string) {
+    const { dayKey, monthKey } = chinaRewardPeriodKeys();
+    await c.execute("INSERT INTO invitation_reward_usage (inviter_id, period_type, period_key, rewarded_count) VALUES (?, 'DAY', ?, 0), (?, 'MONTH', ?, 0) ON DUPLICATE KEY UPDATE inviter_id = VALUES(inviter_id)", [inviterId, dayKey, inviterId, monthKey]);
+    const [rows] = await c.query<RowDataPacket[]>("SELECT period_type, rewarded_count FROM invitation_reward_usage WHERE inviter_id = ? AND ((period_type = 'DAY' AND period_key = ?) OR (period_type = 'MONTH' AND period_key = ?)) FOR UPDATE", [inviterId, dayKey, monthKey]);
+    return { dayKey, monthKey, dayCount: Number(rows.find(row => row.period_type === "DAY")?.rewarded_count || 0), monthCount: Number(rows.find(row => row.period_type === "MONTH")?.rewarded_count || 0) };
+  }
+
+  private async incrementInvitationRewardUsage(c: PoolConnection, inviterId: string, credits: number) {
+    if (credits <= 0) return;
+    const usage = await this.usageRows(c, inviterId);
+    await c.execute("UPDATE invitation_reward_usage SET rewarded_count = rewarded_count + 1 WHERE inviter_id = ? AND ((period_type = 'DAY' AND period_key = ?) OR (period_type = 'MONTH' AND period_key = ?))", [inviterId, usage.dayKey, usage.monthKey]);
+  }
+
+  private async creditInvitationReward(c: PoolConnection, reward: RowDataPacket | { id: string; inviter_id: string; invited_user_id: string; credits: number }, paymentOrderId?: string): Promise<boolean> {
+    if (Number(reward.credits) <= 0) return true;
+    const [accounts] = await c.query<RowDataPacket[]>("SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' FOR UPDATE", [reward.inviter_id]);
+    if (!accounts[0]) {
+      if (paymentOrderId) return false;
+      throw new ConflictException("邀请人积分账户不存在");
+    }
+    const transaction = randomUUID();
+    await c.execute("INSERT INTO ledger_transactions (id, transaction_type, reference_type, reference_id, metadata_json) VALUES (?, 'INVITATION_REWARD', 'referral_reward', ?, ?)", [transaction, reward.id, JSON.stringify({ invited_user_id: reward.invited_user_id, qualified_payment_order_id: paymentOrderId })]);
+    await c.execute("INSERT INTO ledger_entries (id, transaction_id, account_id, amount) VALUES (?, ?, ?, ?)", [randomUUID(), transaction, accounts[0].id, Number(reward.credits)]);
+    return true;
+  }
+
+  private async qualifyInvitationReward(c: PoolConnection, invitedUserId: string, paymentOrderId: string, paidAmountFen: number) {
+    if (paidAmountFen <= 0) return;
+    const [candidateRows] = await c.query<RowDataPacket[]>("SELECT inviter_id FROM referral_rewards WHERE invited_user_id = ? AND status = 'PENDING_PAYMENT' LIMIT 1", [invitedUserId]);
+    if (!candidateRows[0]) return;
+    const inviterId = String(candidateRows[0].inviter_id);
+    const [inviterRows] = await c.query<RowDataPacket[]>("SELECT status FROM users WHERE id = ? FOR UPDATE", [inviterId]);
+    const [rewardRows] = await c.query<RowDataPacket[]>("SELECT * FROM referral_rewards WHERE invited_user_id = ? FOR UPDATE", [invitedUserId]);
+    const reward = rewardRows[0];
+    if (!reward || reward.status !== "PENDING_PAYMENT") return;
+    if (inviterRows[0]?.status !== "ACTIVE") {
+      await c.execute("UPDATE referral_rewards SET status = 'LIMITED', qualified_payment_order_id = ?, qualified_at = CURRENT_TIMESTAMP(3), status_note = '邀请人已停用' WHERE id = ?", [paymentOrderId, reward.id]);
+      return;
+    }
+    if (Number(reward.credits) <= 0) {
+      await c.execute("UPDATE referral_rewards SET status = 'REWARDED', qualified_payment_order_id = ?, qualified_at = CURRENT_TIMESTAMP(3), rewarded_at = CURRENT_TIMESTAMP(3), status_note = '' WHERE id = ?", [paymentOrderId, reward.id]);
+      return;
+    }
+    const usage = await this.usageRows(c, inviterId);
+    const dailyLimit = Number(reward.daily_limit_snapshot), monthlyLimit = Number(reward.monthly_limit_snapshot);
+    if (usage.dayCount >= dailyLimit || usage.monthCount >= monthlyLimit) {
+      const note = usage.dayCount >= dailyLimit ? "已达到每日邀请奖励人数上限" : "已达到每月邀请奖励人数上限";
+      await c.execute("UPDATE referral_rewards SET status = 'LIMITED', qualified_payment_order_id = ?, qualified_at = CURRENT_TIMESTAMP(3), status_note = ? WHERE id = ?", [paymentOrderId, note, reward.id]);
+      return;
+    }
+    if (!await this.creditInvitationReward(c, reward, paymentOrderId)) {
+      await c.execute("UPDATE referral_rewards SET status = 'LIMITED', qualified_payment_order_id = ?, qualified_at = CURRENT_TIMESTAMP(3), status_note = '邀请人积分账户异常' WHERE id = ?", [paymentOrderId, reward.id]);
+      return;
+    }
+    await c.execute("UPDATE invitation_reward_usage SET rewarded_count = rewarded_count + 1 WHERE inviter_id = ? AND ((period_type = 'DAY' AND period_key = ?) OR (period_type = 'MONTH' AND period_key = ?))", [inviterId, usage.dayKey, usage.monthKey]);
+    await c.execute("UPDATE referral_rewards SET status = 'REWARDED', qualified_payment_order_id = ?, qualified_at = CURRENT_TIMESTAMP(3), rewarded_at = CURRENT_TIMESTAMP(3), status_note = '' WHERE id = ?", [paymentOrderId, reward.id]);
   }
 
   async publicInvitation(code: string) {
@@ -94,8 +193,8 @@ export class ReferralsService {
   async summary(userId: string) {
     const code = await this.ensureInviteCode(userId), config = await this.config();
     const [wallet] = await this.db.query<RowDataPacket[]>("SELECT available_fen, frozen_fen, earned_fen, paid_fen FROM commission_wallets WHERE user_id = ?", [userId]);
-    const [count] = await this.db.query<RowDataPacket[]>("SELECT COUNT(*) AS invited_count, COALESCE(SUM(credits), 0) AS reward_credits FROM referral_rewards WHERE inviter_id = ?", [userId]);
-    return { invite_code: code, invitation_url: `${config.invite_page_base_url}/${code}`, invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
+    const [count] = await this.db.query<RowDataPacket[]>("SELECT COUNT(*) AS invited_count, COALESCE(SUM(CASE WHEN status = 'REWARDED' THEN credits ELSE 0 END), 0) AS reward_credits FROM referral_rewards WHERE inviter_id = ?", [userId]);
+    return { invite_code: code, invitation_url: `${config.invite_page_base_url}/${code}`, invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, invitation_anti_abuse_enabled: config.invitation_anti_abuse_enabled, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
   }
 
   private async wallet(c: PoolConnection, userId: string) {
@@ -117,6 +216,7 @@ export class ReferralsService {
     if (existing.length) return;
     const config = await this.config(c);
     await c.execute("INSERT INTO distribution_settlements (payment_order_id, payer_id, paid_amount_fen, enabled, direct_rate_bps, indirect_rate_bps, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?)", [orderId, payerId, paidAmountFen, config.enabled, config.direct_rate_bps, config.indirect_rate_bps, config.revision]);
+    await this.qualifyInvitationReward(c, payerId, orderId, paidAmountFen);
     if (!config.enabled || paidAmountFen === 0) return;
     const [rows] = await c.query<RowDataPacket[]>("SELECT p.id AS direct_id, p.status AS direct_status, gp.id AS indirect_id, gp.status AS indirect_status FROM users u LEFT JOIN users p ON p.id = u.pid LEFT JOIN users gp ON gp.id = p.pid WHERE u.id = ?", [payerId]);
     const chain = rows[0];
@@ -249,8 +349,9 @@ export class ReferralsService {
     const owner = kind === "commissions" ? "beneficiary_id" : kind === "rewards" ? "inviter_id" : "user_id";
     const conditions: string[] = [], parameters: unknown[] = [];
     if (userId) { conditions.push(`${owner} = ?`); parameters.push(userId); }
-    if (status && kind === "withdrawals") {
-      if (!["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID"].includes(status)) throw new BadRequestException("提现状态无效");
+    if (status && (kind === "withdrawals" || kind === "rewards")) {
+      const allowed = kind === "withdrawals" ? ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID"] : ["PENDING_PAYMENT", "REWARDED", "LIMITED"];
+      if (!allowed.includes(status)) throw new BadRequestException(kind === "withdrawals" ? "提现状态无效" : "邀请奖励状态无效");
       conditions.push("status = ?"); parameters.push(status);
     }
     const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";

@@ -39,6 +39,6 @@ test('changing to invalid or oversized receipt clears previous valid image', asy
   const h = await prepare();
   h.inputs()[3].props.onChange({ target: { files: [{ type: 'image/svg+xml', size: 20 }] } }); h.render();
   assert.equal(h.button('提交提现申请').props.disabled, true); h.submit(); await flush(); assert.equal(h.calls.length, 0);
-  h.inputs()[3].props.onChange({ target: { files: [{ type: 'image/png', size: 262145 }] } }); h.render();
+  h.inputs()[3].props.onChange({ target: { files: [{ type: 'image/png', size: 2 * 1024 * 1024 + 1 }] } }); h.render();
   assert.equal(h.nodes().some(x => x.type === 'img'), false);
 });

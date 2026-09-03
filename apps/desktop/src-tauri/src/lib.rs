@@ -19,14 +19,25 @@ mod platform_video_understanding;
 mod project;
 mod shot_policy;
 mod story_policy;
+mod tray;
 mod video_remix;
 mod worker;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            tray::initialize(app)?;
             logging::init(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
@@ -92,6 +103,8 @@ pub fn run() {
             agent::list_agent_messages,
             agent::list_agent_runs,
             agent::send_agent_message,
+            tray::set_tray_status,
+            tray::exit_application,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AI Video Studio");

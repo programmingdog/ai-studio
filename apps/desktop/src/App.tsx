@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WorkflowStartModal, type WorkflowStartChoice, type PlannedMedia } from "./components/WorkflowStartModal";
 import { runningWorkflows, setWorkflowQuiet } from "./services/workflowQuiet";
 import { mergeTaskSnapshots, workflowErrorMessage } from "./services/workflowState";
@@ -24,6 +26,7 @@ import { CHARACTER_IMAGE_PROMPT } from "./prompts/characterImage";
 import { buildVideoUnderstandingPrompt, type FixedStoryboardSeconds, type StoryboardUnderstandingMode, type StoryboardUnderstandingSelection } from "./videoUnderstandingModes";
 import { supportedLocales, useI18n, type AppLocale } from "./i18n";
 import type { MessageKey } from "./i18n/locales";
+import { useProductBrand } from "./brand";
 import type { AutomaticWorkflowSnapshot } from "@aivs/schemas";
 
 const defaultSpec: CreationSpec = {
@@ -267,7 +270,25 @@ export function App() {
   const platformSession = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
   const platformUser = useQuery({ queryKey: ["platform-user"], queryFn: getPlatformUser, enabled: Boolean(platformSession.data), retry: false });
   const authenticated = Boolean(platformSession.data?.user_id && platformSession.data.user_id === platformUser.data?.id);
+  const authenticationChecking = platformSession.isLoading || Boolean(platformSession.data && platformUser.isLoading) || Boolean(platformUser.data && !authenticated);
   const activeUserId = useRef<string | null>(null);
+  useEffect(() => {
+    if (authenticationChecking || !("__TAURI_INTERNALS__" in window)) return;
+    const appWindow = getCurrentWindow();
+    void (async () => {
+      if (authenticated) {
+        await appWindow.setResizable(true);
+        await appWindow.maximize();
+        await appWindow.setMinSize(new LogicalSize(1080, 720));
+        return;
+      }
+      await appWindow.unmaximize();
+      await appWindow.setMinSize(new LogicalSize(520, 640));
+      await appWindow.setSize(new LogicalSize(560, 720));
+      await appWindow.center();
+      await appWindow.setResizable(false);
+    })().catch(error => console.error("调整登录窗口失败", error));
+  }, [authenticated, authenticationChecking]);
   useEffect(() => {
     const userId = platformUser.data?.id;
     if (!userId || platformSession.data?.user_id === userId) return;
@@ -333,7 +354,7 @@ export function App() {
     if (!bundle && startupWorkflowRecovery.data) setBundle(startupWorkflowRecovery.data);
   }, [bundle, setBundle, startupWorkflowRecovery.data, startupWorkflowRecovery.isLoading]);
 
-  if (platformSession.isLoading || (platformSession.data && platformUser.isLoading) || (platformUser.data && !authenticated)) return <div className="account-auth-gate"><LoaderCircle className="spin" size={28} /><span>正在验证登录状态…</span></div>;
+  if (authenticationChecking) return <div className="account-auth-gate"><LoaderCircle className="spin" size={28} /><span>正在验证登录状态…</span></div>;
   if (!authenticated) return <AccountCenterModal required onClose={() => undefined} />;
   if (!bundle?.canonical) return <><CreateProjectScreen initialBundle={bundle} onReady={setBundle} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} onOpenLogs={() => setShowApplicationLogs(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showApplicationLogs && <ApplicationLogsModal onClose={() => setShowApplicationLogs(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}</>;
 
@@ -1347,9 +1368,9 @@ function applicationLogDetailsText(entry: ApplicationLogEntry): string {
   return JSON.stringify(entry.details, null, 2);
 }
 
-function applicationLogExportText(entries: ApplicationLogEntry[], filter: ApplicationLogFilter, start: Date, end: Date, truncated: boolean): string {
+function applicationLogExportText(entries: ApplicationLogEntry[], filter: ApplicationLogFilter, start: Date, end: Date, truncated: boolean, productName: string): string {
   const header = [
-    "AI Video Studio 应用日志",
+    `${productName} 应用日志`,
     `时间范围：${start.toLocaleString("zh-CN", { hour12: false })} ～ ${end.toLocaleString("zh-CN", { hour12: false })}`,
     `日志等级：${filter === "all" ? "全部" : applicationLogLevelLabels[filter]}`,
     `记录数量：${entries.length}${truncated ? "（达到导出上限，较早记录未包含）" : ""}`,
@@ -1364,6 +1385,7 @@ function applicationLogExportText(entries: ApplicationLogEntry[], filter: Applic
 }
 
 function ApplicationLogsModal({ onClose }: { onClose: () => void }) {
+  const { productName } = useProductBrand();
   const [filter, setFilter] = useState<ApplicationLogFilter>("all");
   const [rangeStart, setRangeStart] = useState(() => localDateTimeInputValue(new Date(Date.now() - 24 * 60 * 60 * 1000)));
   const [rangeEnd, setRangeEnd] = useState(() => localDateTimeInputValue(new Date()));
@@ -1422,7 +1444,7 @@ function ApplicationLogsModal({ onClose }: { onClose: () => void }) {
       }
       const fileRange = `${rangeStart.replace(/[T:]/g, "-")}_${rangeEnd.replace(/[T:]/g, "-")}`;
       const savedPath = await saveTextAsTxt(
-        applicationLogExportText(rangedLogs.entries, filter, start, end, rangedLogs.truncated),
+        applicationLogExportText(rangedLogs.entries, filter, start, end, rangedLogs.truncated, productName),
         `AI_Video_Studio_日志_${fileRange}.txt`,
       );
       if (savedPath) {

@@ -11,6 +11,7 @@ function harness(overrides = {}) {
   const cells = [], effects = [], calls = [];
   let cursor = 0, tree;
   const api = {
+    async getClientAuthMethods() { return { email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; },
     async checkRegistrationEmail(email) { calls.push(['check', email]); return { email, registered: false }; },
     async loginPlatform(input) { calls.push(['login', input]); return { user: { id: 'known' } }; },
     async registerPlatformEmail(input) { calls.push(['register', input]); return { user: { id: 'new' } }; },
@@ -46,11 +47,11 @@ function harness(overrides = {}) {
   const password = () => { input('password').props.onChange({ target: { value: 'Password123' } }); render(); };
   const submit = () => nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   render();
-  return { api, calls, render, nodes, input, button, editEmail, blur, password, submit, unmount() { cells.forEach(cell => cell?.cleanup?.()); } };
+  return { api, calls, render, nodes, input, button, editEmail, blur, password, submit, async ready() { await flush(); render(); }, unmount() { cells.forEach(cell => cell?.cleanup?.()); } };
 }
 
-test('default view is email login with no registration tabs and a WeChat button below the form', () => {
-  const h = harness();
+test('default view is email login with no registration tabs and a WeChat button below the form', async () => {
+  const h = harness(); await h.ready();
   assert.ok(h.button('登录')); assert.ok(h.button('微信登录'));
   assert.equal(h.nodes().filter(x => x.type === 'input').length, 2);
   assert.equal(h.nodes().find(x => x.type === 'EmailVerification'), undefined);
@@ -59,7 +60,7 @@ test('default view is email login with no registration tabs and a WeChat button 
 });
 
 test('email is checked only on blur; new addresses expand registration below password', async () => {
-  const h = harness(); h.editEmail(' New@Example.com ');
+  const h = harness(); await h.ready(); h.editEmail(' New@Example.com ');
   assert.equal(h.calls.length, 0);
   await h.blur();
   assert.deepEqual(h.calls, [['check', 'new@example.com']]);
@@ -72,6 +73,7 @@ test('email is checked only on blur; new addresses expand registration below pas
 
 test('registered addresses keep password login and authenticate through existing login API', async () => {
   const h = harness({ async checkRegistrationEmail(email) { return { email, registered: true }; } });
+  await h.ready();
   h.editEmail('known@example.com'); await h.blur(); h.password();
   assert.equal(h.nodes().find(x => x.type === 'EmailVerification'), undefined);
   h.submit(); await flush(); h.render();
@@ -79,7 +81,7 @@ test('registered addresses keep password login and authenticate through existing
 });
 
 test('new addresses require the code and register directly into a logged-in session', async () => {
-  const h = harness(); h.editEmail('new@example.com'); await h.blur(); h.password();
+  const h = harness(); await h.ready(); h.editEmail('new@example.com'); await h.blur(); h.password();
   h.submit(); await flush(); assert.equal(h.calls.length, 1);
   h.nodes().find(x => x.type === 'EmailVerification').props.onCodeChange('012345'); h.render();
   h.submit(); h.submit(); await flush(); h.render();
@@ -91,6 +93,7 @@ test('new addresses require the code and register directly into a logged-in sess
 test('editing email resets registration/code and ignores stale status responses', async () => {
   let resolveOld;
   const h = harness({ checkRegistrationEmail: email => email === 'old@example.com' ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve({ email, registered: true }) });
+  await h.ready();
   h.editEmail('old@example.com'); await h.blur();
   h.editEmail('known@example.com'); await h.blur();
   resolveOld({ email: 'old@example.com', registered: false }); await flush(); h.render();
@@ -101,6 +104,7 @@ test('editing email resets registration/code and ignores stale status responses'
 
 test('invalid and failed checks cannot fall through to login or registration', async () => {
   const h = harness({ async checkRegistrationEmail() { throw new Error('检查暂不可用'); } });
+  await h.ready();
   h.editEmail('invalid'); await h.blur(); assert.equal(h.calls.length, 0);
   h.editEmail('new@example.com'); await h.blur(); h.password();
   assert.match(h.nodes().find(x => x.props?.role === 'alert').props.children[0], /检查暂不可用/);
@@ -109,13 +113,25 @@ test('invalid and failed checks cannot fall through to login or registration', a
   assert.equal(h.nodes().find(x => x.type === 'EmailVerification'), undefined);
 });
 
-test('WeChat entry opens a custom dialog, disables email submission and can close', () => {
-  const h = harness(); h.button('微信登录').props.onClick(); h.render();
+test('WeChat entry opens a custom dialog, disables email submission and can close', async () => {
+  const h = harness(); await h.ready(); h.button('微信登录').props.onClick(); h.render();
   assert.ok(h.nodes().find(x => x.type === 'WechatDialog'));
   assert.equal(h.input('email').props.disabled, true);
   h.nodes().find(x => x.type === 'WechatDialog').props.onClose(); h.render();
   assert.equal(h.nodes().find(x => x.type === 'WechatDialog'), undefined);
   assert.equal(h.input('email').props.disabled, false);
+});
+
+test('server login-method configuration controls which client entries are visible', async () => {
+  const wechatOnly = harness({ async getClientAuthMethods() { return { email_enabled: false, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; } });
+  await flush(); wechatOnly.render();
+  assert.equal(wechatOnly.input('email'), undefined);
+  assert.ok(wechatOnly.button('微信登录'));
+
+  const emailOnly = harness({ async getClientAuthMethods() { return { email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: false }; } });
+  await flush(); emailOnly.render();
+  assert.ok(emailOnly.input('email'));
+  assert.equal(emailOnly.button('微信登录'), undefined);
 });
 
 test('WeChat polling is serialized and cancellation blocks accepting late tokens', () => {

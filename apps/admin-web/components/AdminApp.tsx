@@ -12,10 +12,15 @@ import { CreditPricingPanel } from "@/components/CreditPricingPanel";
 import { CreditMultipliersPanel } from "@/components/CreditMultipliersPanel";
 import { MailConfigPanel } from "@/components/MailConfigPanel";
 import { DistributionConfigPanel, DistributionRecordsPanel } from "@/components/DistributionPanel";
+import { AuthMethodsConfigPanel } from "@/components/AuthMethodsConfigPanel";
+import { SoftwareDownloadConfigPanel } from "@/components/SoftwareDownloadConfigPanel";
+import { IpAccessRulesPanel } from "@/components/IpAccessRulesPanel";
+import { ProductBrandConfigPanel } from "@/components/ProductBrandConfigPanel";
+import { useProductBrand } from "@/components/ProductBrand";
+import { DashboardOverview } from "@/components/DashboardOverview";
 
-type View = "overview" | "configs" | "mail-config" | "distribution-config" | "commissions" | "withdrawals" | "payouts" | "referral-rewards" | "visual-styles" | "creative-types" | "providers" | "model-tests" | "users" | "tasks" | "credit-packages" | "credit-purchases" | "credit-consumptions" | "payments" | "audit";
+type View = "overview" | "configs" | "mail-config" | "software-downloads" | "distribution-config" | "commissions" | "withdrawals" | "payouts" | "referral-rewards" | "visual-styles" | "creative-types" | "providers" | "model-tests" | "users" | "tasks" | "credit-packages" | "credit-purchases" | "credit-consumptions" | "payments" | "audit";
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
-type Overview = { users: number; active_tasks: number; paid_orders: number; published_configs: number; enabled_providers: number; revenue_fen: number };
 type ConfigItem = {
   id: string; config_key: string; category: string; name: string; description: string; status: string;
   version_id: string | null; version: number | null; version_status: string | null; value_json: unknown; checksum: string | null;
@@ -46,6 +51,7 @@ const primaryNavigation: { id: View; label: string; eyebrow: string }[] = [
 const settingsNavigation: { id: View; label: string; eyebrow: string }[] = [
   { id: "configs", label: "配置中心", eyebrow: "CONFIG" },
   { id: "mail-config", label: "邮箱配置", eyebrow: "EMAIL" },
+  { id: "software-downloads", label: "软件下载", eyebrow: "DOWNLOADS" },
   { id: "distribution-config", label: "分销配置", eyebrow: "DISTRIBUTION" },
   { id: "visual-styles", label: "画风设定", eyebrow: "STYLES" },
   { id: "creative-types", label: "创作类型", eyebrow: "CREATIVE" },
@@ -85,6 +91,7 @@ function statusTone(status: unknown) {
 }
 
 export function AdminApp() {
+  const productBrand = useProductBrand();
   const [token, setToken] = useState<string | null>(null);
   const [admin, setAdmin] = useState<AdminPrincipal | null>(null);
   const [checking, setChecking] = useState(true);
@@ -93,6 +100,7 @@ export function AdminApp() {
   const [usersOpen, setUsersOpen] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
   const logout = useCallback(() => {
     localStorage.removeItem("aivs_admin_token");
@@ -108,6 +116,7 @@ export function AdminApp() {
       .catch(logout)
       .finally(() => setChecking(false));
   }, [logout]);
+  useEffect(() => { document.title = `${productBrand.chinese_name}管理后台`; }, [productBrand.chinese_name]);
 
   if (checking) return <div className="boot-screen"><span className="spinner" />正在验证管理会话…</div>;
   if (!token || !admin) return <LoginScreen onLogin={(nextToken, profile) => { setToken(nextToken); setAdmin(profile); }} />;
@@ -117,7 +126,7 @@ export function AdminApp() {
   return (
     <div className="admin-layout">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">AI</span><div><strong>Video Studio</strong><small>CONTROL CENTER</small></div></div>
+        <div className="brand"><span className="brand-mark">{productBrand.chinese_name.slice(0, 1)}</span><div><strong>{productBrand.chinese_name}</strong><small>{productBrand.english_name}</small></div></div>
         <nav>
           {primaryNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><span>{item.eyebrow.slice(0, 2)}</span><div>{item.label}<small>{item.eyebrow}</small></div></button>)}
           <div className={`nav-section ${settingsOpen ? "open" : ""} ${settingsNavigation.some((item) => item.id === view) ? "has-active" : ""}`}>
@@ -137,14 +146,14 @@ export function AdminApp() {
             <div className="subnav">{recordNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
           </div>
         </nav>
-        <div className="sidebar-foot"><div className="system-state"><i />单体服务架构</div><small>媒体文件存储：已禁用</small></div>
       </aside>
       <main>
-        <header className="topbar"><div><span>{active.eyebrow}</span><h1>{active.label}</h1></div><div className="admin-profile"><span>{admin.displayName.slice(0, 1).toUpperCase()}</span><div><strong>{admin.displayName}</strong><small>{admin.email}</small></div><button onClick={logout}>退出</button></div></header>
-        <div className="content">
-          {view === "overview" && <OverviewPanel token={token} />}
-          {view === "configs" && <><CreditMultipliersPanel token={token} /><CreditPricingPanel token={token} /><ConfigsPanel token={token} /></>}
+        <header className="topbar"><div><span>{active.eyebrow}</span><h1>{active.label}</h1></div><div className="admin-profile"><span>{admin.displayName.slice(0, 1).toUpperCase()}</span><div className="admin-identity"><strong>{admin.displayName}</strong><small>{admin.email}</small></div><div className="admin-profile-actions"><button type="button" onClick={() => setPasswordOpen(true)}>修改密码</button><button type="button" onClick={logout}>退出</button></div></div></header>
+        <div className={`content ${view === "overview" ? "dashboard-content" : ""}`}>
+          {view === "overview" && <DashboardOverview token={token} />}
+          {view === "configs" && <><ProductBrandConfigPanel token={token} /><IpAccessRulesPanel token={token} /><AuthMethodsConfigPanel token={token} /><CreditMultipliersPanel token={token} /><CreditPricingPanel token={token} /><ConfigsPanel token={token} /></>}
           {view === "mail-config" && <MailConfigPanel token={token} />}
+          {view === "software-downloads" && <SoftwareDownloadConfigPanel token={token} />}
           {view === "distribution-config" && <DistributionConfigPanel token={token} />}
           {(view === "commissions" || view === "withdrawals" || view === "payouts" || view === "referral-rewards") && <DistributionRecordsPanel key={view} token={token} kind={view === "referral-rewards" ? "rewards" : view} />}
           {view === "visual-styles" && <CatalogPanel token={token} kind="visual-styles" />}
@@ -160,11 +169,38 @@ export function AdminApp() {
           {view === "audit" && <DataPanel token={token} path="/admin/audit-logs" empty="还没有管理操作记录" columns={["admin_name", "action", "entity_type", "entity_id", "created_at"]} />}
         </div>
       </main>
+      {passwordOpen && <ChangePasswordModal token={token} onClose={() => setPasswordOpen(false)} />}
     </div>
   );
 }
 
+function ChangePasswordModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    if (newPassword !== confirmation) { setError("两次输入的新密码不一致"); return; }
+    setLoading(true);
+    try {
+      await apiRequest("/admin/auth/change-password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }, token);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmation("");
+      setMessage("密码修改成功，下次登录请使用新密码。");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "密码修改失败"); }
+    finally { setLoading(false); }
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (!loading && event.target === event.currentTarget) onClose(); }}><form className="modal password-change-modal" role="dialog" aria-modal="true" aria-labelledby="password-change-title" onSubmit={submit} onKeyDown={(event) => { if (!loading && event.key === "Escape") onClose(); }}><header><div><span className="kicker">ACCOUNT SECURITY</span><h2 id="password-change-title">修改登录密码</h2><p>验证当前密码后设置新密码，新密码至少 12 个字符。</p></div><button type="button" aria-label="关闭修改密码窗口" disabled={loading} onClick={onClose}>×</button></header><label>当前密码<input type="password" autoComplete="current-password" autoFocus value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label>新密码<input type="password" autoComplete="new-password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="至少 12 个字符" required /></label><label>确认新密码<input type="password" autoComplete="new-password" minLength={12} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>{error && <div className="form-error" role="alert">{error}</div>}{message && <div className="form-success" role="status">{message}</div>}<footer><button type="button" className="secondary" disabled={loading} onClick={onClose}>{message ? "完成" : "取消"}</button><button className="primary" disabled={loading}>{loading ? "正在修改…" : "确认修改"}</button></footer></form></div>;
+}
+
 function ChangePasswordScreen({ token, email, onChanged }: { token: string; email: string; onChanged: () => void }) {
+  const productBrand = useProductBrand();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -180,10 +216,11 @@ function ChangePasswordScreen({ token, email, onChanged }: { token: string; emai
     } catch (reason) { setError(reason instanceof Error ? reason.message : "修改失败"); }
     finally { setLoading(false); }
   };
-  return <div className="login-page"><section className="login-hero"><div className="brand"><span className="brand-mark">AI</span><div><strong>Video Studio</strong><small>SECURITY BASELINE</small></div></div><div><span className="kicker">FIRST SIGN-IN</span><h1>先保护平台，<br/><em>再开始运营</em></h1><p>临时管理员密码只能使用一次。修改后，所有管理操作仍会继续写入审计日志。</p></div><footer><i />账号：{email}</footer></section><section className="login-panel"><form onSubmit={submit}><span className="kicker">PASSWORD ROTATION</span><h2>修改临时密码</h2><p>新密码至少 12 个字符，建议使用密码管理器生成。</p><label>当前临时密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label>新密码<input type="password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label>确认新密码<input type="password" minLength={12} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>{error && <div className="form-error">{error}</div>}<button className="primary" disabled={loading}>{loading ? "正在修改…" : "修改并重新登录"}</button></form></section></div>;
+  return <div className="login-page"><section className="login-hero"><div className="brand"><span className="brand-mark">{productBrand.chinese_name.slice(0, 1)}</span><div><strong>{productBrand.chinese_name}</strong><small>{productBrand.english_name}</small></div></div><div><span className="kicker">安心启程</span><h1>守护每份灵感，<br/>也守护<em>每次成长</em></h1><p>换一个更安心的密码，然后继续把脑海里的好故事，变成观众眼前的好作品。</p></div><footer><i />创作不停，热爱不息</footer></section><section className="login-panel"><form onSubmit={submit}><span className="kicker">PASSWORD ROTATION</span><h2>修改临时密码</h2><p>新密码至少 12 个字符，建议使用密码管理器生成。</p><label>当前临时密码<input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label>新密码<input type="password" minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label>确认新密码<input type="password" minLength={12} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>{error && <div className="form-error">{error}</div>}<button className="primary" disabled={loading}>{loading ? "正在修改…" : "修改并重新登录"}</button></form></section></div>;
 }
 
 function LoginScreen({ onLogin }: { onLogin: (token: string, admin: AdminPrincipal) => void }) {
+  const productBrand = useProductBrand();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -197,21 +234,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string, admin: AdminPrincip
     } catch (reason) { setError(reason instanceof Error ? reason.message : "登录失败"); }
     finally { setLoading(false); }
   };
-  return <div className="login-page"><section className="login-hero"><div className="brand"><span className="brand-mark">AI</span><div><strong>Video Studio</strong><small>云端控制中心</small></div></div><div><span className="kicker">CLIENT-FIRST PLATFORM</span><h1>让服务端成为<br/><em>创作能力的支点</em></h1><p>统一鉴权、AI 路由、模板配置和微信支付。所有项目与生成媒体仍保存在客户电脑。</p></div><footer><i />模块化单体 · MySQL 5.7+ · 零媒体存储</footer></section><section className="login-panel"><form onSubmit={submit}><span className="kicker">ADMIN ACCESS</span><h2>登录管理后台</h2><p>使用管理员账号进入运营控制中心。</p><label>管理员邮箱<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="admin@example.com" required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="输入密码" required /></label>{error && <div className="form-error">{error}</div>}<button className="primary" disabled={loading}>{loading ? "正在登录…" : "安全登录"}</button><small>管理员操作会写入不可变审计日志。</small></form></section></div>;
-}
-
-function OverviewPanel({ token }: { token: string }) {
-  const [data, setData] = useState<Overview | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => { apiRequest<Overview>("/admin/dashboard/overview", {}, token).then(setData).catch((reason) => setError(String(reason))); }, [token]);
-  if (error) return <ErrorCard message={error} />;
-  if (!data) return <LoadingCard />;
-  const cards = [
-    ["注册用户", data.users, "累计平台用户"], ["进行中任务", data.active_tasks, "仅记录任务元数据"],
-    ["已支付订单", data.paid_orders, "微信 Native 支付"], ["累计收入", `¥${(data.revenue_fen / 100).toFixed(2)}`, "已支付订单金额"],
-    ["已发布配置", data.published_configs, "提示词 · 流程"], ["启用供应商", data.enabled_providers, "统一 AI Gateway"],
-  ];
-  return <><section className="hero-card"><div><span className="kicker">PLATFORM BASELINE</span><h2>服务端与管理后台建设中</h2><p>当前平台坚持模块化单体和客户端本地优先。任务媒体不进入服务器，管理后台只控制配置、鉴权、路由和账务。</p></div><div className="zero-storage"><strong>0</strong><span>SERVER MEDIA FILES</span></div></section><section className="metric-grid">{cards.map(([label, value, note]) => <article key={String(label)}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>)}</section><section className="principles"><article><span>01</span><div><strong>客户端核心不动</strong><p>服务端与后台总验收完成后才进入客户端迁移。</p></div></article><article><span>02</span><div><strong>配置集中、用户可覆盖</strong><p>后台发布默认值，本地高级设置始终优先。</p></div></article><article><span>03</span><div><strong>一键自动化优先</strong><p>剧本或抖音链接到本地成片是发布门禁。</p></div></article></section></>;
+  return <div className="login-page"><section className="login-hero"><div className="brand"><span className="brand-mark">{productBrand.chinese_name.slice(0, 1)}</span><div><strong>{productBrand.chinese_name}</strong><small>{productBrand.english_name}</small></div></div><div><span className="kicker">为好创意加速</span><h1>让每一个灵感，<br/>都值得被<em>看见</em></h1><p>从一个想法到一支好视频，让创作更简单，让表达更有力量，让好内容更快抵达观众。</p></div><footer><i />今天的灵感，就是明天的作品</footer></section><section className="login-panel"><form onSubmit={submit}><span className="kicker">ADMIN ACCESS</span><h2>登录管理后台</h2><p>使用管理员账号进入运营控制中心。</p><label>管理员邮箱<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="admin@example.com" required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="输入密码" required /></label>{error && <div className="form-error">{error}</div>}<button className="primary" disabled={loading}>{loading ? "正在登录…" : "安全登录"}</button><small>管理员操作会写入不可变审计日志。</small></form></section></div>;
 }
 
 function ConfigsPanel({ token }: { token: string }) {

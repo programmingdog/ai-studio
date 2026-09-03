@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Video Studio",
+  "productName": "影匠",
   "version": "0.1.0",
   "identifier": "studio.aivideo.desktop",
   "build": {
@@ -12,14 +12,16 @@
   "app": {
     "windows": [
       {
-        "title": "AI Video Studio",
+        "title": "影匠",
         "theme": "Light",
         "backgroundColor": "#f5f6fa",
-        "width": 1440,
-        "height": 900,
-        "maximized": true,
-        "minWidth": 1080,
-        "minHeight": 720
+        "width": 560,
+        "height": 720,
+        "center": true,
+        "maximized": false,
+        "resizable": false,
+        "minWidth": 520,
+        "minHeight": 640
       }
     ],
     "security": {
@@ -50,6 +52,11 @@
       "binaries/ffprobe",
       "binaries/yt-dlp",
       "binaries/aivs-worker"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

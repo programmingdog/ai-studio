@@ -5,5 +5,8 @@ export function setWorkflowQuiet(client: QueryClient, id: string, running: boole
   client.setQueryData<string[]>(key, previous => running ? [...new Set([...(previous??[]),id])] : (previous??[]).filter(value=>value!==id));
 }
 export function useWorkflowQuiet() {
-  return useQuery({queryKey:key,queryFn:()=>[] as string[],enabled:false,initialData:[] as string[]}).data.length>0;
+  return useWorkflowQuietCount() > 0;
+}
+export function useWorkflowQuietCount() {
+  return useQuery({queryKey:key,queryFn:()=>[] as string[],enabled:false,initialData:[] as string[]}).data.length;
 }

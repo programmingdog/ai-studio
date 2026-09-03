@@ -1,12 +1,16 @@
-import { Controller, Get, Inject, Query } from "@nestjs/common";
+import { Controller, Get, Header, Inject, Query } from "@nestjs/common";
 import { CatalogService } from "../catalog/catalog.service";
 import { ClientConfigService } from "./client-config.service";
+import { AuthMethodConfigService } from "../common/auth-method-config.service";
+import { ProductBrandConfigService } from "../common/product-brand-config.service";
 
 @Controller("client-config")
 export class ClientConfigController {
   constructor(
     @Inject(ClientConfigService) private readonly configs: ClientConfigService,
     @Inject(CatalogService) private readonly catalogs: CatalogService,
+    @Inject(AuthMethodConfigService) private readonly authMethodsConfig: AuthMethodConfigService,
+    @Inject(ProductBrandConfigService) private readonly productBrandConfig: ProductBrandConfigService,
   ) {}
 
   @Get("bootstrap")
@@ -17,6 +21,18 @@ export class ClientConfigController {
       task_result_mode: "string_relay",
       config_merge_policy: "LOCAL_OVERRIDE_THEN_SERVER_DEFAULT_THEN_CLIENT_FALLBACK",
     };
+  }
+
+  @Get("auth-methods")
+  @Header("Cache-Control", "no-store")
+  authMethods() {
+    return this.authMethodsConfig.publicConfig();
+  }
+
+  @Get("product-brand")
+  @Header("Cache-Control", "no-store")
+  productBrand() {
+    return this.productBrandConfig.get();
   }
 
   @Get("releases/current")
