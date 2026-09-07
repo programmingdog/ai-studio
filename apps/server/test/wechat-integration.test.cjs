@@ -43,7 +43,8 @@ test('公众号安全模式消息校验并解密，且拒绝错误 AppID', () =>
 });
 
 test('商户 cert 上传同时接受 PEM 和二进制 DER X.509 证书', () => {
-  const pem = rootCertificates[0];
+  const pem = rootCertificates.find(value => new X509Certificate(value).publicKey.asymmetricKeyType === 'rsa');
+  assert.ok(pem, 'Node.js trust store must include an RSA X.509 certificate');
   const certificate = new X509Certificate(pem);
   const fromPem = certificatePem(Buffer.from(pem), '测试证书');
   const fromDer = certificatePem(certificate.raw, '测试证书');
