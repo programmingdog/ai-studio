@@ -3,14 +3,13 @@ const { test } = require("node:test");
 require("reflect-metadata");
 const { resolveMediaResolution } = require("../dist/gateway/media-resolution");
 const { ModelGatewayService } = require("../dist/gateway/model-gateway.service");
-const defaultMultipliers = { get: async () => ({ multipliers: { TEXT_GENERATION: 1, VIDEO_UNDERSTANDING: 1, IMAGE_GENERATION: 1, VIDEO_GENERATION: 1 } }) };
 
 const definition = (field, values) => [{ name: field, options: values }];
 function resolve(overrides = {}) {
   return resolveMediaResolution({ resolution: "2K", aspectRatio: "9:16", schema: [], config: {}, protocol: "lingkeai_media", capability: "IMAGE_GENERATION", modelCode: "test-model", ...overrides });
 }
 function target(overrides = {}) {
-  return { model_id: "model-id", model_code: "test-model", base_url: "https://provider.example", generation_endpoint: "/v1/images/generations", api_protocol: "lingkeai_media", capability: "IMAGE_GENERATION", model_config_json: {}, provider_config_json: {}, parameter_schema_json: [], ...overrides };
+  return { model_id: "model-id", model_code: "test-model", base_url: "https://provider.example", generation_endpoint: "/v1/images/generations", api_protocol: "lingkeai_media", capability: "IMAGE_GENERATION", credit_multiplier: 1, model_config_json: {}, provider_config_json: {}, parameter_schema_json: [], ...overrides };
 }
 const gateway = new ModelGatewayService({}, {});
 function request(model, payload) { return gateway.request(model, payload, "fake-test-key"); }
@@ -96,7 +95,7 @@ test("fixed-output resolution and duration are omitted from provider payload", (
 
 test("billing continues to look up the selected tier before provider case mapping", async () => {
   let parameters;
-  const service = new ModelGatewayService({ query: async (_sql, values) => { parameters = values; return [{ credit_cost: 7 }]; } }, {}, defaultMultipliers);
+  const service = new ModelGatewayService({ query: async (_sql, values) => { parameters = values; return [{ credit_cost: 7 }]; } }, {});
   const payload = { resolution: "1080P", duration: 10 };
   const price = await service.estimatedCredits(target({ capability: "VIDEO_GENERATION" }), payload);
   assert.equal(price, 70);
@@ -110,7 +109,7 @@ test("invalid provider resolution is rejected before reserving credits or submit
   const service = new ModelGatewayService({
     query: async (sql) => sql.includes("provider_model_resolution_prices") ? [{ credit_cost: 7 }] : sql.includes("FROM provider_models pm") ? [model] : [],
     transaction: async () => { reserved = true; throw new Error("must not reserve"); },
-  }, { decrypt: () => "fake-test-key" }, defaultMultipliers);
+  }, { decrypt: () => "fake-test-key" });
   await assert.rejects(service.create("test-user", { idempotencyKey: "test-request", providerModelId: "model-id", payload: { resolution: "720p", prompt: "test" } }), error => {
     assert.match(error.message, /720p.*不可用/);
     assert.equal(error.getResponse().code, 'TASK_NOT_SUBMITTED');
@@ -125,7 +124,7 @@ test('Hailuo H3 catalog excludes obsolete 720p prices without inventing a 768P p
   const schema = definition('resolution', ['768P', '1080P', '2K', '4K']);
   const model = { ...target({ capability: 'VIDEO_GENERATION', model_code: 'hailuo-h3-quannengcankao' }), id: 'model-id', credit_cost: 1, parameter_schema_json: schema, config_json: {} };
   const prices = [{ provider_model_id: 'model-id', resolution: '720p', credit_cost: 1 }, { provider_model_id: 'model-id', resolution: '2k', credit_cost: 3 }];
-  const service = new ClientConfigService({ query: async sql => sql.includes('FROM provider_model_resolution_prices') ? prices : [model] }, defaultMultipliers);
+  const service = new ClientConfigService({ query: async sql => sql.includes('FROM provider_model_resolution_prices') ? prices : [model] });
   const list = await service.models();
   assert.deepEqual(list[0].resolution_prices.map(p => p.resolution), ['2k']);
   assert.equal(list[0].resolution_prices[0].credit_cost, 3);
@@ -135,7 +134,7 @@ test('Hailuo H3 catalog excludes obsolete 720p prices without inventing a 768P p
 
 test('Hailuo quote rejects 720p before workflow starts and 2k submits as 2K', async () => {
   const model = target({ capability: 'VIDEO_GENERATION', model_code: 'hailuo-h3-quannengcankao', parameter_schema_json: definition('resolution', ['768P', '1080P', '2K', '4K']) });
-  const service = new ModelGatewayService({ query: async () => [{ credit_cost: 3 }] }, {}, defaultMultipliers);
+  const service = new ModelGatewayService({ query: async () => [{ credit_cost: 3 }] }, {});
   service.target = async () => model;
   service.call = () => assert.fail('quote must never generate');
   service.database.transaction = () => assert.fail('quote must never reserve');

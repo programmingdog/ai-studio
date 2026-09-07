@@ -305,7 +305,7 @@ test('image issuance and mail sending enforce shared IP/email/global rate limits
 
 test('registration creates both user and wallet only after successful email verification', async () => {
   const h = harness();
-  const auth = new UserAuthService(h.database, h.environment, {}, h.service, { async newUser() {} });
+  const auth = new UserAuthService(h.database, h.environment, {}, h.service, { async newUser() {} }, { async assertRegistrationEnabled() {} });
   auth.issueTokens = async () => ({ access_token: 'test-token' });
   auth.profile = async id => ({ id });
   await assert.rejects(auth.registerEmail(h.email, 'Password123', '123456', undefined, h.ip));
@@ -319,14 +319,21 @@ test('registration creates both user and wallet only after successful email veri
   assert.equal(h.state.codes.get(h.email).status, 'CONSUMED');
 });
 
-test('controller rejects missing verification fields and uses request IP, not raw forwarded headers', () => {
+test('server registration switch rejects account creation before consuming verification state', async () => {
+  const h = harness();
+  const auth = new UserAuthService(h.database, h.environment, {}, h.service, { async newUser() {} }, { async assertRegistrationEnabled() { throw new Error('当前暂未开放新用户注册'); } });
+  await assert.rejects(() => auth.registerEmail(h.email, 'Password123', '123456', undefined, h.ip), /暂未开放新用户注册/);
+  assert.equal(h.state.users.size, 0);
+});
+
+test('controller rejects missing verification fields and uses request IP, not raw forwarded headers', async () => {
   const calls = [];
-  const controller = new UserAuthController({ registerEmail: (...args) => calls.push(args) }, { createCaptcha: (...args) => calls.push(args) });
+  const controller = new UserAuthController({ registerEmail: (...args) => calls.push(args) }, { createCaptcha: (...args) => calls.push(args) }, { async assertRegistrationEnabled() {} });
   const request = { ip: '127.0.0.1', socket: {}, headers: { 'x-forwarded-for': 'untrusted' } };
   assert.throws(() => controller.registerEmail({ email: 'a@example.com', password: 'Password123' }, request), /email_code/);
-  assert.throws(() => controller.verifyEmailCaptcha({ email: 'a@example.com' }, request), /captcha_id/);
-  assert.throws(() => controller.sendEmailCode({ email: 'a@example.com' }, request), /captcha_token/);
-  controller.createEmailCaptcha({ email: 'a@example.com' }, request);
+  await assert.rejects(() => controller.verifyEmailCaptcha({ email: 'a@example.com' }, request), /captcha_id/);
+  await assert.rejects(() => controller.sendEmailCode({ email: 'a@example.com' }, request), /captcha_token/);
+  await controller.createEmailCaptcha({ email: 'a@example.com' }, request);
   assert.deepEqual(calls[0], ['a@example.com', '127.0.0.1']);
 });
 
@@ -346,6 +353,7 @@ test('HTTP routes require code/proof fields, return no-store and wire the three-
     controllers: [UserAuthController],
     providers: [UserAuthGuard,
       { provide: UserAuthService, useValue: { registerEmail: (...args) => { calls.push(['register', ...args]); return { accepted: true }; } } },
+      { provide: require('../dist/common/auth-method-config.service').AuthMethodConfigService, useValue: { assertRegistrationEnabled: async () => undefined } },
       { provide: RegistrationVerificationService, useValue: {
         emailStatus: (...args) => { calls.push(['email-status', ...args]); return { email: args[0], registered: false }; },
         createCaptcha: (...args) => { calls.push(['captcha', ...args]); return { captcha_id: 'test-id', image_data_url: 'data:image/svg+xml;base64,PHN2Zy8+', expires_in: 300 }; },

@@ -91,8 +91,9 @@ const schemas: Record<string, JsonSchema> = {
   },
   ClientAuthMethods: {
     type: "object",
-    required: ["email_enabled", "phone_otp_enabled", "phone_otp_available", "wechat_enabled"],
+    required: ["registration_enabled", "email_enabled", "phone_otp_enabled", "phone_otp_available", "wechat_enabled"],
     properties: {
+      registration_enabled: { type: "boolean", description: "是否允许客户端创建新账户；关闭后仅允许已有账户登录" },
       email_enabled: { type: "boolean", description: "是否显示邮箱注册登录" },
       phone_otp_enabled: { type: "boolean", description: "是否显示手机验证码注册登录" },
       phone_otp_available: { type: "boolean", description: "服务端是否已接入短信服务" },
@@ -198,7 +199,7 @@ const schemas: Record<string, JsonSchema> = {
     },
   },
   DistributionConfig: {
-    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "minimum_withdrawal_fen", "invitation_reward_credits", "invitation_anti_abuse_enabled", "invitation_daily_reward_limit", "invitation_monthly_reward_limit", "invite_page_base_url", "windows_download_url", "macos_download_url", "revision"],
+    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "minimum_withdrawal_fen", "invitation_reward_credits", "invitation_anti_abuse_enabled", "invitation_daily_reward_limit", "invitation_monthly_reward_limit", "invite_page_base_url", "windows_download_enabled", "windows_download_url", "macos_download_enabled", "macos_download_url", "revision"],
     properties: {
       enabled: { type: "boolean", default: false },
       direct_rate_bps: { type: "integer", minimum: 0, maximum: 10000, description: "基点，1000=10%；与间接比例合计不超过10000" },
@@ -209,23 +210,35 @@ const schemas: Record<string, JsonSchema> = {
       invitation_daily_reward_limit: { type: "integer", minimum: 1, maximum: 100000, default: 20 },
       invitation_monthly_reward_limit: { type: "integer", minimum: 1, maximum: 1000000, default: 200 },
       invite_page_base_url: { type: "string", maxLength: 500, description: "公开邀请页基础地址，不带查询参数、片段或邀请码；生产须HTTPS" },
-      windows_download_url: { type: "string", maxLength: 1000 }, macos_download_url: { type: "string", maxLength: 1000 },
+      windows_download_enabled: { type: "boolean" }, windows_download_url: { type: "string", maxLength: 1000 }, macos_download_enabled: { type: "boolean" }, macos_download_url: { type: "string", maxLength: 1000 },
       revision: { type: "integer", minimum: 0, description: "乐观锁版本；保存冲突时须重读，不能强制覆盖" },
     },
   },
   SoftwareDownloadConfig: {
     type: "object",
-    required: ["windows_download_url", "macos_download_url", "revision"],
+    required: ["windows_download_enabled", "windows_download_url", "macos_download_enabled", "macos_download_url", "download_page_url", "revision"],
     properties: {
+      windows_download_enabled: { type: "boolean", description: "是否在公开下载页显示 Windows 版本" },
       windows_download_url: { type: "string", maxLength: 1000, description: "Windows 安装包或下载页面的 HTTPS 地址" },
+      macos_download_enabled: { type: "boolean", description: "是否在公开下载页显示 macOS 版本" },
       macos_download_url: { type: "string", maxLength: 1000, description: "macOS 安装包或下载页面的 HTTPS 地址" },
+      download_page_url: { type: "string", format: "uri", readOnly: true, description: "可一键复制的独立下载页面地址" },
       revision: { type: "integer", minimum: 0, description: "乐观锁版本" },
       updated_at: { type: "string", format: "date-time" },
     },
   },
+  PublicDownloadConfig: {
+    type: "object",
+    required: ["windows_download_enabled", "windows_download_url", "macos_download_enabled", "macos_download_url"],
+    properties: {
+      windows_download_enabled: { type: "boolean" }, windows_download_url: { type: "string", maxLength: 1000 },
+      macos_download_enabled: { type: "boolean" }, macos_download_url: { type: "string", maxLength: 1000 },
+      invite_code: { type: "string", pattern: "^[A-Z0-9]{8}$" },
+    },
+  },
   ReferralSummary: {
     type: "object", properties: {
-      invite_code: { type: "string" }, invitation_url: { type: "string" }, invited_count: { type: "integer" }, reward_credits: { type: "integer" }, invitation_reward_credits: { type: "integer" }, invitation_anti_abuse_enabled: { type: "boolean" },
+      invite_code: { type: "string" }, invitation_url: { type: "string", format: "uri", description: "带 invite_code 查询参数的独立下载页链接" }, invited_count: { type: "integer" }, reward_credits: { type: "integer" }, invitation_reward_credits: { type: "integer" }, invitation_anti_abuse_enabled: { type: "boolean" },
       enabled: { type: "boolean" }, direct_rate_bps: { type: "integer" }, indirect_rate_bps: { type: "integer" }, minimum_withdrawal_fen: { type: "integer" },
       available_fen: { type: "integer" }, frozen_fen: { type: "integer" }, earned_fen: { type: "integer" }, paid_fen: { type: "integer" },
       withdrawal_open: { type: "boolean" }, timezone: { type: "string", example: "Asia/Shanghai" }, server_time: { type: "string", format: "date-time" }, next_open_at: { type: "string", format: "date-time" },
@@ -274,6 +287,7 @@ const schemas: Record<string, JsonSchema> = {
       phone: { type: "string", example: "+8613800000000", maxLength: 32 },
       password: { type: "string", format: "password", minLength: 8, maxLength: 128, description: "必须同时包含字母和数字" },
       display_name: { type: "string", maxLength: 100 },
+      invite_code: { type: "string", pattern: "^[A-Za-z0-9]{8}$", description: "可选邀请码" },
     },
   },
   LoginRequest: {
@@ -355,6 +369,8 @@ const schemas: Record<string, JsonSchema> = {
       display_name: { type: "string" },
       model_alias: { type: "string" },
       capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "IMAGE_GENERATION", "VIDEO_GENERATION"] },
+      base_credit_cost: { type: "number", description: "实时价格或人工配置得到的模型消耗积分数" },
+      credit_multiplier: { type: "number", minimum: 0.000001, maximum: 1000, default: 1 },
       credit_cost: { type: "number" },
       billing_unit: { type: "string", enum: ["PER_REQUEST", "PER_SECOND"] },
       max_reference_images: { type: "integer" },
@@ -549,12 +565,13 @@ const schemas: Record<string, JsonSchema> = {
   },
   ProviderModelRequest: {
     type: "object",
-    required: ["model_code", "display_name", "model_alias", "capability", "api_protocol", "generation_endpoint", "credit_cost"],
+    required: ["model_code", "display_name", "model_alias", "capability", "api_protocol", "generation_endpoint", "credit_cost", "credit_multiplier"],
     properties: {
       model_code: { type: "string" }, display_name: { type: "string" }, model_alias: { type: "string" },
       capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "IMAGE_GENERATION", "VIDEO_GENERATION"] },
       api_protocol: { type: "string" }, generation_endpoint: { type: "string" }, query_endpoint: { type: "string", nullable: true },
       credit_cost: { type: "integer", minimum: 0, description: "文本/理解/图片按次，视频生成按秒" },
+      credit_multiplier: { type: "number", minimum: 0.000001, maximum: 1000, default: 1, description: "该模型独立系数；最终消耗积分=消耗积分数×模型系数" },
       max_reference_images: { type: "integer", minimum: 0 }, supports_reference_video: { type: "boolean" },
       supports_real_person: { type: "boolean", default: false }, supports_async_tasks: { type: "boolean" },
       sort_order: { type: "integer" }, description: { type: "string" }, status: { type: "string", enum: ["ACTIVE", "DISABLED"] },
@@ -716,8 +733,14 @@ export function createApiDocument(): OpenAPIObject {
     "/referrals/invitations/{code}": {
       get: operation({ id: "publicInvitation", tag: "邀请与分润", summary: "校验公开邀请码并读取安装包下载地址", parameters: [{ name: "code", in: "path", required: true, schema: { type: "string", pattern: "^[A-Za-z0-9]{8}$" } }] }),
     },
+    "/referrals/downloads": {
+      get: operation({ id: "publicDownloads", tag: "邀请与分润", summary: "读取公开下载页当前开放的平台与安装包地址", success: ref("PublicDownloadConfig") }),
+    },
     "/referrals/me": {
       get: operation({ id: "referralSummary", tag: "邀请与分润", summary: "当前用户邀请码、余额和周五提现窗口", security: true, success: ref("ReferralSummary") }),
+    },
+    "/referrals/me/subordinates": {
+      get: operation({ id: "userReferralSubordinates", tag: "邀请与分润", summary: "分页读取当前用户的直接或间接下级及其累计消费额", description: "消费额只累计状态为 PAID 的支付订单，并优先使用支付渠道确认的实付金额；邮箱和手机号仅返回脱敏文本。", security: true, parameters: [query("level", "下级层级，1直接/2间接", { type: "integer", enum: [1, 2], default: 1 }), query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })] }),
     },
     "/referrals/me/{kind}": {
       get: operation({ id: "userReferralRecords", tag: "邀请与分润", summary: "当前用户的邀请、分润、提现或打款记录", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })], success: ref("ReferralRecordPage") }),
@@ -731,10 +754,10 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/admin/distribution/downloads": {
       get: operation({ id: "softwareDownloadConfig", tag: "管理配置", summary: "读取注册成功页的软件下载安装地址（configs.manage）", security: true, success: ref("SoftwareDownloadConfig") }),
-      patch: operation({ id: "saveSoftwareDownloadConfig", tag: "管理配置", summary: "保存软件下载安装地址（configs.manage）", description: "至少配置一个平台，保存后立即用于邀请注册成功页。", security: true, body: ref("SoftwareDownloadConfig"), success: ref("SoftwareDownloadConfig") }),
+      patch: operation({ id: "saveSoftwareDownloadConfig", tag: "管理配置", summary: "保存安装包地址与版本开放开关（configs.manage）", description: "开启某个平台前必须配置对应地址；允许暂时关闭全部下载版本。", security: true, body: ref("SoftwareDownloadConfig"), success: ref("SoftwareDownloadConfig") }),
     },
     "/admin/distribution/records/{kind}": {
-      get: operation({ id: "adminDistributionRecords", tag: "管理分销", summary: "分页查询账本（distribution.manage）", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码", { type: "integer", minimum: 1, maximum: 100000 }), query("status", "提现或邀请奖励状态", { type: "string", enum: ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID", "PENDING_PAYMENT", "REWARDED", "LIMITED"] }), query("user_id", "收益用户ID")], success: ref("ReferralRecordPage") }),
+      get: operation({ id: "adminDistributionRecords", tag: "管理分销", summary: "分页查询账本（distribution.manage）", description: "分销、提现和打款记录额外返回 user_login_name；邀请奖励记录额外返回 inviter_login_name 和 invited_login_name。登录名按邮箱、手机号、显示名称和用户 ID 的顺序回退。", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码", { type: "integer", minimum: 1, maximum: 100000 }), query("status", "提现或邀请奖励状态", { type: "string", enum: ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID", "PENDING_PAYMENT", "REWARDED", "LIMITED"] }), query("user_id", "收益用户ID")], success: ref("ReferralRecordPage") }),
     },
     "/admin/distribution/withdrawals/{id}/review": {
       post: operation({ id: "reviewWithdrawal", tag: "管理分销", summary: "审核提现（distribution.manage）", security: true, parameters: [pathId("id", "提现ID")], body: { type: "object", required: ["decision"], properties: { decision: { type: "string", enum: ["APPROVED", "REJECTED"] }, note: { type: "string", maxLength: 500, description: "驳回必填原因" } } } }),
@@ -786,7 +809,7 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/tasks/quote": {
       post: operation({ id: "quoteModelTask", tag: "模型任务", summary: "读取模型调用的最终积分报价（不扣分）", security: true,
-        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本或视频理解模型。媒体 payload 必须包含分辨率，视频还需秒数。报价已含类型系数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
+        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本或视频理解模型。媒体 payload 必须包含分辨率，视频还需秒数。报价已含所选模型的独立系数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
         body: { type: "object", required: ["payload"], properties: { provider_model_id: { type: "string" }, capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING"] }, payload: { type: "object", additionalProperties: true } } },
         success: { type: "object", properties: { provider_model_id: { type: "string" }, model_alias: { type: "string" }, capability: { type: "string" }, credits: { type: "number" }, resolution: { type: "string", nullable: true }, seconds: { type: "number", nullable: true }, includes_multiplier: { type: "boolean" } } },
       }),
@@ -877,7 +900,7 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/providers/{providerId}/pricing/sync": {
       post: operation({ id: "refreshProviderPricingAndCredits", tag: "管理供应商", summary: "查询实时价格并按启用的比例更新模型积分", security: true,
         parameters: [pathId("providerId", "供应商 ID")],
-        description: "需要 providers.manage 权限。自动定价开启且供应商启用时，按可用渠道最低可换算价更新每个配置分辨率的积分；向上取整且最低 1 积分。返回实时价格及 credit_sync 处理报告。自动定价关闭时仅查询。不改变历史任务、用户余额或充值套餐。" }),
+        description: "需要 providers.manage 权限。自动定价开启且供应商启用时，按可用渠道最低可换算价和人民币积分比例更新每个配置分辨率的模型消耗积分；向上取整且最低 1 积分，不改模型独立系数。返回实时价格及 credit_sync 处理报告。自动定价关闭时仅查询。不改变历史任务、用户余额或充值套餐。" }),
     },
     "/admin/configs/credit-pricing": {
       get: operation({ id: "getCreditPricingConfig", tag: "管理配置", summary: "读取人民币积分比例及最近更新报告", security: true }),
@@ -888,16 +911,9 @@ export function createApiDocument(): OpenAPIObject {
           auto_sync: { type: "boolean" }, revision: { type: "integer", minimum: 0 },
         } } }),
     },
-    "/admin/configs/credit-multipliers": {
-      get: operation({ id: "getModelCreditMultipliers", tag: "管理配置", summary: "读取四类大模型积分系数", security: true,
-        description: "需要 configs.manage 权限，返回 multipliers 和 revision。四类系数默认均为 1。" }),
-      patch: operation({ id: "saveModelCreditMultipliers", tag: "管理配置", summary: "保存四类大模型积分系数", security: true,
-        description: "需要 configs.manage、providers.manage 权限。最终单价=基础积分×对应模型类型系数，视频再乘秒数。新任务生效，已有任务保持创建时锁定的最终积分。支持 6 位小数，不重复写入基础定价。",
-        body: { type: "object", required: ["multipliers", "revision"], properties: {
-          revision: { type: "integer", minimum: 0 },
-          multipliers: { type: "object", required: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "IMAGE_GENERATION", "VIDEO_GENERATION"], properties:
-            Object.fromEntries(["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "IMAGE_GENERATION", "VIDEO_GENERATION"].map((capability) => [capability, { type: "number", minimum: 0.000001, maximum: 1000, default: 1 }])) },
-        } } }),
+    "/admin/configs/script-analysis": {
+      get: operation({ id: "getScriptAnalysisConfig", tag: "管理配置", summary: "读取剧本提取提示词与积分配置", security: true }),
+      patch: operation({ id: "updateScriptAnalysisConfig", tag: "管理配置", summary: "保存剧本提取提示词与积分配置", description: "需要 configs.manage 权限；revision 必须为当前版本，避免并发覆盖。", security: true }),
     },
     "/admin/configs/credit-pricing/sync": {
       post: operation({ id: "syncAllModelCredits", tag: "管理配置", summary: "按已保存比例刷新实时价并更新模型积分", security: true,
@@ -941,6 +957,7 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/credits/consumptions": {
       get: operation({ id: "adminListCreditConsumptions", tag: "管理积分", summary: "读取积分消耗记录", security: true, parameters: [query("limit", "返回数量，1～200", { type: "integer", minimum: 1, maximum: 200 })] }),
       post: operation({ id: "adminCreateCreditConsumption", tag: "管理积分", summary: "手工创建积分消耗记录", security: true, body: ref("CreditConsumptionAdminRequest") }),
+      delete: operation({ id: "adminClearCreditConsumptions", tag: "管理积分", summary: "清空全部积分消耗记录", description: "永久删除 credit_consumption_records 中的全部展示记录，不返还积分、不修改用户余额，也不删除积分账本、模型任务或购买记录。操作写入管理员审计日志。", security: true, body: { type: "object", required: ["confirmed", "confirmation"], properties: { confirmed: { type: "boolean", enum: [true] }, confirmation: { type: "string", enum: ["CLEAR_ALL_CREDIT_CONSUMPTIONS"] } } } }),
     },
     "/admin/credits/consumptions/{consumptionId}": {
       patch: operation({ id: "adminUpdateCreditConsumption", tag: "管理积分", summary: "更新积分消耗记录", security: true, parameters: [pathId("consumptionId", "积分消耗记录 ID")], body: ref("CreditConsumptionAdminRequest") }),

@@ -61,6 +61,26 @@ export class ModelGatewayController {
     });
   }
 
+  @Post("script-analysis/quote")
+  scriptAnalysisQuote() {
+    return this.gateway.scriptAnalysisQuote();
+  }
+
+  @Post("script-analysis/upload")
+  @UseInterceptors(FileInterceptor("script", { limits: { fileSize: 20 * 1024 * 1024, files: 1 } }))
+  createScriptAnalysisUpload(
+    @Req() request: UserRequest,
+    @Body() input: Record<string, unknown>,
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ) {
+    const body = asRecord(input);
+    return this.gateway.createScriptAnalysisUpload(request.user.sub, {
+      idempotencyKey: requiredString(body, "idempotency_key", 191),
+      expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
+      file,
+    });
+  }
+
   @Get()
   list(@Req() request: UserRequest) { return this.gateway.list(request.user.sub); }
 

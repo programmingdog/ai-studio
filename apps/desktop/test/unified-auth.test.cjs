@@ -11,10 +11,13 @@ function harness(overrides = {}) {
   const cells = [], effects = [], calls = [];
   let cursor = 0, tree;
   const api = {
-    async getClientAuthMethods() { return { email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; },
+    async getClientAuthMethods() { return { registration_enabled: true, email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; },
     async checkRegistrationEmail(email) { calls.push(['check', email]); return { email, registered: false }; },
     async loginPlatform(input) { calls.push(['login', input]); return { user: { id: 'known' } }; },
     async registerPlatformEmail(input) { calls.push(['register', input]); return { user: { id: 'new' } }; },
+    async getRememberedCredentials() { return []; },
+    async saveRememberedCredential() { return []; },
+    async deleteRememberedCredential() { return []; },
     ...overrides,
   };
   const mockRequire = name => name === 'react' ? {
@@ -53,7 +56,7 @@ function harness(overrides = {}) {
 test('default view is email login with no registration tabs and a WeChat button below the form', async () => {
   const h = harness(); await h.ready();
   assert.ok(h.button('登录')); assert.ok(h.button('微信登录'));
-  assert.equal(h.nodes().filter(x => x.type === 'input').length, 2);
+  assert.equal(h.nodes().filter(x => x.type === 'input').length, 3);
   assert.equal(h.nodes().find(x => x.type === 'EmailVerification'), undefined);
   assert.doesNotMatch(source, /手机注册|auth-tabs|registerPlatformPhone/);
   assert.ok(source.indexOf('wechat-login-entry') > source.indexOf('</form>'));
@@ -68,7 +71,8 @@ test('email is checked only on blur; new addresses expand registration below pas
   assert.ok(h.button('注册并登录'));
   const fields = h.nodes().filter(x => x.type === 'input');
   assert.equal(fields[0].props.type, 'email'); assert.equal(fields[1].props.type, 'password');
-  assert.equal(fields[2].props.placeholder, '选填');
+  assert.ok(fields.some(field => field.props.placeholder === '选填'));
+  assert.ok(fields.some(field => /选填.*8 位/.test(field.props.placeholder || '')));
 });
 
 test('registered addresses keep password login and authenticate through existing login API', async () => {
@@ -80,6 +84,25 @@ test('registered addresses keep password login and authenticate through existing
   assert.deepEqual(h.calls, [['login', { identifier: 'known@example.com', password: 'Password123' }], ['accepted', 'known']]);
 });
 
+test('saved accounts can be selected to fill their password and are kept in the native credential store', async () => {
+  const saved = [];
+  const credentials = [{ account: 'known@example.com', password: 'SavedPass123' }];
+  const h = harness({
+    async getRememberedCredentials() { return credentials; },
+    async saveRememberedCredential(account, password) { saved.push([account, password]); return credentials; },
+  });
+  await h.ready();
+  const select = h.nodes().find(x => x.type === 'select');
+  assert.ok(select);
+  select.props.onChange({ target: { value: 'known@example.com' } }); h.render();
+  assert.equal(h.input('email').props.value, 'known@example.com');
+  assert.equal(h.input('password').props.value, 'SavedPass123');
+  assert.equal(h.input('checkbox').props.checked, true);
+  h.submit(); await h.ready();
+  assert.deepEqual(saved, [['known@example.com', 'SavedPass123']]);
+  assert.deepEqual(h.calls.at(-1), ['accepted', 'known']);
+});
+
 test('new addresses require the code and register directly into a logged-in session', async () => {
   const h = harness(); await h.ready(); h.editEmail('new@example.com'); await h.blur(); h.password();
   h.submit(); await flush(); assert.equal(h.calls.length, 1);
@@ -87,7 +110,17 @@ test('new addresses require the code and register directly into a logged-in sess
   h.submit(); h.submit(); await flush(); h.render();
   assert.equal(h.calls.filter(x => x[0] === 'register').length, 1);
   assert.equal(h.calls.find(x => x[0] === 'register')[1].email_code, '012345');
+  assert.equal(h.calls.find(x => x[0] === 'register')[1].invite_code, undefined);
   assert.deepEqual(h.calls.at(-1), ['accepted', 'new']);
+});
+
+test('email registration accepts an optional normalized invitation code', async () => {
+  const h = harness(); await h.ready(); h.editEmail('new@example.com'); await h.blur(); h.password();
+  const invite = h.nodes().find(x => x.type === 'input' && String(x.props.placeholder).includes('8 位'));
+  invite.props.onChange({ target: { value: 'test2345' } }); h.render();
+  h.nodes().find(x => x.type === 'EmailVerification').props.onCodeChange('012345'); h.render();
+  h.submit(); await flush(); h.render();
+  assert.equal(h.calls.find(x => x[0] === 'register')[1].invite_code, 'TEST2345');
 });
 
 test('editing email resets registration/code and ignores stale status responses', async () => {
@@ -123,15 +156,25 @@ test('WeChat entry opens a custom dialog, disables email submission and can clos
 });
 
 test('server login-method configuration controls which client entries are visible', async () => {
-  const wechatOnly = harness({ async getClientAuthMethods() { return { email_enabled: false, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; } });
+  const wechatOnly = harness({ async getClientAuthMethods() { return { registration_enabled: true, email_enabled: false, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; } });
   await flush(); wechatOnly.render();
   assert.equal(wechatOnly.input('email'), undefined);
   assert.ok(wechatOnly.button('微信登录'));
 
-  const emailOnly = harness({ async getClientAuthMethods() { return { email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: false }; } });
+  const emailOnly = harness({ async getClientAuthMethods() { return { registration_enabled: true, email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: false }; } });
   await flush(); emailOnly.render();
   assert.ok(emailOnly.input('email'));
   assert.equal(emailOnly.button('微信登录'), undefined);
+});
+
+test('registration switch blocks new email accounts while existing accounts can still log in', async () => {
+  const h = harness({ async getClientAuthMethods() { return { registration_enabled: false, email_enabled: true, phone_otp_enabled: false, phone_otp_available: false, wechat_enabled: true }; } });
+  await h.ready(); h.editEmail('new@example.com'); await h.blur(); h.password();
+  assert.equal(h.nodes().find(x => x.type === 'EmailVerification'), undefined);
+  assert.match(h.nodes().find(x => x.props?.role === 'alert').props.children[0], /暂未开放新用户注册/);
+  assert.equal(h.button('登录').props.disabled, true);
+  h.submit(); await flush();
+  assert.equal(h.calls.filter(x => x[0] === 'register').length, 0);
 });
 
 test('WeChat polling is serialized and cancellation blocks accepting late tokens', () => {

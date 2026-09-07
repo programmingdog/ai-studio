@@ -117,7 +117,9 @@ pub fn list_unfinished_videos(connection: &Connection) -> Result<Vec<GenerationR
     let mut statement = connection
         .prepare(&format!(
             "SELECT {COLUMNS} FROM generation_records WHERE media_type = 'video'
-         AND status NOT IN ('COMPLETED', 'FAILED') ORDER BY created_at"
+         AND (status NOT IN ('COMPLETED', 'FAILED')
+           OR (status = 'FAILED' AND (error_json LIKE '%PLATFORM_LOGIN_REQUIRED%' OR error_json LIKE '%登录已过期%')))
+         ORDER BY created_at"
         ))
         .map_err(|error| error.to_string())?;
     let records = statement
@@ -188,6 +190,18 @@ pub fn mark_remote_processing(
 
 pub fn mark_downloading(connection: &Connection, id: &str) -> Result<(), String> {
     update_state(connection, id, STATUS_DOWNLOADING, 0.8, None)
+}
+
+pub fn mark_auth_required(connection: &Connection, id: &str, remote_id: Option<&str>, message: &str) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let error_value = serde_json::from_str::<Value>(message).unwrap_or_else(|_| json!({"code":"PLATFORM_LOGIN_REQUIRED","message":message}));
+    connection.execute(
+        "UPDATE generation_records SET status = ?1, progress = MAX(progress, .35),
+         remote_task_id = COALESCE(?2, remote_task_id), error_json = ?3,
+         updated_at = ?4, finished_at = NULL WHERE id = ?5",
+        params![STATUS_REMOTE_PROCESSING, remote_id, error_value.to_string(), now, id],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub fn update_progress(connection: &Connection, id: &str, progress: f64) -> Result<(), String> {
@@ -560,5 +574,44 @@ mod tests {
                 .and_then(Value::as_str),
             Some("scenes/a.png")
         );
+    }
+
+    #[test]
+    fn expired_login_video_stays_unfinished_and_keeps_remote_task_id() {
+        let connection = database();
+        let record = create(
+            &connection,
+            NewGenerationRecord {
+                project_id: "P_TEST",
+                media_type: "video",
+                target_type: "shot",
+                target_id: "A-001",
+                base_url: "https://example.com",
+                model: "video-model",
+                protocol: "platform",
+                prompt: "测试视频提示词",
+                aspect_ratio: "9:16",
+            },
+        )
+        .unwrap();
+        mark_auth_required(
+            &connection,
+            &record.id,
+            Some("REMOTE_ORIGINAL"),
+            r#"{"code":"PLATFORM_LOGIN_REQUIRED","message":"登录已过期"}"#,
+        )
+        .unwrap();
+
+        let waiting = get(&connection, &record.id).unwrap().unwrap();
+        assert_eq!(waiting.status, STATUS_REMOTE_PROCESSING);
+        assert_eq!(waiting.remote_task_id.as_deref(), Some("REMOTE_ORIGINAL"));
+        assert_eq!(
+            waiting.error.as_ref().and_then(|value| value["code"].as_str()),
+            Some("PLATFORM_LOGIN_REQUIRED")
+        );
+        assert!(list_unfinished_videos(&connection)
+            .unwrap()
+            .iter()
+            .any(|item| item.id == record.id));
     }
 }

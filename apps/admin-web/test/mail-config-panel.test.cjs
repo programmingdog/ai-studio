@@ -127,10 +127,10 @@ test('duplicate submissions are blocked and a conflict leaves the form for expli
   assert.equal(h.input('url').props.value, baseConfig.api_url);
 });
 
-test('settings navigation contains the mail panel and no legacy mail env credentials are read', () => {
+test('integration workspace contains the mail panel and no legacy mail env credentials are read', () => {
   const app = fs.readFileSync(path.join(__dirname, '../components/AdminApp.tsx'), 'utf8');
-  assert.match(app, /id: "mail-config", label: "邮箱配置"/);
-  assert.match(app, /view === "mail-config" && <MailConfigPanel/);
+  assert.match(app, /id: "integrations", label: "渠道集成"/);
+  assert.match(app, /id: "mail-config", label: "邮件服务", content: <MailConfigPanel/);
   const environment = fs.readFileSync(path.join(__dirname, '../../server/src/config/environment.ts'), 'utf8');
   assert.doesNotMatch(environment, /process\.env\.MAIL_API_(URL|FROM|PASSWORD)/);
 });

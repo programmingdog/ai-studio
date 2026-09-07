@@ -52,6 +52,22 @@ pub async fn generate(api_base: &str, provider_model_id: &str, local_task_id: &s
     generate_request(api_base, Some(provider_model_id), None, local_task_id, payload, operation, workflow).await
 }
 
+pub async fn resume(api_base: &str, remote_task_id: &str, local_task_id: &str, workflow: Option<(&std::path::Path, &str, String)>) -> Result<Value, String> {
+    let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(15 * 60)).build().map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
+    let base = api_base_url(api_base)?;
+    let token = access_token()?;
+    if let Some((root, _, _)) = &workflow {
+        let receipt = crate::workflow_credit::receipt(root, local_task_id, &base)?
+            .ok_or_else(|| crate::workflow_credit::error("登录账号与原任务不一致，自动制作已停止。"))?;
+        if let Some(response) = receipt.response { return Ok(response); }
+    }
+    let result = wait_for_result(&client, &base, &token, json!({"task":{"id":remote_task_id,"status":"PROCESSING"}}), &workflow, local_task_id).await?;
+    if let Some((root, _, _)) = &workflow {
+        crate::workflow_credit::save_response(root, local_task_id, &result).map_err(|error| crate::workflow_credit::error(&error))?;
+    }
+    Ok(result)
+}
+
 pub async fn text_completion(operation: &str, payload: Value) -> Result<Value, String> {
     generate_request("", None, Some("TEXT_GENERATION"), &uuid::Uuid::new_v4().to_string(), payload, operation, None).await
 }
@@ -178,7 +194,13 @@ async fn wait_for_result(client: &Client, base: &str, token: &str, mut current: 
             Err(e) => {
                 let failure = serde_json::from_str::<Value>(&e).unwrap_or(Value::Null);
                 if failure["code"] == "PLATFORM_LOGIN_REQUIRED" {
-                    return Err(uncertain("登录已过期，请重新登录后继续查询。已提交的任务不会重新生成。"));
+                    let login_error = json!({
+                        "code": "PLATFORM_LOGIN_REQUIRED",
+                        "message": "登录已过期，请重新登录后继续查询。已提交的任务不会重新生成。",
+                        "remote_task_id": task_id,
+                        "retryable": true,
+                    }).to_string();
+                    return Err(uncertain(&login_error));
                 }
                 errors = (errors + 1).min(5);
                 // Retry only the same task's status query, not generation.
@@ -255,6 +277,29 @@ mod tests {
         ]);
         let received = tauri::async_runtime::block_on(wait_for_result(&Client::new(), &base, "test", json!({"task":{"id":"original","status":"PROCESSING"}}), &None, "attempt")).unwrap();
         assert_eq!(received["url"], "image");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn expired_login_preserves_the_original_remote_task_for_resume() {
+        let (base, server) = fixture(vec![(
+            "POST /tasks/original/query ",
+            401,
+            json!({"message":"token expired"}),
+        )]);
+        let error = tauri::async_runtime::block_on(wait_for_result(
+            &Client::new(),
+            &base,
+            "expired-token",
+            json!({"task":{"id":"original","status":"PROCESSING"}}),
+            &None,
+            "attempt",
+        ))
+        .unwrap_err();
+        let value: Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(value["code"], "PLATFORM_LOGIN_REQUIRED");
+        assert_eq!(value["remote_task_id"], "original");
+        assert_eq!(value["retryable"], true);
         server.join().unwrap();
     }
 

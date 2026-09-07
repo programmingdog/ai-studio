@@ -18,7 +18,7 @@ async function bootstrap(): Promise<void> {
   app.enableCors({
     origin: [...new Set([...environment.adminOrigin.split(",").map((origin) => origin.trim()), ...environment.clientOrigins])],
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key", "X-Update-Cohort"],
     credentials: false,
   });
   // WeChat Official Account pushes signed XML events to the public callback.

@@ -2,8 +2,9 @@ import "dotenv/config";
 import { createDecipheriv, createHash, randomUUID } from "node:crypto";
 import { createConnection, RowDataPacket } from "mysql2/promise";
 import { loadDatabaseConfig } from "../config/environment";
+import { RETIRED_WAGAAI_TEXT_MODEL_CODES, WAGAAI_TEXT_MODELS } from "../common/wagaai-text-models";
 
-const WAGAAI_BASE_URL = "https://api.lk888.ai/api";
+const WAGAAI_BASE_URL = "https://api.lk888.ai";
 
 type Capability = "TEXT_GENERATION" | "VIDEO_UNDERSTANDING" | "IMAGE_GENERATION" | "VIDEO_GENERATION";
 
@@ -57,9 +58,16 @@ interface PricingResponse {
 }
 
 const catalog: CatalogModel[] = [
-  { name: "tt-5.6-luna", alias: "TT 5.6 Luna", capability: "TEXT_GENERATION", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: false, sortOrder: 10 },
-  { name: "tt-5.6-sol", alias: "TT 5.6 Sol", capability: "TEXT_GENERATION", initialCreditCost: 4, maxReferenceImages: 0, supportsReferenceVideo: false, sortOrder: 20 },
-  { name: "gem-3.7-flash", alias: "GEM 3.7 视频理解", capability: "VIDEO_UNDERSTANDING", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: true, sortOrder: 10 },
+  ...WAGAAI_TEXT_MODELS.map((model) => ({
+    name: model.modelCode,
+    alias: model.modelAlias,
+    capability: "TEXT_GENERATION" as const,
+    initialCreditCost: model.initialCreditCost,
+    maxReferenceImages: 0,
+    supportsReferenceVideo: false,
+    sortOrder: model.sortOrder,
+  })),
+  { name: "gem-3.7-flash", alias: "GEM 3.7 Flash 视频理解", capability: "VIDEO_UNDERSTANDING", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: true, sortOrder: 10 },
   { name: "tt-image-2", alias: "TT Image 2", capability: "IMAGE_GENERATION", initialCreditCost: 2, maxReferenceImages: 10, supportsReferenceVideo: false, sortOrder: 10 },
   { name: "banana-pro", alias: "Banana Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 14, supportsReferenceVideo: false, sortOrder: 20 },
   { name: "doubao-seedream-5-0-pro-260628", alias: "Seedream 5.0 Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 30 },
@@ -146,14 +154,16 @@ async function main(): Promise<void> {
     const credential = credentials[0]!;
     const apiKey = decryptSecret(credential.api_key_ciphertext);
 
-    const skills = await requestJson<Record<string, unknown>>("/v1/skills", apiKey);
+    const guide = await requestJson<Record<string, unknown>>("/v1/skills/guide", apiKey);
     const balance = await requestJson<Record<string, unknown>>("/v1/skills/balance", apiKey);
     const syncedAt = new Date().toISOString();
     const providerConfig = {
       ...parseJsonObject(provider.config_json),
       credentials_configured: true,
-      docs_version: skills.version || null,
-      platform: skills.platform || "LingkeAI",
+      docs_version: guide.version || null,
+      platform: guide.platform || "WagaAI",
+      base_url_verified: true,
+      guide_endpoint: "/v1/skills/guide",
       model_catalog_source: "/v1/skills/models",
       balance_endpoint: "/v1/skills/balance",
       media_generation_endpoint: "/v1/media/generate",
@@ -179,6 +189,11 @@ async function main(): Promise<void> {
       await connection.query(
         `DELETE FROM provider_models WHERE provider_id = ? AND model_code IN (${replacedModelCodes.map(() => "?").join(", ")})`,
         [provider.id, ...replacedModelCodes],
+      );
+      await connection.query(
+        `UPDATE provider_models SET status = 'DISABLED'
+         WHERE provider_id = ? AND model_code IN (${RETIRED_WAGAAI_TEXT_MODEL_CODES.map(() => "?").join(", ")})`,
+        [provider.id, ...RETIRED_WAGAAI_TEXT_MODEL_CODES],
       );
 
       for (const selected of catalog) {
@@ -232,8 +247,9 @@ async function main(): Promise<void> {
         if (isMedia) {
           await connection.execute(
             `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
-             SELECT id, ?, credit_cost, 0 FROM provider_models WHERE provider_id = ? AND model_code = ?`,
-            [selected.name === "hailuo-h3-cankaosheng" ? "768P" : selected.name === "omni_flash-10s" ? "default" : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.name],
+             SELECT id, ?, credit_cost, 0 FROM provider_models
+             WHERE provider_id = ? AND model_code = ? AND capability = ?`,
+            [selected.name === "hailuo-h3-cankaosheng" ? "768P" : selected.name === "omni_flash-10s" ? "default" : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.name, selected.capability],
           );
         }
       }
@@ -243,7 +259,7 @@ async function main(): Promise<void> {
       throw error;
     }
 
-    process.stdout.write(`WagaAI sync complete: ${catalog.length} models, balance refreshed, docs ${String(skills.version || "unknown")}\n`);
+    process.stdout.write(`WagaAI sync complete: ${catalog.length} models, balance refreshed, docs ${String(guide.version || "unknown")}\n`);
   } finally {
     await connection.end();
   }

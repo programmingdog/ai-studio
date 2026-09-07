@@ -8,7 +8,7 @@ import { requiredString } from "../common/input";
 import { commissionFen, generateInviteCode, integer, inviteCode, publicUrl, receiptImage, withdrawalWindow } from "./referral-rules";
 
 const withdrawalColumns = "id, user_id, amount_fen, status, review_note, reviewed_at, processing_by, processing_at, paid_at, created_at";
-type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_url: string; macos_download_url: string; revision: number; updated_at?: unknown };
+type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_enabled: boolean; windows_download_url: string; macos_download_enabled: boolean; macos_download_url: string; revision: number; updated_at?: unknown };
 
 function chinaRewardPeriodKeys(now = new Date()) {
   const shifted = new Date(now.getTime() + 8 * 3600_000);
@@ -24,8 +24,12 @@ function chinaRewardPeriodKeys(now = new Date()) {
 export class ReferralsService {
   constructor(@Inject(DatabaseService) private readonly db: DatabaseService, @Inject(SecretCryptoService) private readonly crypto: SecretCryptoService, @Inject(EnvironmentService) private readonly environment: EnvironmentService) {}
 
+  private downloadPageUrl(): string {
+    return `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/download`;
+  }
+
   private configValue(row: RowDataPacket): Config {
-    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invitation_anti_abuse_enabled: Boolean(row.invitation_anti_abuse_enabled), invitation_daily_reward_limit: Number(row.invitation_daily_reward_limit ?? 20), invitation_monthly_reward_limit: Number(row.invitation_monthly_reward_limit ?? 200), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_url: row.windows_download_url, macos_download_url: row.macos_download_url, revision: Number(row.revision), updated_at: row.updated_at };
+    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invitation_anti_abuse_enabled: Boolean(row.invitation_anti_abuse_enabled), invitation_daily_reward_limit: Number(row.invitation_daily_reward_limit ?? 20), invitation_monthly_reward_limit: Number(row.invitation_monthly_reward_limit ?? 200), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_enabled: Boolean(Number(row.windows_download_enabled)), windows_download_url: row.windows_download_url || "", macos_download_enabled: Boolean(Number(row.macos_download_enabled)), macos_download_url: row.macos_download_url || "", revision: Number(row.revision), updated_at: row.updated_at };
   }
   async config(connection?: PoolConnection): Promise<Config> {
     const rows = connection ? (await connection.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1"))[0] : await this.db.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1");
@@ -60,28 +64,45 @@ export class ReferralsService {
   async downloadConfig() {
     const config = await this.config();
     return {
+      windows_download_enabled: config.windows_download_enabled,
       windows_download_url: config.windows_download_url,
+      macos_download_enabled: config.macos_download_enabled,
       macos_download_url: config.macos_download_url,
+      download_page_url: this.downloadPageUrl(),
       revision: config.revision,
       updated_at: config.updated_at,
     };
   }
 
   async saveDownloadConfig(adminId: string, input: Record<string, unknown>) {
+    if (typeof input.windows_download_enabled !== "boolean" || typeof input.macos_download_enabled !== "boolean") throw new BadRequestException("下载版本开关必须为布尔值");
+    const windowsEnabled = input.windows_download_enabled;
+    const macosEnabled = input.macos_download_enabled;
     const windows = publicUrl(input.windows_download_url, "Windows 安装包地址");
     const macos = publicUrl(input.macos_download_url, "macOS 安装包地址");
-    if (!windows && !macos) throw new BadRequestException("至少需要配置一个软件下载地址");
+    if (windowsEnabled && !windows) throw new BadRequestException("开启 Windows 下载前请先配置安装包地址");
+    if (macosEnabled && !macos) throw new BadRequestException("开启 macOS 下载前请先配置安装包地址");
     const revision = integer(input.revision, "配置版本");
     await this.db.transaction(async c => {
       const [rows] = await c.query<RowDataPacket[]>("SELECT revision FROM distribution_configs WHERE id = 1 FOR UPDATE");
       if (Number(rows[0]?.revision) !== revision) throw new ConflictException("配置已更新，请重新读取");
       await c.execute(
-        "UPDATE distribution_configs SET windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1",
-        [windows, macos, adminId],
+        "UPDATE distribution_configs SET windows_download_enabled = ?, windows_download_url = ?, macos_download_enabled = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1",
+        [windowsEnabled ? 1 : 0, windows, macosEnabled ? 1 : 0, macos, adminId],
       );
-      await this.audit(c, adminId, "software_downloads.config", "1", { windows_download_url: windows, macos_download_url: macos, revision: revision + 1 });
+      await this.audit(c, adminId, "software_downloads.config", "1", { windows_download_enabled: windowsEnabled, windows_download_url: windows, macos_download_enabled: macosEnabled, macos_download_url: macos, revision: revision + 1 });
     });
     return this.downloadConfig();
+  }
+
+  async publicDownloads() {
+    const config = await this.config();
+    return {
+      windows_download_enabled: config.windows_download_enabled,
+      windows_download_url: config.windows_download_enabled ? config.windows_download_url : "",
+      macos_download_enabled: config.macos_download_enabled,
+      macos_download_url: config.macos_download_enabled ? config.macos_download_url : "",
+    };
   }
 
   async ensureInviteCode(userId: string, connection?: PoolConnection): Promise<string> {
@@ -187,14 +208,69 @@ export class ReferralsService {
   async publicInvitation(code: string) {
     const normalized = inviteCode(code);
     await this.inviter(normalized);
-    const config = await this.config();
-    return { invite_code: normalized, windows_download_url: config.windows_download_url, macos_download_url: config.macos_download_url };
+    return { invite_code: normalized, ...await this.publicDownloads() };
   }
   async summary(userId: string) {
     const code = await this.ensureInviteCode(userId), config = await this.config();
     const [wallet] = await this.db.query<RowDataPacket[]>("SELECT available_fen, frozen_fen, earned_fen, paid_fen FROM commission_wallets WHERE user_id = ?", [userId]);
     const [count] = await this.db.query<RowDataPacket[]>("SELECT COUNT(*) AS invited_count, COALESCE(SUM(CASE WHEN status = 'REWARDED' THEN credits ELSE 0 END), 0) AS reward_credits FROM referral_rewards WHERE inviter_id = ?", [userId]);
-    return { invite_code: code, invitation_url: `${config.invite_page_base_url}/${code}`, invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, invitation_anti_abuse_enabled: config.invitation_anti_abuse_enabled, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
+    const invitationUrl = new URL(this.downloadPageUrl());
+    invitationUrl.searchParams.set("invite_code", code);
+    return { invite_code: code, invitation_url: invitationUrl.toString(), invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, invitation_anti_abuse_enabled: config.invitation_anti_abuse_enabled, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
+  }
+
+  async subordinates(userId: string, rawLevel?: string, rawPage?: string) {
+    const level = integer(rawLevel === undefined ? 1 : Number(rawLevel), "下级层级", 1, 2);
+    const page = integer(rawPage === undefined ? 1 : Number(rawPage), "页码", 1, 100000);
+    const offset = (page - 1) * 50;
+    const joins = level === 1 ? "" : " INNER JOIN users p ON p.id = u.pid";
+    const scope = level === 1
+      ? "u.pid = ? AND u.id <> u.pid"
+      : "p.pid = ? AND p.id <> p.pid AND u.id <> p.pid AND u.id <> p.id";
+    const spending = ` LEFT JOIN (
+      SELECT po.user_id, SUM(COALESCE(po.payer_paid_amount_fen, po.amount_fen)) AS consumption_fen,
+             COUNT(*) AS paid_order_count, MAX(po.paid_at) AS last_paid_at
+      FROM payment_orders po WHERE po.status = 'PAID' GROUP BY po.user_id
+    ) spend ON spend.user_id = u.id`;
+    const [totals] = await this.db.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS total, COALESCE(SUM(spend.consumption_fen), 0) AS total_consumption_fen FROM users u${joins}${spending} WHERE ${scope}`,
+      [userId],
+    );
+    const rows = await this.db.query<RowDataPacket[]>(
+      `SELECT u.id, u.display_name, u.email, u.phone, u.status, u.created_at, ${level === 2 ? "p.display_name" : "NULL"} AS parent_display_name,
+              COALESCE(spend.consumption_fen, 0) AS consumption_fen, COALESCE(spend.paid_order_count, 0) AS paid_order_count, spend.last_paid_at
+       FROM users u${joins}${spending} WHERE ${scope} ORDER BY u.created_at DESC, u.id DESC LIMIT 51 OFFSET ${offset}`,
+      [userId],
+    );
+    const maskedAccount = (row: RowDataPacket) => {
+      const email = String(row.email || "");
+      if (email.includes("@")) {
+        const separator = email.indexOf("@");
+        const name = email.slice(0, separator), domain = email.slice(separator + 1);
+        return `${name.slice(0, Math.min(2, name.length))}***@${domain}`;
+      }
+      const phone = String(row.phone || "");
+      return phone.length >= 7 ? `${phone.slice(0, 3)}****${phone.slice(-4)}` : phone ? "******" : "微信用户";
+    };
+    return {
+      level,
+      page,
+      page_size: 50,
+      total: Number(totals?.total || 0),
+      total_consumption_fen: Number(totals?.total_consumption_fen || 0),
+      has_more: rows.length > 50,
+      items: rows.slice(0, 50).map(row => ({
+        id: row.id,
+        display_name: row.display_name,
+        account: maskedAccount(row),
+        status: row.status,
+        parent_display_name: row.parent_display_name || null,
+        consumption_fen: Number(row.consumption_fen || 0),
+        paid_order_count: Number(row.paid_order_count || 0),
+        last_paid_at: row.last_paid_at || null,
+        created_at: row.created_at,
+      })),
+    };
   }
 
   private async wallet(c: PoolConnection, userId: string) {
@@ -340,23 +416,46 @@ export class ReferralsService {
     } catch (error) { if ((error as { code?: string }).code === "ER_DUP_ENTRY") throw new ConflictException("该支付宝流水号已用于其他打款，不能重复记账"); throw error; }
     return { id, status: "PAID" };
   }
-  async records(kind: string, userId?: string, rawPage?: string, status?: string) {
+  async records(kind: string, userId?: string, rawPage?: string, status?: string, includeLoginNames = false) {
     const page = rawPage === undefined ? 1 : Number(rawPage);
     integer(page, "页码", 1, 100000);
     const offset = (page - 1) * 50;
     const table = kind === "commissions" ? "commission_records" : kind === "withdrawals" ? "withdrawal_applications" : kind === "payouts" ? "manual_payout_records" : kind === "rewards" ? "referral_rewards" : "";
     if (!table) throw new BadRequestException("记录类型无效");
-    const owner = kind === "commissions" ? "beneficiary_id" : kind === "rewards" ? "inviter_id" : "user_id";
+    const tableAlias = includeLoginNames
+      ? kind === "commissions" ? "cr" : kind === "withdrawals" ? "wa" : kind === "payouts" ? "mpr" : "rr"
+      : "";
+    const columnPrefix = tableAlias ? `${tableAlias}.` : "";
+    const ownerColumn = kind === "commissions" ? "beneficiary_id" : kind === "rewards" ? "inviter_id" : "user_id";
+    const owner = `${columnPrefix}${ownerColumn}`;
     const conditions: string[] = [], parameters: unknown[] = [];
     if (userId) { conditions.push(`${owner} = ?`); parameters.push(userId); }
     if (status && (kind === "withdrawals" || kind === "rewards")) {
       const allowed = kind === "withdrawals" ? ["PENDING", "APPROVED", "PROCESSING", "REJECTED", "PAID"] : ["PENDING_PAYMENT", "REWARDED", "LIMITED"];
       if (!allowed.includes(status)) throw new BadRequestException(kind === "withdrawals" ? "提现状态无效" : "邀请奖励状态无效");
-      conditions.push("status = ?"); parameters.push(status);
+      conditions.push(`${columnPrefix}status = ?`); parameters.push(status);
     }
     const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
-    const columns = kind === "withdrawals" ? withdrawalColumns : "*";
-    const rows = await this.db.query<RowDataPacket[]>(`SELECT ${columns} FROM ${table}${where} ORDER BY created_at DESC, id DESC LIMIT 51 OFFSET ${offset}`, parameters);
+    const recordColumns = kind === "withdrawals"
+      ? withdrawalColumns.split(", ").map(column => `${columnPrefix}${column}`).join(", ")
+      : `${columnPrefix}*`;
+    const columns = includeLoginNames && kind === "rewards"
+      ? `rr.*,
+         COALESCE(NULLIF(inviter.email, ''), NULLIF(inviter.phone, ''), NULLIF(inviter.display_name, ''), rr.inviter_id) AS inviter_login_name,
+         COALESCE(NULLIF(invited.email, ''), NULLIF(invited.phone, ''), NULLIF(invited.display_name, ''), rr.invited_user_id) AS invited_login_name`
+      : includeLoginNames
+        ? `${recordColumns},
+           COALESCE(NULLIF(record_user.email, ''), NULLIF(record_user.phone, ''), NULLIF(record_user.display_name, ''), ${owner}) AS user_login_name`
+        : recordColumns;
+    const source = includeLoginNames && kind === "rewards"
+      ? "referral_rewards rr LEFT JOIN users inviter ON inviter.id = rr.inviter_id LEFT JOIN users invited ON invited.id = rr.invited_user_id"
+      : includeLoginNames
+        ? `${table} ${tableAlias} LEFT JOIN users record_user ON record_user.id = ${owner}`
+        : table;
+    const rows = await this.db.query<RowDataPacket[]>(
+      `SELECT ${columns} FROM ${source}${where} ORDER BY ${columnPrefix}created_at DESC, ${columnPrefix}id DESC LIMIT 51 OFFSET ${offset}`,
+      parameters,
+    );
     return { items: rows.slice(0, 50), page, has_more: rows.length > 50 };
   }
   private audit(c: PoolConnection, admin: string, action: string, id: string, detail: unknown) {

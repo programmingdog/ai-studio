@@ -155,6 +155,35 @@ class FromScriptWorkflowTests(unittest.TestCase):
         self.assertIn("匆忙焦急", result["shots"][0]["emotion"])
         self.assertIn("场景锁定", result["shots"][0]["image_prompt"])
 
+    def test_parses_minute_second_headings_without_falling_back_to_plain_script(self):
+        timecoded = STRUCTURED_STORYBOARD.replace(
+            "第1段（0～10秒）",
+            "第1段（00:00～00:18）",
+        ).replace(
+            "第2段（10～22秒）",
+            "第2段（00:18～00:40）",
+        )
+        result = analyze_script({
+            "script_text": timecoded,
+            "creation_spec": {"project_name": "时间码分镜", "aspect_ratio": "9:16", "target_duration": 40},
+        }, lambda *_: None)
+
+        self.assertEqual(result["metadata"]["script_type"], "STRUCTURED_VIDEO_STORYBOARD")
+        self.assertEqual(result["story"]["title"], "街头药瓶风波")
+        self.assertEqual(result["story"]["theme"], "误解与救助")
+        self.assertEqual(len(result["story"]["beats"]), 9)
+        self.assertEqual(result["episodes"], [])
+        self.assertEqual([item["name"] for item in result["characters"]], ["外卖员", "西装男"])
+        self.assertEqual([item["name"] for item in result["scenes"]], ["城市街道人行道"])
+        self.assertEqual(len(result["shots"]), 4)
+        self.assertEqual(result["shots"][0]["source_time_range"], {"start": 0.0, "end": 10.0})
+        self.assertEqual(result["shots"][-1]["source_time_range"], {"start": 29.0, "end": 40.0})
+        self.assertEqual(result["shots"][0]["character_ids"], ["CHAR_001", "CHAR_002"])
+        self.assertIn("黑色轿车", result["shots"][0]["scene_lock"])
+        self.assertIn("别砸", result["shots"][0]["dialogue"])
+        self.assertEqual(result["shots"][0]["reference_assets"], [])
+        self.assertEqual(result["shots"][0]["video_assets"], [])
+
     def test_splits_ai_storyboard_segments_that_exceed_fifteen_seconds(self):
         oversized_storyboard = STRUCTURED_STORYBOARD.replace(
             "第2段（10～22秒）",

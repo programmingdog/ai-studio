@@ -28,32 +28,34 @@ function countdownText(seconds: number | null): string {
   return [hours, minutes, remainder].slice(hours ? 0 : 1).map(value => String(value).padStart(2, "0")).join(":");
 }
 
-export function AccountCenterModal({ onClose, required = false, initialSection = "account" }: { onClose: () => void; required?: boolean; initialSection?: "account" | "credits" }) {
+export function AccountCenterModal({ onClose, required = false, initialSection = "account", purchaseFlow = false, forceReauthentication = false, onCreditsPurchased, onReauthenticated }: { onClose: () => void; required?: boolean; initialSection?: "account" | "credits"; purchaseFlow?: boolean; forceReauthentication?: boolean; onCreditsPurchased?: () => void; onReauthenticated?: () => void }) {
   const { productName } = useProductBrand();
   const queryClient = useQueryClient();
   const session = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
-  const loggedIn = Boolean(session.data);
+  const loggedIn = Boolean(session.data) && !forceReauthentication;
   const user = useQuery({ queryKey: ["platform-user"], queryFn: getPlatformUser, enabled: loggedIn, retry: false });
   const [section, setSection] = useState<"account" | "credits" | "referrals">(initialSection);
   useEffect(() => {
+    if (forceReauthentication) return;
     if (!(user.error instanceof PlatformApiError) || user.error.status !== 401) return;
     void clearInvalidPlatformSession().finally(() => queryClient.setQueryData(["platform-session"], null));
-  }, [queryClient, user.error]);
+  }, [forceReauthentication, queryClient, user.error]);
 
   const acceptLogin = async (result: { user: PlatformUser }) => {
     queryClient.setQueryData(["platform-session"], await loadPlatformSession());
     queryClient.setQueryData(["platform-user"], result.user);
+    onReauthenticated?.();
   };
 
   const logout = useMutation({ mutationFn: logoutPlatform, onSuccess: () => { queryClient.setQueryData(["platform-session"], null); queryClient.removeQueries({ queryKey: ["platform-user"] }); setSection("account"); } });
 
-  return <div className={`modal-backdrop account-modal-backdrop${required ? " account-login-backdrop" : ""}`} onMouseDown={(event) => { if (!required && event.target === event.currentTarget) onClose(); }}>
+  return <div className={`modal-backdrop account-modal-backdrop${required ? " account-login-backdrop" : ""}${purchaseFlow ? " credit-purchase-backdrop" : ""}${forceReauthentication ? " session-reauthentication-backdrop" : ""}`} onMouseDown={(event) => { if (!required && event.target === event.currentTarget) onClose(); }}>
     <section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-center-title">
-      <header><div><span className="eyebrow">PLATFORM ACCOUNT</span><h2 id="account-center-title">{loggedIn ? "账户与积分中心" : `登录 ${productName}`}</h2><p>{loggedIn ? "管理账户资料、积分和微信支付订单。" : "必须先登录；项目、资产和处理记录会按账户隔离保存。"}</p></div>{!required && <button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>}</header>
-      {session.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在读取安全登录会话…</div> : !loggedIn ? <UnifiedAuthPanel onAuthenticated={acceptLogin} /> : <>
+      <header><div><span className="eyebrow">PLATFORM ACCOUNT</span><h2 id="account-center-title">{forceReauthentication ? "登录已过期，请重新登录" : loggedIn ? "账户与积分中心" : `登录 ${productName}`}</h2><p>{forceReauthentication ? "为了账户安全，请重新输入账号密码。已提交的生成任务会保留，登录后继续查询，不会重新生成。" : loggedIn ? "管理账户资料、积分和微信支付订单。" : "必须先登录；项目、资产和处理记录会按账户隔离保存。"}</p></div>{!required && <button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>}</header>
+      {session.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在读取安全登录会话…</div> : !loggedIn ? <UnifiedAuthPanel onAuthenticated={acceptLogin} forcePasswordEntry={forceReauthentication} initialEmail={forceReauthentication ? user.data?.email ?? undefined : undefined} /> : <>
         <nav className="account-tabs"><button className={section === "account" ? "active" : ""} onClick={() => setSection("account")}><CircleUserRound size={16} />账户资料</button><button className={section === "credits" ? "active" : ""} onClick={() => setSection("credits")}><Coins size={16} />积分与购买</button><button className={section === "referrals" ? "active" : ""} onClick={() => setSection("referrals")}><CreditCard size={16} />分润与提现</button></nav>
         <div className="account-body">
-          {section === "account" ? <ProfilePanel user={user.data} loading={user.isLoading} error={user.error} onSaved={(next) => queryClient.setQueryData(["platform-user"], next)} onLogout={() => logout.mutate()} loggingOut={logout.isPending} /> : section === "credits" ? <CreditsPanel /> : <ReferralPanel key={user.data?.id} userId={user.data?.id} />}
+          {section === "account" ? <ProfilePanel user={user.data} loading={user.isLoading} error={user.error} onSaved={(next) => queryClient.setQueryData(["platform-user"], next)} onLogout={() => logout.mutate()} loggingOut={logout.isPending} /> : section === "credits" ? <CreditsPanel onPurchased={onCreditsPurchased} purchaseFlow={purchaseFlow} /> : <ReferralPanel key={user.data?.id} userId={user.data?.id} />}
         </div>
       </>}
     </section>
@@ -76,7 +78,7 @@ function ProfilePanel({ user, loading, error, onSaved, onLogout, loggingOut }: {
   </div>;
 }
 
-function CreditsPanel() {
+function CreditsPanel({ onPurchased, purchaseFlow = false }: { onPurchased?: () => void; purchaseFlow?: boolean }) {
   const queryClient = useQueryClient();
   const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance });
   const packages = useQuery({ queryKey: ["credit-packages"], queryFn: listCreditPackages });
@@ -105,7 +107,7 @@ function CreditsPanel() {
   }, [activePurchase, queryClient]);
   return <div className="credits-panel"><div className="balance-grid"><article><span>积分余额</span><strong>{balance.data?.balance ?? "—"}</strong></article><article><span>正在使用的积分</span><strong>{balance.data?.held ?? "—"}</strong></article><article className="available"><span>可用积分</span><strong>{balance.data?.available ?? "—"}</strong></article></div>
     <section className="platform-section"><header><div><strong>积分套餐</strong><span>使用微信扫码支付，支付成功后积分自动到账。</span></div></header><div className="package-grid">{packages.data?.map((item) => <article key={item.id}><span>{item.name}</span><strong>{item.total_credits}<small> 积分</small></strong><p>{item.description}</p>{item.bonus_credits > 0 && <em>含赠送 {item.bonus_credits}</em>}<button className="primary-button" onClick={() => purchase.mutate(item.id)} disabled={purchase.isPending}><CreditCard size={15} />{money(item.price_fen)} 购买</button></article>)}</div>{purchase.error && <div className="error-banner">{message(purchase.error)}</div>}</section>
-    {activePurchase && createPortal(<PaymentDialog purchase={activePurchase} onClose={() => setActivePurchase(null)} />, document.body)}
+    {activePurchase && createPortal(<PaymentDialog purchase={activePurchase} purchaseFlow={purchaseFlow} onClose={() => { const paid = activePurchase.status === "PAID"; setActivePurchase(null); if (paid) onPurchased?.(); }} />, document.body)}
     <div className="records-columns"><RecordList title="购买记录" loading={purchases.isLoading} rows={(purchases.data || []).map((item) => ({ id: item.id, title: item.package_name_snapshot || "积分套餐", amount: `+${item.credits_granted || 0} 积分`, status: item.status, time: item.purchased_at || item.created_at }))} /><RecordList title="消耗记录" loading={consumptions.isLoading} rows={(consumptions.data || []).map((item) => ({ id: item.id, title: item.model_alias || item.description || item.category, amount: `-${item.credits_consumed} 积分`, status: item.status, time: item.occurred_at }))} /></div>
   </div>;
 }
@@ -115,7 +117,7 @@ function RecordList({ title, loading, rows }: { title: string; loading: boolean;
   return <section className="record-list"><header><strong>{title}</strong><span>{rows.length} 条</span></header>{loading ? <div className="account-loading"><LoaderCircle className="spin" /></div> : rows.length ? rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{date(row.time)}</small></div><div><b>{row.amount}</b><span className={`platform-status ${taskTone(row.status)}`}>{localizedStatusLabel(row.status, locale)}</span></div></article>) : <div className="account-empty">暂无记录</div>}</section>;
 }
 
-function PaymentDialog({ purchase, onClose }: { purchase: PlatformPurchase; onClose: () => void }) {
+function PaymentDialog({ purchase, onClose, purchaseFlow = false }: { purchase: PlatformPurchase; onClose: () => void; purchaseFlow?: boolean }) {
   const { locale } = useI18n();
   const expiryTime = purchase.expires_at ? new Date(purchase.expires_at).getTime() : null;
   const remaining = () => expiryTime === null || !Number.isFinite(expiryTime) ? null : Math.max(0, Math.ceil((expiryTime - Date.now()) / 1000));
@@ -129,7 +131,7 @@ function PaymentDialog({ purchase, onClose }: { purchase: PlatformPurchase; onCl
   const effectiveStatus = !terminalPurchaseStatuses.includes(purchase.status) && remainingSeconds === 0 ? "EXPIRED" : purchase.status;
   const paid = effectiveStatus === "PAID";
   const scannable = Boolean(purchase.code_url) && !terminalPurchaseStatuses.includes(effectiveStatus) && remainingSeconds !== 0;
-  return <div className="modal-backdrop payment-dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <div className={`modal-backdrop payment-dialog-backdrop${purchaseFlow ? " credit-purchase-payment-backdrop" : ""}`} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="payment-dialog" role="dialog" aria-modal="true" aria-labelledby="payment-dialog-title">
       <header><div><span className="eyebrow">WECHAT PAY</span><h2 id="payment-dialog-title">微信扫码支付</h2><p>{purchase.package_name_snapshot || "积分购买订单"}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="关闭支付弹窗"><X size={18} /></button></header>
       <div className="payment-dialog-body">
@@ -142,7 +144,7 @@ function PaymentDialog({ purchase, onClose }: { purchase: PlatformPurchase; onCl
           <dl><div><dt>支付金额</dt><dd>{money(purchase.paid_amount_fen ?? purchase.amount_fen)}</dd></div><div><dt>到账积分</dt><dd>{purchase.credits_granted ?? purchase.credits ?? "—"}</dd></div><div><dt>订单编号</dt><dd>{purchase.out_trade_no || purchase.purchase_no || "—"}</dd></div></dl>
         </div>
       </div>
-      <footer><span>{paid ? "支付已确认" : "关闭弹窗不会自动取消微信支付订单。"}</span><button className={paid ? "primary-button" : "secondary-button"} type="button" onClick={onClose}>{paid ? "完成并关闭" : "关闭弹窗"}</button></footer>
+      <footer><span>{paid ? "支付已确认" : "关闭弹窗不会自动取消微信支付订单。"}</span><button className={paid ? "primary-button" : "secondary-button"} type="button" onClick={onClose}>{paid ? purchaseFlow ? "完成并继续" : "完成并关闭" : "关闭弹窗"}</button></footer>
     </section>
   </div>;
 }

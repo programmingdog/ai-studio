@@ -5,8 +5,9 @@ import { AuditService } from "../common/audit.service";
 import { parseStoredJson } from "../common/input";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
-import { ModelCreditMultiplierService, multiplierFor, multiplyCredits } from "../common/model-credit-multiplier.service";
+import { multiplyCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } from "../common/model-credit";
 import { integer } from "../referrals/referral-rules";
+import { isAdminVisibleProviderModel, isDefaultModelCandidate } from "../common/wagaai-text-models";
 
 // Both directory counts and relationship pages use the same exact two-level scope.
 // Disabled accounts remain in the tree; no third-level traversal or rank promotion.
@@ -133,6 +134,7 @@ interface ProviderModelRow extends RowDataPacket {
   generation_endpoint: string;
   query_endpoint: string | null;
   credit_cost: number;
+  credit_multiplier: number | string;
   max_reference_images: number;
   supports_reference_video: number;
   supports_real_person: number;
@@ -155,6 +157,7 @@ interface ProviderModelInput {
   generationEndpoint: string;
   queryEndpoint?: string | null;
   creditCost: number;
+  creditMultiplier?: number;
   maxReferenceImages: number;
   supportsReferenceVideo: boolean;
   supportsRealPerson: boolean;
@@ -184,6 +187,7 @@ interface ProviderCredentialRow extends RowDataPacket {
 interface EligibleDefaultModelRow extends RowDataPacket {
   id: string;
   provider_id: string;
+  provider_code: string;
   provider_name: string;
   model_code: string;
   display_name: string;
@@ -241,7 +245,6 @@ export class AdminService {
     @Inject(DatabaseService) private readonly database: DatabaseService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(SecretCryptoService) private readonly secretCrypto: SecretCryptoService,
-    @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
   ) {}
 
   async overview(): Promise<Record<string, unknown>> {
@@ -496,9 +499,10 @@ export class AdminService {
     }));
   }
 
-  private eligibleDefaultModels(connection?: PoolConnection): Promise<EligibleDefaultModelRow[]> {
+  private async eligibleDefaultModels(connection?: PoolConnection): Promise<EligibleDefaultModelRow[]> {
     const sql = `SELECT pm.id, pm.provider_id, p.display_name AS provider_name,
-                        pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.sort_order
+                        p.code AS provider_code, pm.model_code, pm.display_name, pm.model_alias,
+                        pm.capability, pm.sort_order
                  FROM provider_models pm
                  INNER JOIN providers p ON p.id = pm.provider_id
                  WHERE p.status = 'ACTIVE' AND pm.status = 'ACTIVE'
@@ -508,10 +512,10 @@ export class AdminService {
                        AND pc.api_key_ciphertext IS NOT NULL AND LENGTH(pc.api_key_ciphertext) > 0
                    )
                  ORDER BY pm.capability, p.display_name, pm.sort_order, pm.model_alias, pm.display_name`;
-    if (connection) {
-      return connection.query<EligibleDefaultModelRow[]>(sql).then(([rows]) => rows);
-    }
-    return this.database.query<EligibleDefaultModelRow[]>(sql);
+    const rows = connection
+      ? await connection.query<EligibleDefaultModelRow[]>(sql).then(([result]) => result)
+      : await this.database.query<EligibleDefaultModelRow[]>(sql);
+    return rows.filter(isDefaultModelCandidate);
   }
 
   async getDefaultModelConfig(): Promise<Record<string, unknown>> {
@@ -592,6 +596,28 @@ export class AdminService {
       },
     });
     return { updated: true };
+  }
+
+  async getScriptAnalysisConfig(): Promise<Record<string, unknown>> {
+    const rows = await this.database.query<RowDataPacket[]>(
+      "SELECT prompt, credit_cost, revision, updated_at FROM script_analysis_config WHERE id = 1 LIMIT 1",
+    );
+    if (!rows.length) throw new NotFoundException("剧本提取配置不存在");
+    return { ...rows[0], credit_cost: Number(rows[0]!.credit_cost), revision: Number(rows[0]!.revision) };
+  }
+
+  async updateScriptAnalysisConfig(adminUserId: string, input: { prompt: string; creditCost: number; revision: number }): Promise<Record<string, unknown>> {
+    const prompt = input.prompt.trim();
+    if (prompt.length < 100 || prompt.length > 100_000) throw new BadRequestException("剧本提取提示词必须为 100～100000 个字符");
+    if (!Number.isFinite(input.creditCost) || input.creditCost < 0 || input.creditCost > 1_000_000) throw new BadRequestException("剧本提取积分必须为 0～1000000");
+    const result = await this.database.execute(
+      `UPDATE script_analysis_config SET prompt = ?, credit_cost = ?, revision = revision + 1, updated_by = ?
+       WHERE id = 1 AND revision = ?`,
+      [prompt, input.creditCost, adminUserId, input.revision],
+    );
+    if (!result.affectedRows) throw new ConflictException("剧本提取配置已被其他管理员修改，请刷新后重试");
+    await this.audit.record({ adminUserId, action: "script_analysis_config.update", entityType: "script_analysis_config", entityId: "1", details: { creditCost: input.creditCost } });
+    return this.getScriptAnalysisConfig();
   }
 
   async createProvider(
@@ -718,11 +744,10 @@ export class AdminService {
   }
 
   async listProviderModels(providerId: string): Promise<Record<string, unknown>[]> {
-    const { multipliers } = await this.creditMultipliers.get();
     const [rows, priceRows] = await Promise.all([this.database.query<ProviderModelRow[]>(
       `SELECT pm.id, pm.provider_id, p.code AS provider_code, p.display_name AS provider_name,
               pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier,
               pm.max_reference_images, pm.supports_reference_video, pm.supports_real_person,
               pm.supports_async_tasks,
               pm.sort_order, pm.description, pm.status, pm.parameter_schema_json, pm.config_json,
@@ -738,21 +763,24 @@ export class AdminService {
        ORDER BY provider_model_id, sort_order, resolution`,
       [providerId],
     )]);
-    return rows.map((row) => ({
-      ...row,
-      credit_cost: Number(row.credit_cost),
-      credit_multiplier: multiplierFor(multipliers, row.capability),
-      final_credit_cost: multiplyCredits(Number(row.credit_cost), multiplierFor(multipliers, row.capability)),
-      billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
-      max_reference_images: Number(row.max_reference_images),
-      supports_reference_video: Boolean(row.supports_reference_video),
-      supports_real_person: Boolean(row.supports_real_person),
-      supports_async_tasks: Boolean(row.supports_async_tasks),
-      sort_order: Number(row.sort_order),
-      parameter_schema_json: parseStoredJson(row.parameter_schema_json),
-      config_json: parseStoredJson(row.config_json),
-      resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost), final_credit_cost: multiplyCredits(Number(price.credit_cost), multiplierFor(multipliers, row.capability)) })),
-    }));
+    return rows.filter(isAdminVisibleProviderModel).map((row) => {
+      const creditMultiplier = storedModelCreditMultiplier(row.credit_multiplier);
+      return {
+        ...row,
+        credit_cost: Number(row.credit_cost),
+        credit_multiplier: creditMultiplier,
+        final_credit_cost: multiplyCredits(Number(row.credit_cost), creditMultiplier),
+        billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+        max_reference_images: Number(row.max_reference_images),
+        supports_reference_video: Boolean(row.supports_reference_video),
+        supports_real_person: Boolean(row.supports_real_person),
+        supports_async_tasks: Boolean(row.supports_async_tasks),
+        sort_order: Number(row.sort_order),
+        parameter_schema_json: parseStoredJson(row.parameter_schema_json),
+        config_json: parseStoredJson(row.config_json),
+        resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost), final_credit_cost: multiplyCredits(Number(price.credit_cost), creditMultiplier) })),
+      };
+    });
   }
 
   private validateProviderModel(input: ProviderModelInput): ProviderModelInput {
@@ -785,6 +813,7 @@ export class AdminService {
       generationEndpoint,
       queryEndpoint,
       creditCost: integerInRange(input.creditCost, capability === "VIDEO_GENERATION" ? "每秒消耗积分数" : "每次消耗积分数", 1, 100000),
+      creditMultiplier: validateModelCreditMultiplier(input.creditMultiplier ?? 1),
       maxReferenceImages: integerInRange(input.maxReferenceImages, "参考图数量", 0, 255),
       supportsRealPerson: capability === "VIDEO_GENERATION" && input.supportsRealPerson,
       sortOrder: integerInRange(input.sortOrder, "排序值", 0, 100000),
@@ -810,12 +839,12 @@ export class AdminService {
     await this.database.transaction(async (connection) => {
       await connection.query(`INSERT INTO provider_models
         (id, provider_id, model_code, display_name, model_alias, capability, api_protocol,
-         generation_endpoint, query_endpoint, credit_cost, max_reference_images,
+         generation_endpoint, query_endpoint, credit_cost, credit_multiplier, max_reference_images,
          supports_reference_video, supports_real_person, supports_async_tasks, sort_order, description, status,
          parameter_schema_json, config_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, providerId, input.modelCode, input.displayName, input.modelAlias, input.capability,
-       input.apiProtocol, input.generationEndpoint, input.queryEndpoint, input.creditCost,
+       input.apiProtocol, input.generationEndpoint, input.queryEndpoint, input.creditCost, input.creditMultiplier,
        input.maxReferenceImages, input.supportsReferenceVideo ? 1 : 0, input.supportsRealPerson ? 1 : 0,
        input.supportsAsyncTasks ? 1 : 0,
        input.sortOrder, input.description || "", input.status,
@@ -823,7 +852,7 @@ export class AdminService {
        input.config === undefined ? null : JSON.stringify(input.config)]);
       await this.replaceResolutionPrices(connection, id, input.resolutionPrices);
     });
-    await this.audit.record({ adminUserId, action: "provider_model.create", entityType: "provider_model", entityId: id, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
+    await this.audit.record({ adminUserId, action: "provider_model.create", entityType: "provider_model", entityId: id, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
     return { id };
   }
 
@@ -833,12 +862,12 @@ export class AdminService {
       const [rows] = await connection.query<RowDataPacket[]>("SELECT id FROM provider_models WHERE id = ? AND provider_id = ? LIMIT 1 FOR UPDATE", [modelId, providerId]);
       if (!rows.length) throw new NotFoundException("模型不存在");
       await connection.query(`UPDATE provider_models SET model_code = ?, display_name = ?, model_alias = ?, capability = ?,
-         api_protocol = ?, generation_endpoint = ?, query_endpoint = ?, credit_cost = ?,
+         api_protocol = ?, generation_endpoint = ?, query_endpoint = ?, credit_cost = ?, credit_multiplier = ?,
          max_reference_images = ?, supports_reference_video = ?, supports_real_person = ?, supports_async_tasks = ?,
          sort_order = ?, description = ?, status = ?, parameter_schema_json = ?, config_json = ?
        WHERE id = ? AND provider_id = ?`,
       [input.modelCode, input.displayName, input.modelAlias, input.capability, input.apiProtocol,
-       input.generationEndpoint, input.queryEndpoint, input.creditCost, input.maxReferenceImages,
+       input.generationEndpoint, input.queryEndpoint, input.creditCost, input.creditMultiplier, input.maxReferenceImages,
        input.supportsReferenceVideo ? 1 : 0, input.supportsRealPerson ? 1 : 0,
        input.supportsAsyncTasks ? 1 : 0, input.sortOrder,
        input.description || "", input.status,
@@ -846,7 +875,7 @@ export class AdminService {
        input.config === undefined ? null : JSON.stringify(input.config), modelId, providerId]);
       await this.replaceResolutionPrices(connection, modelId, input.resolutionPrices);
     });
-    await this.audit.record({ adminUserId, action: "provider_model.update", entityType: "provider_model", entityId: modelId, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
+    await this.audit.record({ adminUserId, action: "provider_model.update", entityType: "provider_model", entityId: modelId, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
     return { updated: true };
   }
 

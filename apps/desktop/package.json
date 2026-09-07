@@ -1,6 +1,6 @@
 {
   "name": "@aivs/desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,6 +22,8 @@
     "@tanstack/react-query": "^5.85.5",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.11.0",
     "lucide-react": "^0.541.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.1.1",

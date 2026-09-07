@@ -112,7 +112,7 @@ pub async fn load_project(app: tauri::AppHandle, project_path: String) -> Result
         let bundle = database::repository::load_bundle(&connection)?;
         drop(connection);
         crate::ai::resume_project_image_tasks(&app, &path)?;
-        crate::ai::resume_project_video_tasks(&path)?;
+        crate::ai::resume_project_video_tasks(&app, &path)?;
         registry::register(&app, &bundle, false)?;
         Ok(bundle)
     })
@@ -156,6 +156,7 @@ pub fn import_project_reference_image(
     let asset_directory = match owner_type.as_str() {
         "character_state" => "characters",
         "scene" => "scenes",
+        "prop" => "props",
         _ => return Err("参考图所属类型无效".to_owned()),
     };
     let source = fs::canonicalize(PathBuf::from(source_path))

@@ -10,6 +10,7 @@ import { UserPrincipal } from "./user-auth.types";
 import { RegistrationVerificationService } from "./registration-verification.service";
 import { normalizedEmail, validatePassword } from "./registration-validation";
 import { ReferralsService } from "../referrals/referrals.service";
+import { AuthMethodConfigService } from "../common/auth-method-config.service";
 import { decryptWechatMessage, verifyWechatMessageSignature, xmlValue } from "./wechat-official-account";
 
 interface UserRow extends RowDataPacket {
@@ -67,6 +68,7 @@ export class UserAuthService {
     @Inject(SecretCryptoService) private readonly secretCrypto: SecretCryptoService,
     @Inject(RegistrationVerificationService) private readonly registration: RegistrationVerificationService,
     @Inject(ReferralsService) private readonly referrals: ReferralsService,
+    @Inject(AuthMethodConfigService) private readonly authMethods: AuthMethodConfigService,
   ) {}
 
   private accessToken(userId: string, sessionId: string): string {
@@ -89,6 +91,7 @@ export class UserAuthService {
   }
 
   private async createUser(input: { email?: string; phone?: string; password: string; displayName?: string; emailCode?: string; ip?: string; inviteCode?: string }): Promise<Record<string, unknown>> {
+    await this.authMethods.assertRegistrationEnabled();
     const email = input.email ? normalizedEmail(input.email) : null;
     const phone = input.phone ? normalizedPhone(input.phone) : null;
     const password = validatePassword(input.password);
@@ -116,7 +119,7 @@ export class UserAuthService {
   }
 
   registerEmail(email: string, password: string, emailCode: string, displayName?: string, ip = "unknown", inviteCode?: string) { return this.createUser({ email, password, emailCode, displayName, ip, inviteCode }); }
-  registerPhone(phone: string, password: string, displayName?: string) { return this.createUser({ phone, password, displayName }); }
+  registerPhone(phone: string, password: string, displayName?: string, inviteCode?: string) { return this.createUser({ phone, password, displayName, inviteCode }); }
 
   async login(identifier: string, password: string, deviceName = ""): Promise<Record<string, unknown>> {
     const normalized = identifier.trim();
@@ -329,7 +332,8 @@ export class UserAuthService {
       const result = await fetch(userUrl, { signal: AbortSignal.timeout(10_000) }).then((response) => response.json() as Promise<WechatUserResponse>);
       if (result.openid) wechatUser = result;
     } catch { this.logger.warn("Could not load WeChat profile; continuing with OpenID-only login"); }
-    await this.database.transaction(async (connection) => {
+    const registrationEnabled = (await this.authMethods.get()).registration_enabled;
+    const completed = await this.database.transaction(async (connection) => {
       const [lockedSessions] = await connection.query<RowDataPacket[]>("SELECT id, status, inviter_id FROM wechat_auth_sessions WHERE id = ? AND expires_at > ? FOR UPDATE", [session.id, new Date()]);
       if (lockedSessions[0]?.status !== "PENDING") return;
       let [identityRows] = await connection.query<RowDataPacket[]>("SELECT id, user_id FROM user_external_identities WHERE provider = 'WECHAT' AND provider_user_id = ? LIMIT 1 FOR UPDATE", [wechatOpenId]);
@@ -338,6 +342,10 @@ export class UserAuthService {
       }
       let userId = identityRows.length ? String(identityRows[0]!.user_id) : "";
       if (!userId) {
+        if (!registrationEnabled) {
+          await connection.execute("UPDATE wechat_auth_sessions SET status = 'FAILED', error_message = ? WHERE id = ?", ["当前暂未开放新用户注册，请使用已有账户登录", session.id]);
+          return false;
+        }
         userId = randomUUID();
         await connection.execute("INSERT INTO users (id, display_name, avatar_url) VALUES (?, ?, ?)", [userId, safeDisplayName(wechatUser.nickname, "微信用户"), wechatUser.headimgurl || null]);
         await connection.execute("INSERT INTO ledger_accounts (id, owner_type, owner_id, account_type, currency) VALUES (?, 'USER', ?, 'AVAILABLE', 'CREDIT')", [randomUUID(), userId]);
@@ -356,7 +364,12 @@ export class UserAuthService {
       }
       await connection.execute("UPDATE users SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId]);
       await connection.execute("UPDATE wechat_auth_sessions SET user_id = ?, status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [userId, session.id]);
+      return true;
     });
+    if (!completed) {
+      this.logger.log(`Rejected new WeChat account for session ${session.id} because registration is disabled`);
+      return "success";
+    }
     this.logger.log(`Completed WeChat QR login session ${session.id} via ${event}`);
     return "success";
   }
@@ -365,12 +378,13 @@ export class UserAuthService {
     if (!state?.trim()) throw new BadRequestException("微信登录状态参数不能为空");
     const claimed = await this.database.transaction(async (connection) => {
       const [rows] = await connection.query<RowDataPacket[]>(
-        `SELECT id, user_id, status, expires_at, token_delivered_at FROM wechat_auth_sessions WHERE state_hash = ? LIMIT 1 FOR UPDATE`,
+        `SELECT id, user_id, status, error_message, expires_at, token_delivered_at FROM wechat_auth_sessions WHERE state_hash = ? LIMIT 1 FOR UPDATE`,
         [tokenHash(state)],
       );
       const session = rows[0];
       if (!session) throw new BadRequestException("微信登录会话不存在");
       if (new Date(session.expires_at).getTime() <= Date.now() && session.status === "PENDING") return { status: "EXPIRED" };
+      if (session.status === "FAILED") return { status: "FAILED", error_message: String(session.error_message || "微信登录失败") };
       if (session.status !== "COMPLETED") return { status: String(session.status) };
       if (session.token_delivered_at) throw new UnauthorizedException("该微信登录结果已经领取");
       const userId = String(session.user_id);

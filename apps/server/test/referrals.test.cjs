@@ -53,11 +53,11 @@ test('receipt accepts small raster data only, rejects SVG, spoofed type and over
 });
 test('user endpoints take identity only from authenticated principal', async () => {
   const calls = [];
-  const c = new ReferralsController({ summary: id => calls.push(id), records: (...args) => calls.push(args), applyWithdrawal: (...args) => calls.push(args) });
+  const c = new ReferralsController({ summary: id => calls.push(id), subordinates: (...args) => calls.push(args), records: (...args) => calls.push(args), applyWithdrawal: (...args) => calls.push(args) });
   const req = { user: { sub: 'current-user' } };
-  await c.me(req); await c.records(req, 'withdrawals', '2'); await c.apply(req, { user_id: 'someone-else', amount_fen: 100 });
-  assert.equal(calls[0], 'current-user'); assert.deepEqual(calls[1], ['withdrawals', 'current-user', '2']); assert.equal(calls[2][0], 'current-user');
-  for (const method of ['me', 'records', 'apply']) assert.ok(Reflect.getMetadata('__guards__', ReferralsController.prototype[method]).includes(UserAuthGuard));
+  await c.me(req); await c.subordinates(req, '2', '3'); await c.records(req, 'withdrawals', '2'); await c.apply(req, { user_id: 'someone-else', amount_fen: 100 });
+  assert.equal(calls[0], 'current-user'); assert.deepEqual(calls[1], ['current-user', '2', '3']); assert.deepEqual(calls[2], ['withdrawals', 'current-user', '2']); assert.equal(calls[3][0], 'current-user');
+  for (const method of ['me', 'subordinates', 'records', 'apply']) assert.ok(Reflect.getMetadata('__guards__', ReferralsController.prototype[method]).includes(UserAuthGuard));
 });
 test('admin config, audit and payout actions require distinct server permissions', () => {
   const guards = Reflect.getMetadata('__guards__', ReferralsAdminController);
@@ -77,6 +77,65 @@ test('record pagination is bounded, allowlisted, ownership-filtered and excludes
   assert.doesNotMatch(calls[0][0], /payee_ciphertext|request_hash|SELECT \*/); assert.deepEqual(calls[0][1], ['my-user', 'PROCESSING']);
   for (const page of ['0', '-1', '1.5', 'Infinity', '100001', '1; DROP TABLE users']) await assert.rejects(service.records('withdrawals', 'my-user', page));
   await assert.rejects(service.records('users')); await assert.rejects(service.records('withdrawals', 'my-user', '1', 'INVALID'));
+});
+test('admin reward records include both login names without exposing them through the user endpoint', async () => {
+  const calls = [];
+  const database = { async query(sql, args) { calls.push([sql, args]); return [{ id: 'reward-1', inviter_login_name: 'parent@example.invalid', invited_login_name: 'child@example.invalid' }]; } };
+  const service = new ReferralsService(database, {}, {});
+  const adminPage = await service.records('rewards', 'parent-id', '1', 'REWARDED', true);
+  assert.equal(adminPage.items[0].inviter_login_name, 'parent@example.invalid');
+  assert.equal(adminPage.items[0].invited_login_name, 'child@example.invalid');
+  assert.match(calls[0][0], /LEFT JOIN users inviter ON inviter\.id = rr\.inviter_id/);
+  assert.match(calls[0][0], /LEFT JOIN users invited ON invited\.id = rr\.invited_user_id/);
+  assert.match(calls[0][0], /AS inviter_login_name/);
+  assert.match(calls[0][0], /AS invited_login_name/);
+  assert.match(calls[0][0], /rr\.inviter_id = \? AND rr\.status = \?/);
+  calls.length = 0;
+  await service.records('rewards', 'parent-id', '1');
+  assert.doesNotMatch(calls[0][0], /login_name|JOIN users/);
+
+  const controllerCalls = [];
+  const controller = new ReferralsAdminController({ records: (...args) => controllerCalls.push(args) });
+  controller.records('rewards', '2', 'LIMITED', 'parent-id');
+  assert.deepEqual(controllerCalls[0], ['rewards', 'parent-id', '2', 'LIMITED', true]);
+});
+test('admin commission, withdrawal and payout records include the corresponding user login name', async () => {
+  const cases = [
+    ['commissions', 'cr', 'beneficiary_id'],
+    ['withdrawals', 'wa', 'user_id'],
+    ['payouts', 'mpr', 'user_id'],
+  ];
+  for (const [kind, alias, ownerColumn] of cases) {
+    const calls = [];
+    const database = { async query(sql, args) { calls.push([sql, args]); return [{ id: `${kind}-1`, user_login_name: 'member@example.invalid' }]; } };
+    const service = new ReferralsService(database, {}, {});
+    const adminPage = await service.records(kind, 'member-id', '1', kind === 'withdrawals' ? 'PENDING' : undefined, true);
+    assert.equal(adminPage.items[0].user_login_name, 'member@example.invalid');
+    assert.match(calls[0][0], new RegExp(`LEFT JOIN users record_user ON record_user\\.id = ${alias}\\.${ownerColumn}`));
+    assert.match(calls[0][0], /AS user_login_name/);
+    assert.match(calls[0][0], new RegExp(`${alias}\\.${ownerColumn} = \\?`));
+    if (kind === 'withdrawals') assert.doesNotMatch(calls[0][0], /payee_ciphertext|request_hash|SELECT \*/);
+
+    calls.length = 0;
+    await service.records(kind, 'member-id', '1');
+    assert.doesNotMatch(calls[0][0], /login_name|JOIN users/);
+  }
+});
+test('subordinate pages separate two levels and include only aggregate paid consumption with masked accounts', async () => {
+  const calls = [];
+  const database = { async query(sql, args) {
+    calls.push([sql, args]);
+    if (sql.startsWith('SELECT COUNT')) return [{ total: 1, total_consumption_fen: 12345 }];
+    return [{ id: 'child', display_name: '下级', email: 'child@example.invalid', phone: null, status: 'ACTIVE', parent_display_name: '直属用户', consumption_fen: 12345, paid_order_count: 2, last_paid_at: '2026-09-04', created_at: '2026-09-01' }];
+  } };
+  const service = new ReferralsService(database, {}, {});
+  const direct = await service.subordinates('current-user', '1', '1');
+  assert.equal(direct.items[0].account, 'ch***@example.invalid'); assert.equal(direct.items[0].consumption_fen, 12345); assert.equal(direct.total_consumption_fen, 12345);
+  assert.match(calls[1][0], /u\.pid = \?/); assert.match(calls[1][0], /po\.status = 'PAID'/); assert.match(calls[1][0], /payer_paid_amount_fen/);
+  calls.length = 0;
+  const indirect = await service.subordinates('current-user', '2', '2');
+  assert.equal(indirect.level, 2); assert.match(calls[1][0], /INNER JOIN users p ON p\.id = u\.pid/); assert.match(calls[1][0], /OFFSET 50$/);
+  for (const level of ['0', '3', '1.5', 'x']) await assert.rejects(service.subordinates('current-user', level, '1'));
 });
 test('invite collision retries and already assigned codes are stable', async () => {
   let attempts = 0;
@@ -164,14 +223,23 @@ test('software download settings validate URLs and update without changing distr
     async query() { return [[{ revision: 5 }]]; },
     async execute(sql, parameters) { executed.push([sql, parameters]); },
   };
-  const row = { enabled: 0, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invite_page_base_url: 'https://example.invalid/invite', windows_download_url: 'https://download.example.invalid/app.exe', macos_download_url: '', revision: 6, updated_at: 'now' };
+  const row = { enabled: 0, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invite_page_base_url: 'https://example.invalid/invite', windows_download_enabled: 1, windows_download_url: 'https://download.example.invalid/app.exe', macos_download_enabled: 0, macos_download_url: '', revision: 6, updated_at: 'now' };
   const database = { async transaction(operation) { return operation(connection); }, async query() { return [row]; } };
   const service = new ReferralsService(database, {}, { values: { adminOrigin: 'https://example.invalid' } });
-  const result = await service.saveDownloadConfig('admin-1', { windows_download_url: row.windows_download_url, macos_download_url: '', revision: 5 });
-  assert.match(executed[0][0], /SET windows_download_url = \?, macos_download_url = \?/);
-  assert.deepEqual(executed[0][1], [row.windows_download_url, '', 'admin-1']);
+  const result = await service.saveDownloadConfig('admin-1', { windows_download_enabled: true, windows_download_url: row.windows_download_url, macos_download_enabled: false, macos_download_url: '', revision: 5 });
+  assert.match(executed[0][0], /windows_download_enabled = \?.*macos_download_enabled = \?/);
+  assert.deepEqual(executed[0][1], [1, row.windows_download_url, 0, '', 'admin-1']);
   assert.match(executed[1][0], /INSERT INTO audit_logs/);
   assert.equal(result.revision, 6);
-  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_url: '', macos_download_url: '', revision: 6 }), /至少需要配置一个/);
-  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_url: 'http:\/\/example.invalid\/app.exe', macos_download_url: '', revision: 6 }), /HTTPS/);
+  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_enabled: true, windows_download_url: '', macos_download_enabled: false, macos_download_url: '', revision: 6 }), /开启 Windows/);
+  await assert.rejects(() => service.saveDownloadConfig('admin-1', { windows_download_enabled: true, windows_download_url: 'http:\/\/example.invalid\/app.exe', macos_download_enabled: false, macos_download_url: '', revision: 6 }), /HTTPS/);
+});
+
+test('client invitation link uses the standalone download page and locks the user invite code in its query', async () => {
+  const database = { async query(sql) { return sql.includes('commission_wallets') ? [{ available_fen: 0, frozen_fen: 0, earned_fen: 0, paid_fen: 0 }] : [{ invited_count: 0, reward_credits: 0 }]; } };
+  const service = new ReferralsService(database, {}, { values: { adminOrigin: 'https://studio.example.invalid,https://backup.example.invalid' } });
+  service.ensureInviteCode = async () => 'TEST2345';
+  service.config = async () => ({ enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invitation_anti_abuse_enabled: true });
+  const result = await service.summary('user-1');
+  assert.equal(result.invitation_url, 'https://studio.example.invalid/download?invite_code=TEST2345');
 });

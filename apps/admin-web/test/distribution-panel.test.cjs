@@ -25,6 +25,31 @@ test('anti-abuse switch explains both reward strategies and exposes daily and mo
   h.edit(checkbox, false);
   assert.ok(h.nodes().some(node => h.text(node).includes('注册成功立即发放')));
 });
+test('reward records show inviter and invited user login names', async () => {
+  const row = {
+    id: 'reward-1', inviter_id: 'parent-id', invited_user_id: 'child-id',
+    inviter_login_name: 'parent@example.invalid', invited_login_name: '13800138000',
+    credits: 20, status: 'REWARDED', created_at: '2026-09-05T08:00:00Z',
+  };
+  const h = componentHarness(file, 'DistributionRecordsPanel', { token: 'test', kind: 'rewards' }, { '@/lib/api': { async apiRequest() { return { items: [row], page: 1, has_more: false }; } } });
+  await h.ready();
+  const text = h.nodes().map(node => h.text(node)).join('\n');
+  assert.match(text, /邀请人登录名：parent@example\.invalid/);
+  assert.match(text, /被邀请人登录名：13800138000/);
+});
+test('commission, withdrawal and payout records show the corresponding user login name', async () => {
+  for (const kind of ['commissions', 'withdrawals', 'payouts']) {
+    const row = {
+      id: `${kind}-1`, user_id: 'member-id', beneficiary_id: 'member-id',
+      user_login_name: `${kind}@example.invalid`, amount_fen: 100, created_at: '2026-09-05T08:00:00Z',
+    };
+    const h = componentHarness(file, 'DistributionRecordsPanel', { token: 'test', kind }, { '@/lib/api': { async apiRequest() { return { items: [row], page: 1, has_more: false }; } } });
+    await h.ready();
+    const text = h.nodes().map(node => h.text(node)).join('\n');
+    assert.match(text, new RegExp(`用户登录名：${kind}@example\\.invalid`));
+    assert.match(text, /用户 ID：member-id/);
+  }
+});
 test('approved record explicitly claims task before fetching payee, rapid duplicate clicks are suppressed', async () => {
   const calls = [], row = { id: 'withdrawal', status: 'APPROVED', amount_fen: 10000, created_at: '2026-09-04T08:00:00Z' };
   const h = componentHarness(file, 'DistributionRecordsPanel', { token: 'test', kind: 'withdrawals' }, { '@/lib/api': { async apiRequest(url) { calls.push(url); return url.includes('/records/') ? { items: [row] } : { ...row, can_confirm: true, status: 'PROCESSING' }; } } });
@@ -61,10 +86,12 @@ test('releasing payout claim requires separate unpaid confirmation and explanati
 });
 test('invitation registration sends fixed route invitation and discards its temporary web session', async () => {
   const calls = [];
-  const h = componentHarness(path.join(__dirname, '../components/InvitationRegister.tsx'), 'InvitationRegister', { code: 'TEST2345' }, { '@/lib/api': { ApiError: class extends Error {}, async apiRequest(...args) { calls.push(args); return args[0].startsWith('/referrals/') ? { invite_code: 'TEST2345', windows_download_url: '', macos_download_url: '' } : { access_token: 'temporary-test-token' }; } }, '@/components/ProductBrand': { useProductBrand: () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) } });
+  const h = componentHarness(path.join(__dirname, '../components/InvitationRegister.tsx'), 'InvitationRegister', { code: 'TEST2345' }, { '@/lib/api': { ApiError: class extends Error {}, async apiRequest(...args) { calls.push(args); return args[0].startsWith('/referrals/') ? { invite_code: 'TEST2345', windows_download_enabled: false, windows_download_url: '', macos_download_enabled: false, macos_download_url: '' } : args[0] === '/client-config/auth-methods' ? { registration_enabled: true } : { access_token: 'temporary-test-token' }; } }, '@/components/ProductBrand': { useProductBrand: () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) } });
   await h.ready();
+  assert.equal(h.nodes().find(node => node.type === 'input' && node.props.placeholder === '8 位字母或数字'), undefined);
   const inputs = () => h.nodes().filter(x => x.type === 'input');
-  h.edit(inputs()[0], 'New@Example.invalid'); h.edit(inputs()[1], 'Password123'); h.edit(inputs()[3], '012345');
+  h.edit(inputs()[0], 'New@Example.invalid'); inputs()[0].props.onBlur(); await h.ready();
+  h.edit(inputs()[1], 'Password123'); h.edit(inputs()[3], '012345');
   const submit = h.nodes().find(x => x.type === 'form').props.onSubmit;
   submit({ preventDefault() {} }); submit({ preventDefault() {} }); await h.ready();
   const registrations = calls.filter(x => x[0] === '/auth/register/email'); assert.equal(registrations.length, 1);
@@ -79,10 +106,45 @@ test('invitation page does not disclose internal inviter binding or rewards', ()
   assert.match(source, /请立即下载客户端/);
 });
 
+test('standalone download page offers an optional invitation code and submits it with registration', async () => {
+  const calls = [];
+  const h = componentHarness(path.join(__dirname, '../components/InvitationRegister.tsx'), 'InvitationRegister', {}, { '@/lib/api': { ApiError: class extends Error {}, async apiRequest(...args) { calls.push(args); if (args[0] === '/referrals/downloads') return { windows_download_enabled: true, windows_download_url: 'https://download.example.invalid/app.exe', macos_download_enabled: false, macos_download_url: '' }; if (args[0] === '/client-config/auth-methods') return { registration_enabled: true }; return { access_token: 'temporary-test-token' }; } }, '@/components/ProductBrand': { useProductBrand: () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) } });
+  await h.ready();
+  const input = placeholder => h.nodes().find(node => node.type === 'input' && node.props.placeholder === placeholder);
+  h.edit(input('8 位字母或数字'), 'test2345');
+  const inputs = h.nodes().filter(node => node.type === 'input');
+  h.edit(inputs.find(node => node.props.type === 'email'), 'new@example.invalid');
+  h.nodes().find(node => node.type === 'input' && node.props.type === 'email').props.onBlur(); await h.ready();
+  h.edit(inputs.find(node => node.props.type === 'password'), 'Password123');
+  h.edit(inputs.find(node => node.props.pattern === '[0-9]{6}'), '012345');
+  await h.nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  await h.ready();
+  const registration = calls.find(call => call[0] === '/auth/register/email');
+  assert.equal(JSON.parse(registration[1].body).invite_code, 'TEST2345');
+});
+
+test('download registration checks email on blur and sends an existing user straight to download and login', async () => {
+  const calls = [];
+  const h = componentHarness(path.join(__dirname, '../components/InvitationRegister.tsx'), 'InvitationRegister', {}, { '@/lib/api': { ApiError: class extends Error {}, async apiRequest(...args) {
+    calls.push(args);
+    if (args[0] === '/referrals/downloads') return { windows_download_enabled: true, windows_download_url: 'https://download.example.invalid/app.exe', macos_download_enabled: false, macos_download_url: '' };
+    if (args[0] === '/client-config/auth-methods') return { registration_enabled: true };
+    if (args[0] === '/auth/email/status') return { email: 'known@example.invalid', registered: true };
+    throw new Error(`unexpected request ${args[0]}`);
+  } }, '@/components/ProductBrand': { useProductBrand: () => ({ chinese_name: '影匠', english_name: 'Yingjiang' }) } });
+  await h.ready();
+  const email = h.nodes().find(node => node.type === 'input' && node.props.type === 'email');
+  h.edit(email, 'Known@Example.invalid'); h.nodes().find(node => node.type === 'input' && node.props.type === 'email').props.onBlur(); await h.ready();
+  assert.ok(calls.some(call => call[0] === '/auth/email/status' && JSON.parse(call[1].body).email === 'known@example.invalid'));
+  assert.equal(h.nodes().find(node => node.type === 'input' && node.props.type === 'password'), undefined);
+  assert.ok(h.nodes().some(node => h.text(node).includes('已经注册过')));
+  assert.ok(h.nodes().some(node => node.type === 'a' && node.props.href === 'https://download.example.invalid/app.exe'));
+});
+
 test('software download settings save independently with optimistic revision', async () => {
   const calls = [];
   const downloadFile = path.join(__dirname, '../components/SoftwareDownloadConfigPanel.tsx');
-  const initial = { windows_download_url: '', macos_download_url: 'https://download.example.invalid/app.dmg', revision: 5, updated_at: '2026-09-05T00:00:00Z' };
+  const initial = { windows_download_enabled: false, windows_download_url: '', macos_download_enabled: true, macos_download_url: 'https://download.example.invalid/app.dmg', download_page_url: 'https://example.invalid/download', revision: 5, updated_at: '2026-09-05T00:00:00Z' };
   const h = componentHarness(downloadFile, 'SoftwareDownloadConfigPanel', { token: 'test-token' }, { '@/lib/api': { async apiRequest(...args) { calls.push(args); return args[1]?.method === 'PATCH' ? { ...JSON.parse(args[1].body), revision: 6 } : initial; } } });
   await h.ready();
   const inputs = h.nodes().filter(node => node.type === 'input' && node.props.type === 'url');
@@ -91,6 +153,7 @@ test('software download settings save independently with optimistic revision', a
   assert.equal(calls[1][0], '/admin/distribution/downloads');
   const body = JSON.parse(calls[1][1].body);
   assert.equal(body.windows_download_url, 'https://download.example.invalid/app.exe');
+  assert.equal(body.windows_download_enabled, false);
   assert.equal(body.macos_download_url, initial.macos_download_url);
   assert.equal(body.revision, 5);
 });

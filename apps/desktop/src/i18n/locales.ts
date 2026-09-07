@@ -2,7 +2,7 @@ export const localeMessages = {
   "zh-CN": {
     general: "常规设置", language: "界面语言", languageHint: "切换后立即生效，并在下次启动时继续使用。",
     systemSettings: "系统设置", interfaceSettings: "接口设置", promptSettings: "提示词设置", styleSettings: "画风设定",
-    story: "剧情", characters: "角色", scenes: "场景", storyboard: "分镜", taskCenter: "任务中心",
+    story: "剧情", characters: "角色", scenes: "场景", props: "道具", storyboard: "分镜", taskCenter: "任务中心",
     unsaved: "有未保存更改", savedLocally: "已保存到本地", projectHome: "项目首页", save: "保存", cancel: "取消", close: "关闭",
     openProject: "打开已有项目", loadingProjects: "正在读取项目…", newProject: "创建新项目", projectName: "项目名称",
     startIdea: "从创意开始", pasteScript: "粘贴剧本", scriptFile: "剧本文件", douyinLink: "视频链接", videoUnderstanding: "视频理解",
@@ -24,7 +24,7 @@ export const localeMessages = {
   },
   "zh-TW": {
     general: "一般設定", language: "介面語言", languageHint: "切換後立即生效，並在下次啟動時繼續使用。", systemSettings: "系統設定", interfaceSettings: "介面設定", promptSettings: "提示詞設定", styleSettings: "畫風設定",
-    story: "劇情", characters: "角色", scenes: "場景", storyboard: "分鏡", taskCenter: "任務中心", unsaved: "有未儲存變更", savedLocally: "已儲存至本機", projectHome: "專案首頁", save: "儲存", cancel: "取消", close: "關閉",
+    story: "劇情", characters: "角色", scenes: "場景", props: "道具", storyboard: "分鏡", taskCenter: "任務中心", unsaved: "有未儲存變更", savedLocally: "已儲存至本機", projectHome: "專案首頁", save: "儲存", cancel: "取消", close: "關閉",
     openProject: "開啟既有專案", loadingProjects: "正在讀取專案…", newProject: "建立新專案", projectName: "專案名稱", startIdea: "從創意開始", pasteScript: "貼上劇本", scriptFile: "劇本檔案", douyinLink: "影片連結", videoUnderstanding: "影片理解",
     targetDuration: "目標時長", seconds: "秒", aspectRatio: "畫面比例", visualStyle: "視覺風格", creationMode: "創作模式", projectRoot: "專案根目錄", choose: "選擇", createLocalProject: "建立本機專案", creating: "正在建立…",
     generate: "生圖", regenerate: "重新生圖", generateAll: "一鍵生圖", generating: "生成中", generationFailed: "生成失敗", characterBible: "角色一致性從這裡開始", sceneMemory: "固定空間，避免鏡頭漂移", characterCount: "{count} 個角色", sceneCount: "{count} 個場景",
@@ -33,7 +33,7 @@ export const localeMessages = {
   },
   en: {
     general: "General", language: "Interface language", languageHint: "Changes apply immediately and persist across restarts.", systemSettings: "System Settings", interfaceSettings: "API Settings", promptSettings: "Prompt Settings", styleSettings: "Visual Styles",
-    story: "Story", characters: "Characters", scenes: "Scenes", storyboard: "Storyboard", taskCenter: "Task Center", unsaved: "Unsaved changes", savedLocally: "Saved locally", projectHome: "Project Home", save: "Save", cancel: "Cancel", close: "Close",
+    story: "Story", characters: "Characters", scenes: "Scenes", props: "Props", storyboard: "Storyboard", taskCenter: "Task Center", unsaved: "Unsaved changes", savedLocally: "Saved locally", projectHome: "Project Home", save: "Save", cancel: "Cancel", close: "Close",
     openProject: "Open Project", loadingProjects: "Loading projects…", newProject: "Create New Project", projectName: "Project name", startIdea: "Start with an idea", pasteScript: "Paste script", scriptFile: "Script file", douyinLink: "Video link", videoUnderstanding: "Video understanding",
     ideaHint: "Expand one idea into a story", pasteHint: "Analyze script text", scriptFileHint: "TXT / MD / DOCX / PDF", douyinHint: "Auto-detect three video platforms", videoHint: "Upload video to create shots",
     targetDuration: "Target duration", seconds: "sec", aspectRatio: "Aspect ratio", visualStyle: "Visual style", creationMode: "Creation mode", projectRoot: "Project folder", projectLanguage: "Project content language", choose: "Choose", createLocalProject: "Create Local Project", creating: "Creating…",

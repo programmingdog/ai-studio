@@ -26,7 +26,7 @@ export class ReferralsAdminController {
   @Get("records/:kind")
   @RequirePermissions("distribution.manage")
   @Header("Cache-Control", "no-store")
-  records(@Param("kind") kind: string, @Query("page") page?: string, @Query("status") status?: string, @Query("user_id") userId?: string) { return this.referrals.records(kind, userId, page, status); }
+  records(@Param("kind") kind: string, @Query("page") page?: string, @Query("status") status?: string, @Query("user_id") userId?: string) { return this.referrals.records(kind, userId, page, status, true); }
   @Post("withdrawals/:id/review")
   @RequirePermissions("distribution.manage")
   review(@Req() req: AdminRequest, @Param("id") id: string, @Body() input: unknown) { const body = asRecord(input); return this.referrals.review(req.admin.sub, id, requiredString(body, "decision", 20), optionalString(body, "note", 500) || ""); }

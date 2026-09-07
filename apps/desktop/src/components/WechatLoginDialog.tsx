@@ -11,7 +11,7 @@ export function WechatIcon() {
   </svg>;
 }
 
-export function WechatLoginDialog({ onClose, onAuthenticated }: { onClose: () => void; onAuthenticated: (result: PlatformTokenResult) => Promise<void> }) {
+export function WechatLoginDialog({ registrationEnabled, onClose, onAuthenticated }: { registrationEnabled: boolean; onClose: () => void; onAuthenticated: (result: PlatformTokenResult) => Promise<void> }) {
   const [session, setSession] = useState<WechatQrSession | null>(null);
   const [status, setStatus] = useState("正在生成微信登录二维码…");
   const [error, setError] = useState("");
@@ -40,6 +40,7 @@ export function WechatLoginDialog({ onClose, onAuthenticated }: { onClose: () =>
               return;
             }
             if (result.status === "EXPIRED") { setExpired(true); setStatus("二维码已过期，请刷新"); return; }
+            if (result.status === "FAILED") { setError(String(result.error_message || "微信登录失败")); setStatus(""); return; }
             setError(""); setStatus("请使用微信扫描公众号二维码");
           } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : "查询微信登录状态失败"); }
           if (active) timer = window.setTimeout(() => void poll(), 2500);
@@ -55,7 +56,7 @@ export function WechatLoginDialog({ onClose, onAuthenticated }: { onClose: () =>
       {!session && !error && <LoaderCircle className="spin" size={32} />}
       {session && !expired && <div className="qr-card"><QRCodeSVG value={session.login_url} size={210} level="M" /></div>}
       <strong role="status">{status}</strong>
-      <p>未关注公众号时请先完成关注；已关注用户扫码后会直接登录。首次使用将自动创建账户。</p>
+      <p>{registrationEnabled ? "未关注公众号时请先完成关注；已关注用户扫码后会直接登录。首次使用将自动创建账户。" : "当前仅允许已有账户登录；请使用已经绑定过账户的微信扫码。"}</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {(session || error) && <button type="button" className="secondary-button" onClick={() => setAttempt(value => value + 1)}><RefreshCw size={16} />{error && !session ? "重新加载" : "刷新二维码"}</button>}
     </div>

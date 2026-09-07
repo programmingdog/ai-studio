@@ -7,13 +7,13 @@ const model = {
   model_id: 'wan-test', model_code: 'wan3.0-video-quannengcankao',
   base_url: 'https://provider.example', generation_endpoint: '/v1/media/generate',
   api_protocol: 'lingkeai_media', capability: 'VIDEO_GENERATION',
+  credit_multiplier: 1,
   model_config_json: {}, provider_config_json: {},
   parameter_schema_json: [{ name: 'resolution', options: ['480P', '720P', '1080P'] },
     { name: 'version', options: ['standard', 'prime'] },
     { name: 'ratio', label: '画面比例', options: ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4'] },
     { name: 'audio' }, { name: 'prompt_extend' }, { name: 'video_url' }, { name: 'audio_url' }],
 };
-const multipliers = { get: async () => ({ multipliers: { VIDEO_GENERATION: 1 } }) };
 const service = new ModelGatewayService({}, {});
 const request = (payload, target = model) => service.request(target, payload, 'fake-test-key');
 
@@ -73,7 +73,7 @@ test('Wan rejects invalid version, aspect ratio and excessive reference images',
 });
 
 test('Wan invalid duration is rejected during quote, before reserving credits or generation', async () => {
-  const gateway = new ModelGatewayService({ query: () => assert.fail('invalid quote must not query prices') }, {}, multipliers);
+  const gateway = new ModelGatewayService({ query: () => assert.fail('invalid quote must not query prices') }, {});
   gateway.target = async () => model;
   gateway.call = () => assert.fail('must not generate');
   await assert.rejects(gateway.quote({ providerModelId: model.model_id, payload: { seconds: 31, resolution: '720p' } }), /2～30/);
@@ -83,7 +83,7 @@ test('Wan parameter errors in create are explicitly non-chargeable, non-retryabl
   const gateway = new ModelGatewayService({
     query: async sql => sql.includes('provider_model_resolution_prices') ? [{ credit_cost: 2 }] : [],
     transaction: () => assert.fail('must not reserve credits'),
-  }, { decrypt: () => 'fake-test-key' }, multipliers);
+  }, { decrypt: () => 'fake-test-key' });
   gateway.target = async () => model;
   gateway.call = () => assert.fail('must not generate');
   await assert.rejects(gateway.create('test-user', { idempotencyKey: 'test', providerModelId: model.model_id,
@@ -96,7 +96,7 @@ test('Wan parameter errors in create are explicitly non-chargeable, non-retryabl
 });
 
 test('Wan quote uses the same explicit duration as the provider request', async () => {
-  const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 2 }] }, {}, multipliers);
+  const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 2 }] }, {});
   gateway.target = async () => model;
   const payload = { duration: 10, seconds: 10, resolution: '720p' };
   const quote = await gateway.quote({ providerModelId: model.model_id, payload });

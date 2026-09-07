@@ -1,15 +1,14 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { apiRequest } from "@/lib/api";
-import { ProvidersPanel } from "@/components/ProvidersPanel";
+import { DefaultModelConfigPanel, ProvidersPanel } from "@/components/ProvidersPanel";
 import { ModelTestRecordsPanel } from "@/components/ModelTestRecordsPanel";
 import { CreditsPanel } from "@/components/CreditsPanel";
 import { WechatPaymentConfigPanel } from "@/components/WechatPaymentConfigPanel";
 import { CatalogPanel } from "@/components/CatalogPanel";
 import { UsersPanel } from "@/components/UsersPanel";
 import { CreditPricingPanel } from "@/components/CreditPricingPanel";
-import { CreditMultipliersPanel } from "@/components/CreditMultipliersPanel";
 import { MailConfigPanel } from "@/components/MailConfigPanel";
 import { DistributionConfigPanel, DistributionRecordsPanel } from "@/components/DistributionPanel";
 import { AuthMethodsConfigPanel } from "@/components/AuthMethodsConfigPanel";
@@ -18,8 +17,12 @@ import { IpAccessRulesPanel } from "@/components/IpAccessRulesPanel";
 import { ProductBrandConfigPanel } from "@/components/ProductBrandConfigPanel";
 import { useProductBrand } from "@/components/ProductBrand";
 import { DashboardOverview } from "@/components/DashboardOverview";
+import { DesktopReleasePanel } from "@/components/DesktopReleasePanel";
+import { ScriptAnalysisConfigPanel, ScriptAnalysisPricingPanel } from "@/components/ScriptAnalysisConfigPanel";
 
-type View = "overview" | "configs" | "mail-config" | "software-downloads" | "distribution-config" | "commissions" | "withdrawals" | "payouts" | "referral-rewards" | "visual-styles" | "creative-types" | "providers" | "model-tests" | "users" | "tasks" | "credit-packages" | "credit-purchases" | "credit-consumptions" | "payments" | "audit";
+type View = "overview" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
+type NavigationItem = { id: View; label: string; eyebrow: string };
+type NavigationGroup = { id: "product" | "ai" | "growth" | "commerce" | "operations"; label: string; eyebrow: string; mark: string; items: NavigationItem[] };
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
 type ConfigItem = {
   id: string; config_key: string; category: string; name: string; description: string; status: string;
@@ -45,37 +48,43 @@ function normalizeAdminPrincipal(value: unknown): AdminPrincipal {
   };
 }
 
-const primaryNavigation: { id: View; label: string; eyebrow: string }[] = [
+const primaryNavigation: NavigationItem[] = [
   { id: "overview", label: "运营概览", eyebrow: "OVERVIEW" },
 ];
-const settingsNavigation: { id: View; label: string; eyebrow: string }[] = [
-  { id: "configs", label: "配置中心", eyebrow: "CONFIG" },
-  { id: "mail-config", label: "邮箱配置", eyebrow: "EMAIL" },
-  { id: "software-downloads", label: "软件下载", eyebrow: "DOWNLOADS" },
-  { id: "distribution-config", label: "分销配置", eyebrow: "DISTRIBUTION" },
-  { id: "visual-styles", label: "画风设定", eyebrow: "STYLES" },
-  { id: "creative-types", label: "创作类型", eyebrow: "CREATIVE" },
-  { id: "providers", label: "AI 供应商", eyebrow: "GATEWAY" },
+const navigationGroups: NavigationGroup[] = [
+  { id: "product", label: "产品与客户端", eyebrow: "PRODUCT & CLIENT", mark: "PC", items: [
+    { id: "product-brand", label: "品牌与展示", eyebrow: "BRAND" },
+    { id: "auth-methods", label: "注册与登录", eyebrow: "ACCESS" },
+    { id: "client-distribution", label: "下载与版本", eyebrow: "DELIVERY" },
+  ] },
+  { id: "ai", label: "AI 与创作", eyebrow: "AI & CREATION", mark: "AI", items: [
+    { id: "model-routing", label: "模型路由", eyebrow: "ROUTING" },
+    { id: "providers", label: "供应商与模型", eyebrow: "GATEWAY" },
+    { id: "script-analysis", label: "剧本提取", eyebrow: "SCRIPT" },
+    { id: "configs", label: "提示词与工作流", eyebrow: "WORKFLOWS" },
+    { id: "creative-presets", label: "创作预设", eyebrow: "PRESETS" },
+  ] },
+  { id: "growth", label: "用户与增长", eyebrow: "USERS & GROWTH", mark: "UG", items: [
+    { id: "users", label: "用户管理", eyebrow: "USERS" },
+    { id: "distribution-config", label: "分销规则", eyebrow: "DISTRIBUTION" },
+    { id: "referral-rewards", label: "邀请与奖励", eyebrow: "INVITATIONS" },
+    { id: "commission-settlement", label: "佣金结算", eyebrow: "SETTLEMENT" },
+  ] },
+  { id: "commerce", label: "交易与积分", eyebrow: "BILLING & CREDITS", mark: "BC", items: [
+    { id: "credit-pricing", label: "积分定价", eyebrow: "PRICING" },
+    { id: "credit-packages", label: "积分套餐", eyebrow: "PACKAGES" },
+    { id: "orders", label: "交易订单", eyebrow: "ORDERS" },
+    { id: "credit-consumptions", label: "积分流水", eyebrow: "LEDGER" },
+  ] },
+  { id: "operations", label: "系统与运维", eyebrow: "SYSTEM & OPS", mark: "SO", items: [
+    { id: "integrations", label: "渠道集成", eyebrow: "INTEGRATIONS" },
+    { id: "ip-access", label: "安全与访问", eyebrow: "SECURITY" },
+    { id: "tasks", label: "任务监控", eyebrow: "TASKS" },
+    { id: "model-tests", label: "模型诊断", eyebrow: "DIAGNOSTICS" },
+    { id: "audit", label: "审计日志", eyebrow: "AUDIT" },
+  ] },
 ];
-const userNavigation: { id: View; label: string; eyebrow: string }[] = [
-  { id: "users", label: "用户管理", eyebrow: "USERS" },
-  { id: "referral-rewards", label: "邀请奖励", eyebrow: "INVITATIONS" },
-  { id: "commissions", label: "分润记录", eyebrow: "COMMISSIONS" },
-  { id: "withdrawals", label: "提现申请", eyebrow: "WITHDRAWALS" },
-  { id: "payouts", label: "打款记录", eyebrow: "PAYOUTS" },
-  { id: "payments", label: "微信支付", eyebrow: "PAYMENTS" },
-];
-const creditNavigation: { id: View; label: string; eyebrow: string }[] = [
-  { id: "credit-packages", label: "积分套餐", eyebrow: "PACKAGES" },
-  { id: "credit-purchases", label: "购买记录", eyebrow: "PURCHASES" },
-  { id: "credit-consumptions", label: "消耗记录", eyebrow: "CONSUMPTION" },
-];
-const recordNavigation: { id: View; label: string; eyebrow: string }[] = [
-  { id: "audit", label: "审计日志", eyebrow: "AUDIT" },
-  { id: "tasks", label: "任务元数据", eyebrow: "TASKS" },
-  { id: "model-tests", label: "测试记录", eyebrow: "MODEL TESTS" },
-];
-const navigation = [...primaryNavigation, ...settingsNavigation, ...userNavigation, ...creditNavigation, ...recordNavigation];
+const navigation = [...primaryNavigation, ...navigationGroups.flatMap((group) => group.items)];
 
 function formatDate(value: unknown) {
   if (!value) return "—";
@@ -96,10 +105,7 @@ export function AdminApp() {
   const [admin, setAdmin] = useState<AdminPrincipal | null>(null);
   const [checking, setChecking] = useState(true);
   const [view, setView] = useState<View>("overview");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [usersOpen, setUsersOpen] = useState(false);
-  const [creditsOpen, setCreditsOpen] = useState(false);
-  const [recordsOpen, setRecordsOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<NavigationGroup["id"], boolean>>({ product: false, ai: false, growth: false, commerce: false, operations: false });
   const [passwordOpen, setPasswordOpen] = useState(false);
 
   const logout = useCallback(() => {
@@ -129,49 +135,98 @@ export function AdminApp() {
         <div className="brand"><span className="brand-mark">{productBrand.chinese_name.slice(0, 1)}</span><div><strong>{productBrand.chinese_name}</strong><small>{productBrand.english_name}</small></div></div>
         <nav>
           {primaryNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><span>{item.eyebrow.slice(0, 2)}</span><div>{item.label}<small>{item.eyebrow}</small></div></button>)}
-          <div className={`nav-section ${settingsOpen ? "open" : ""} ${settingsNavigation.some((item) => item.id === view) ? "has-active" : ""}`}>
-            <button className="nav-parent" type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((open) => !open)}><span>SE</span><div>设定<small>SETTINGS</small></div><b>⌄</b></button>
-            <div className="subnav">{settingsNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
-          </div>
-          <div className={`nav-section ${usersOpen ? "open" : ""} ${userNavigation.some((item) => item.id === view) ? "has-active" : ""}`}>
-            <button className="nav-parent" type="button" aria-expanded={usersOpen} onClick={() => setUsersOpen((open) => !open)}><span>US</span><div>用户<small>USERS</small></div><b>⌄</b></button>
-            <div className="subnav">{userNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
-          </div>
-          <div className={`nav-section ${creditsOpen ? "open" : ""} ${view.startsWith("credit-") ? "has-active" : ""}`}>
-            <button className="nav-parent" type="button" aria-expanded={creditsOpen} onClick={() => setCreditsOpen((open) => !open)}><span>CR</span><div>积分<small>CREDITS</small></div><b>⌄</b></button>
-            <div className="subnav">{creditNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
-          </div>
-          <div className={`nav-section ${recordsOpen ? "open" : ""} ${recordNavigation.some((item) => item.id === view) ? "has-active" : ""}`}>
-            <button className="nav-parent" type="button" aria-expanded={recordsOpen} onClick={() => setRecordsOpen((open) => !open)}><span>RE</span><div>记录<small>RECORDS</small></div><b>⌄</b></button>
-            <div className="subnav">{recordNavigation.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
-          </div>
+          {navigationGroups.map((group) => {
+            const open = openGroups[group.id];
+            const hasActive = group.items.some((item) => item.id === view);
+            return <div key={group.id} className={`nav-section ${open ? "open" : ""} ${hasActive ? "has-active" : ""}`}>
+              <button className="nav-parent" type="button" aria-expanded={open} onClick={() => setOpenGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}><span>{group.mark}</span><div>{group.label}<small>{group.eyebrow}</small></div><b>⌄</b></button>
+              <div className="subnav">{group.items.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
+            </div>;
+          })}
         </nav>
       </aside>
       <main>
         <header className="topbar"><div><span>{active.eyebrow}</span><h1>{active.label}</h1></div><div className="admin-profile"><span>{admin.displayName.slice(0, 1).toUpperCase()}</span><div className="admin-identity"><strong>{admin.displayName}</strong><small>{admin.email}</small></div><div className="admin-profile-actions"><button type="button" onClick={() => setPasswordOpen(true)}>修改密码</button><button type="button" onClick={logout}>退出</button></div></div></header>
         <div className={`content ${view === "overview" ? "dashboard-content" : ""}`}>
           {view === "overview" && <DashboardOverview token={token} />}
-          {view === "configs" && <><ProductBrandConfigPanel token={token} /><IpAccessRulesPanel token={token} /><AuthMethodsConfigPanel token={token} /><CreditMultipliersPanel token={token} /><CreditPricingPanel token={token} /><ConfigsPanel token={token} /></>}
-          {view === "mail-config" && <MailConfigPanel token={token} />}
-          {view === "software-downloads" && <SoftwareDownloadConfigPanel token={token} />}
-          {view === "distribution-config" && <DistributionConfigPanel token={token} />}
-          {(view === "commissions" || view === "withdrawals" || view === "payouts" || view === "referral-rewards") && <DistributionRecordsPanel key={view} token={token} kind={view === "referral-rewards" ? "rewards" : view} />}
-          {view === "visual-styles" && <CatalogPanel token={token} kind="visual-styles" />}
-          {view === "creative-types" && <CatalogPanel token={token} kind="creative-types" />}
+          {view === "product-brand" && <ProductBrandConfigPanel token={token} />}
+          {view === "auth-methods" && <AuthMethodsConfigPanel token={token} />}
+          {view === "client-distribution" && <PageTabs label="客户端交付" description="下载入口与版本发布属于同一套客户端交付流程。" tabs={[
+            { id: "software-downloads", label: "下载入口", content: <SoftwareDownloadConfigPanel token={token} /> },
+            { id: "client-releases", label: "版本发布", content: <DesktopReleasePanel token={token} /> },
+          ]} />}
+          {view === "model-routing" && <DefaultModelConfigPanel token={token} />}
           {view === "providers" && <ProvidersPanel token={token} />}
-          {view === "model-tests" && <ModelTestRecordsPanel token={token} />}
+          {view === "script-analysis" && <><ConfigScope title="剧本提取能力" description="服务端读取提示词并调用默认文本模型；客户端只负责提交剧本和接收结果。" badges={["服务端执行", "保存即生效", "依赖默认文本模型"]} /><ScriptAnalysisModelSummary token={token} onOpenRouting={() => setView("model-routing")} /><ScriptAnalysisConfigPanel token={token} /></>}
+          {view === "configs" && <ConfigsPanel token={token} />}
+          {view === "creative-presets" && <PageTabs label="创作预设" description="统一维护客户端可选择的创作目录。" tabs={[
+            { id: "visual-styles", label: "画风", content: <CatalogPanel token={token} kind="visual-styles" /> },
+            { id: "creative-types", label: "创作类型", content: <CatalogPanel token={token} kind="creative-types" /> },
+          ]} />}
+          {view === "distribution-config" && <DistributionConfigPanel token={token} />}
+          {view === "referral-rewards" && <DistributionRecordsPanel token={token} kind="rewards" />}
+          {view === "commission-settlement" && <PageTabs label="佣金结算" description="按分润、申请和实际打款顺序处理完整结算流程。" tabs={[
+            { id: "commissions", label: "分润记录", content: <DistributionRecordsPanel token={token} kind="commissions" /> },
+            { id: "withdrawals", label: "提现申请", content: <DistributionRecordsPanel token={token} kind="withdrawals" /> },
+            { id: "payouts", label: "打款记录", content: <DistributionRecordsPanel token={token} kind="payouts" /> },
+          ]} />}
           {view === "users" && <UsersPanel token={token} />}
-          {view === "tasks" && <DataPanel token={token} path="/admin/tasks" empty="还没有任务记录" columns={["task_type", "logical_model_code", "status", "progress", "estimated_credits", "created_at"]} />}
+          {view === "credit-pricing" && <PageTabs label="积分定价" description="集中维护积分换算、自动定价和独立功能的固定积分。" tabs={[
+            { id: "base-pricing", label: "基础换算", content: <CreditPricingPanel token={token} /> },
+            { id: "feature-pricing", label: "功能定价", content: <ScriptAnalysisPricingPanel token={token} /> },
+          ]} />}
           {view === "credit-packages" && <CreditsPanel token={token} section="packages" />}
-          {view === "credit-purchases" && <CreditsPanel token={token} section="purchases" />}
+          {view === "orders" && <PageTabs label="交易订单" description="统一查看积分购买业务单和支付渠道订单。" tabs={[
+            { id: "credit-purchases", label: "积分购买", content: <CreditsPanel token={token} section="purchases" /> },
+            { id: "payments", label: "支付订单", content: <DataPanel token={token} path="/admin/payments" empty="还没有微信支付订单" columns={["out_trade_no", "description", "amount_fen", "status", "paid_at", "created_at"]} /> },
+          ]} />}
           {view === "credit-consumptions" && <CreditsPanel token={token} section="consumptions" />}
-          {view === "payments" && <DataPanel token={token} path="/admin/payments" empty="还没有微信支付订单" columns={["out_trade_no", "description", "amount_fen", "status", "paid_at", "created_at"]} />}
+          {view === "integrations" && <PageTabs label="外部渠道集成" description="敏感凭据集中维护；注册、登录和支付页面只引用这里的连接状态。" tabs={[
+            { id: "mail-config", label: "邮件服务", content: <MailConfigPanel token={token} /> },
+            { id: "wechat-config", label: "微信平台", content: <WechatPaymentConfigPanel token={token} /> },
+          ]} />}
+          {view === "ip-access" && <IpAccessRulesPanel token={token} />}
+          {view === "tasks" && <DataPanel token={token} path="/admin/tasks" empty="还没有任务记录" columns={["task_type", "logical_model_code", "status", "progress", "estimated_credits", "created_at"]} />}
+          {view === "model-tests" && <ModelTestRecordsPanel token={token} />}
           {view === "audit" && <DataPanel token={token} path="/admin/audit-logs" empty="还没有管理操作记录" columns={["admin_name", "action", "entity_type", "entity_id", "created_at"]} />}
         </div>
       </main>
       {passwordOpen && <ChangePasswordModal token={token} onClose={() => setPasswordOpen(false)} />}
     </div>
   );
+}
+
+function PageTabs({ label, description, tabs }: { label: string; description: string; tabs: { id: string; label: string; content: ReactNode }[] }) {
+  const [activeId, setActiveId] = useState(tabs[0]?.id || "");
+  const active = tabs.find((tab) => tab.id === activeId) || tabs[0];
+  if (!active) return null;
+  return <div className="workspace-tabs">
+    <section className="workspace-tabs-header">
+      <div><span className="kicker">WORKSPACE</span><h2>{label}</h2><p>{description}</p></div>
+      <div className="workspace-tab-list" role="tablist" aria-label={label}>{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={active.id === tab.id} className={active.id === tab.id ? "active" : ""} onClick={() => setActiveId(tab.id)}>{tab.label}</button>)}</div>
+    </section>
+    <div className="workspace-tab-content" role="tabpanel" key={active.id}>{active.content}</div>
+  </div>;
+}
+
+function ConfigScope({ title, description, badges }: { title: string; description: string; badges: string[] }) {
+  return <section className="config-scope"><div><span className="kicker">CONFIGURATION SCOPE</span><h2>{title}</h2><p>{description}</p></div><div>{badges.map((badge) => <span key={badge}>{badge}</span>)}</div></section>;
+}
+
+function ScriptAnalysisModelSummary({ token, onOpenRouting }: { token: string; onOpenRouting: () => void }) {
+  const [model, setModel] = useState("正在读取…");
+  useEffect(() => {
+    let active = true;
+    apiRequest<{ text_model_id: string | null; candidates: { id: string; provider_name: string; model_alias: string; display_name: string }[] }>("/admin/providers/default-model-config", {}, token)
+      .then((result) => {
+        if (!active) return;
+        const selected = result.candidates.find((candidate) => candidate.id === result.text_model_id);
+        setModel(selected ? `${selected.provider_name} · ${selected.model_alias} · ${selected.display_name}` : "尚未配置默认文本模型");
+      })
+      .catch(() => { if (active) setModel("默认文本模型读取失败"); });
+    return () => { active = false; };
+  }, [token]);
+  return <section className="dependency-card"><div><span>执行依赖</span><strong>{model}</strong><small>剧本提取不会在这里复制模型设置，模型路由保持唯一配置入口。</small></div><button type="button" className="secondary" onClick={onOpenRouting}>前往模型路由</button></section>;
 }
 
 function ChangePasswordModal({ token, onClose }: { token: string; onClose: () => void }) {
@@ -258,7 +313,7 @@ function ConfigsPanel({ token }: { token: string }) {
     try { await apiRequest(`/admin/configs/${selected.id}/versions/${selected.version_id}/publish`, { method: "POST", body: JSON.stringify({ channel: "stable", rollout_percent: 100 }) }, token); setMessage("已发布到 stable 渠道"); await load(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "发布失败"); }
   };
-  return <><WechatPaymentConfigPanel token={token} /><div className="split-view config-split"><section className="list-card"><header><div><span className="kicker">VERSIONED DEFAULTS</span><h2>客户端默认配置</h2></div><button className="secondary" onClick={() => setShowCreate(true)}>新建配置</button></header>{grouped.map(([category, rows]) => <div className="config-group" key={category}><strong>{category}</strong>{rows.map((item) => <button className={selected?.id === item.id ? "selected" : ""} key={item.id} onClick={() => choose(item)}><div><b>{item.name}</b><small>{item.config_key}</small></div><span className={`status ${statusTone(item.version_status)}`}>v{item.version || 0} · {item.version_status || "EMPTY"}</span></button>)}</div>)}</section><section className="editor-card">{selected ? <><header><div><span className="kicker">{selected.category}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><span className={`status ${statusTone(selected.version_status)}`}>{selected.version_status}</span></header><label>配置 JSON<textarea value={editor} onChange={(event) => setEditor(event.target.value)} spellCheck={false} /></label>{error && <div className="form-error">{error}</div>}{message && <div className="form-success">{message}</div>}<footer><button className="secondary" onClick={() => setEditor(JSON.stringify(selected.value_json ?? {}, null, 2))}>撤销编辑</button><button className="secondary" onClick={saveVersion}>保存为新版本</button><button className="primary" onClick={publish} disabled={!selected.version_id}>发布当前版本</button></footer></> : <div className="empty-editor"><strong>选择一个配置</strong><p>查看提示词或自动化流程，并以新版本方式修改。</p></div>}</section>{showCreate && <CreateConfigModal token={token} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void load(); }} />}</div></>;
+  return <><ConfigScope title="提示词与工作流" description="按业务能力维护可版本化配置；客户端下发只是生效范围，不再作为菜单分类。" badges={["版本化", "发布后生效", "stable 渠道"]} /><div className="split-view config-split"><section className="list-card"><header><div><span className="kicker">VERSIONED AI CONFIG</span><h2>配置目录</h2><p>提示词、生成参数与工作流按类型归档。</p></div><button className="secondary" onClick={() => setShowCreate(true)}>新建配置</button></header>{grouped.map(([category, rows]) => <div className="config-group" key={category}><strong>{category}</strong>{rows.map((item) => <button className={selected?.id === item.id ? "selected" : ""} key={item.id} onClick={() => choose(item)}><div><b>{item.name}</b><small>{item.config_key}</small></div><span className={`status ${statusTone(item.version_status)}`}>v{item.version || 0} · {item.version_status || "EMPTY"}</span></button>)}</div>)}</section><section className="editor-card">{selected ? <><header><div><span className="kicker">{selected.category}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><span className={`status ${statusTone(selected.version_status)}`}>{selected.version_status}</span></header><label>配置 JSON<textarea value={editor} onChange={(event) => setEditor(event.target.value)} spellCheck={false} /></label>{error && <div className="form-error">{error}</div>}{message && <div className="form-success">{message}</div>}<footer><button className="secondary" onClick={() => setEditor(JSON.stringify(selected.value_json ?? {}, null, 2))}>撤销编辑</button><button className="secondary" onClick={saveVersion}>保存为新版本</button><button className="primary" onClick={publish} disabled={!selected.version_id}>发布当前版本</button></footer></> : <div className="empty-editor"><strong>选择一个配置</strong><p>查看提示词或自动化流程，并以新版本方式修改。</p></div>}</section>{showCreate && <CreateConfigModal token={token} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); void load(); }} />}</div></>;
 }
 
 function CreateConfigModal({ token, onClose, onCreated }: { token: string; onClose: () => void; onCreated: () => void }) {

@@ -47,6 +47,7 @@ pub(crate) fn video_understanding_prompt(prompt: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct AiSettingsFile {
+    generation_assets_directory: Option<String>,
     base_url: String,
     agent_model: String,
     video_model: String,
@@ -100,6 +101,7 @@ impl Default for CreditCostSettings {
 impl Default for AiSettingsFile {
     fn default() -> Self {
         Self {
+            generation_assets_directory: None,
             base_url: "https://api.lk888.ai".into(),
             agent_model: "gpt-5.6-sol".into(),
             video_model: "gemini-3.7-flash".into(),
@@ -120,6 +122,8 @@ impl Default for AiSettingsFile {
 
 #[derive(Debug, Serialize)]
 pub struct AiSettingsView {
+    generation_assets_directory: String,
+    default_generation_assets_directory: String,
     base_url: String,
     agent_model: String,
     video_model: String,
@@ -139,6 +143,8 @@ pub struct AiSettingsView {
 
 #[derive(Debug, Deserialize)]
 pub struct SaveAiSettingsInput {
+    #[serde(default)]
+    generation_assets_directory: String,
     base_url: String,
     agent_model: String,
     video_model: String,
@@ -340,6 +346,125 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|path| path.join("ai-settings.json"))
         .map_err(|e| error("AI_SETTINGS_PATH_ERROR", e.to_string(), false))
+}
+
+fn verify_generation_assets_directory(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(error(
+            "GENERATION_ASSETS_PATH_INVALID",
+            "生成素材保存目录必须是绝对路径",
+            false,
+        ));
+    }
+    fs::create_dir_all(path).map_err(|e| {
+        error(
+            "GENERATION_ASSETS_PATH_INVALID",
+            format!("无法创建生成素材保存目录：{e}"),
+            false,
+        )
+    })?;
+    let probe = path.join(format!(".aivs-write-test-{}", uuid::Uuid::new_v4()));
+    fs::write(&probe, b"ok").map_err(|e| {
+        error(
+            "GENERATION_ASSETS_PATH_NOT_WRITABLE",
+            format!("生成素材保存目录不可写：{e}"),
+            false,
+        )
+    })?;
+    let _ = fs::remove_file(probe);
+    fs::canonicalize(path).map_err(|e| {
+        error(
+            "GENERATION_ASSETS_PATH_INVALID",
+            format!("无法确认生成素材保存目录：{e}"),
+            false,
+        )
+    })
+}
+
+fn default_generation_assets_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let installed = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .map(|path| path.join("assets"));
+    if let Some(path) = installed {
+        if let Ok(path) = verify_generation_assets_directory(&path) {
+            return Ok(path);
+        }
+    }
+    let fallback = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| error("GENERATION_ASSETS_PATH_ERROR", e.to_string(), false))?
+        .join("assets");
+    verify_generation_assets_directory(&fallback)
+}
+
+fn generation_assets_directory(
+    app: &tauri::AppHandle,
+    configured: Option<&str>,
+) -> Result<PathBuf, String> {
+    match configured.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) => verify_generation_assets_directory(Path::new(path)),
+        None => default_generation_assets_directory(app),
+    }
+}
+
+fn archive_generated_asset(
+    app: &tauri::AppHandle,
+    project_id: &str,
+    media_kind: &str,
+    source: &Path,
+) -> Result<PathBuf, String> {
+    let settings = load_file(app)?;
+    let root = generation_assets_directory(app, settings.generation_assets_directory.as_deref())?;
+    let safe_project_id: String = project_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .take(100)
+        .collect();
+    let project_directory = if safe_project_id.is_empty() {
+        "unknown-project"
+    } else {
+        &safe_project_id
+    };
+    let destination_directory = root.join(project_directory).join(media_kind);
+    fs::create_dir_all(&destination_directory).map_err(|e| {
+        error(
+            "GENERATION_ASSETS_ARCHIVE_ERROR",
+            format!("无法创建素材归档目录：{e}"),
+            true,
+        )
+    })?;
+    let file_name = source.file_name().ok_or_else(|| {
+        error(
+            "GENERATION_ASSETS_ARCHIVE_ERROR",
+            "生成素材文件名无效",
+            false,
+        )
+    })?;
+    let destination = available_export_path(&destination_directory, file_name);
+    fs::copy(source, &destination).map_err(|e| {
+        error(
+            "GENERATION_ASSETS_ARCHIVE_ERROR",
+            format!("无法归档生成素材：{e}"),
+            true,
+        )
+    })?;
+    Ok(destination)
+}
+
+fn archive_generated_asset_without_failing_task(
+    app: &tauri::AppHandle,
+    project_id: &str,
+    media_kind: &str,
+    source: &Path,
+) {
+    if let Err(archive_error) = archive_generated_asset(app, project_id, media_kind, source) {
+        crate::logging::error(
+            "ai.generated_asset_archive_failed",
+            json!({"project_id": project_id, "media_kind": media_kind, "source": source, "error": archive_error}),
+        );
+    }
 }
 
 fn load_file(app: &tauri::AppHandle) -> Result<AiSettingsFile, String> {
@@ -1024,9 +1149,15 @@ pub(crate) async fn generate_guided_episode_storyboard(
 }
 
 fn settings_view(
+    app: &tauri::AppHandle,
     settings: AiSettingsFile,
     model_catalog: Vec<crate::database::model_catalog::AiModelCatalogItem>,
 ) -> Result<AiSettingsView, String> {
+    let default_generation_assets_directory = default_generation_assets_directory(app)?;
+    let generation_assets_directory = generation_assets_directory(
+        app,
+        settings.generation_assets_directory.as_deref(),
+    )?;
     let prompt_overrides = settings.prompt_overrides.clone().unwrap_or_default();
     let api_key = load_api_key()?;
     let api_key_mask = api_key.as_ref().map(|key| {
@@ -1041,6 +1172,10 @@ fn settings_view(
         format!("••••••••{suffix}")
     });
     Ok(AiSettingsView {
+        generation_assets_directory: generation_assets_directory.to_string_lossy().into_owned(),
+        default_generation_assets_directory: default_generation_assets_directory
+            .to_string_lossy()
+            .into_owned(),
         base_url: settings.base_url,
         agent_model: settings.agent_model,
         video_model: settings.video_model,
@@ -1200,6 +1335,11 @@ fn normalize_settings(input: &SaveAiSettingsInput) -> Result<AiSettingsFile, Str
         video_per_second.insert(resolution.to_owned(), cost);
     }
     Ok(AiSettingsFile {
+        generation_assets_directory: if input.generation_assets_directory.trim().is_empty() {
+            None
+        } else {
+            Some(input.generation_assets_directory.trim().to_owned())
+        },
         base_url,
         agent_model,
         video_model,
@@ -1221,7 +1361,7 @@ fn normalize_settings(input: &SaveAiSettingsInput) -> Result<AiSettingsFile, Str
 #[tauri::command]
 pub fn get_ai_settings(app: tauri::AppHandle) -> Result<AiSettingsView, String> {
     let catalog = crate::database::model_catalog::list(&app)?;
-    settings_view(load_file(&app)?, catalog)
+    settings_view(&app, load_file(&app)?, catalog)
 }
 
 #[tauri::command]
@@ -1230,6 +1370,11 @@ pub fn save_ai_settings(
     input: SaveAiSettingsInput,
 ) -> Result<AiSettingsView, String> {
     let mut settings = normalize_settings(&input)?;
+    settings.generation_assets_directory = Some(
+        generation_assets_directory(&app, settings.generation_assets_directory.as_deref())?
+            .to_string_lossy()
+            .into_owned(),
+    );
     let catalog = crate::database::model_catalog::list(&app)?;
     if !catalog
         .iter()
@@ -1310,7 +1455,7 @@ pub fn save_ai_settings(
             )
         })?;
     }
-    settings_view(settings, catalog)
+    settings_view(&app, settings, catalog)
 }
 
 pub(crate) fn mime_type(path: &Path) -> Option<&'static str> {
@@ -2089,7 +2234,7 @@ fn validate_project_image_target(
     if !project_root.join("project.json").is_file() || !project_root.join("project.db").is_file() {
         return Err(error("PROJECT_INVALID", "项目目录无效", false));
     }
-    if !matches!(input.target_type.as_str(), "character" | "scene")
+    if !matches!(input.target_type.as_str(), "character" | "scene" | "prop")
         || input.target_id.is_empty()
         || !input
             .target_id
@@ -2098,10 +2243,11 @@ fn validate_project_image_target(
     {
         return Err(error("AI_IMAGE_TARGET_INVALID", "生图目标无效", false));
     }
-    let relative_dir = if input.target_type == "character" {
-        "characters"
-    } else {
-        "scenes"
+    let relative_dir = match input.target_type.as_str() {
+        "character" => "characters",
+        "scene" => "scenes",
+        "prop" => "props",
+        _ => unreachable!(),
     };
     Ok((project_root, PathBuf::from(relative_dir)))
 }
@@ -2191,6 +2337,16 @@ pub async fn generate_project_image(
     let absolute_path = target_dir.join(filename);
     fs::write(&absolute_path, &image.bytes)
         .map_err(|e| error("AI_IMAGE_WRITE_ERROR", e.to_string(), true))?;
+    let archive_project_id = project_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("project");
+    archive_generated_asset_without_failing_task(
+        &app,
+        archive_project_id,
+        "images",
+        &absolute_path,
+    );
     let relative_path = relative_dir.join(absolute_path.file_name().unwrap_or_default());
     let source_key = format!(
         "{}/direct/{}",
@@ -2223,7 +2379,7 @@ pub async fn generate_project_image(
 fn validate_image_task_item(item: &CreateImageGenerationTaskItem) -> Result<(), String> {
     if !matches!(
         item.target_type.as_str(),
-        "character" | "character_state" | "scene" | "shot"
+        "character" | "character_state" | "scene" | "prop" | "shot"
     ) || item.target_id.is_empty()
         || !item
             .target_id
@@ -2284,7 +2440,7 @@ fn load_reference_images(
         if input.label.trim().is_empty()
             || !matches!(
                 input.kind.as_str(),
-                "scene" | "character" | "shot_first_frame" | "shot_reference"
+                "scene" | "character" | "prop" | "shot_first_frame" | "shot_reference"
             )
         {
             return Err(error("AI_REFERENCE_INVALID", "参考图标签或类型无效", false));
@@ -2412,7 +2568,7 @@ async fn execute_image_task(
     }
     if !matches!(
         task.target_type.as_str(),
-        "character" | "character_state" | "scene" | "shot"
+        "character" | "character_state" | "scene" | "prop" | "shot"
     ) || task.target_id.is_empty()
         || !task
             .target_id
@@ -2438,7 +2594,7 @@ async fn execute_image_task(
             let provider_model_id = metadata.get("provider_model_id").and_then(Value::as_str).ok_or_else(|| error("PLATFORM_MEDIA_MODEL_REQUIRED", "生图任务缺少服务端模型编号", false))?;
             let resolution = metadata.get("resolution").and_then(Value::as_str).ok_or_else(|| error("PLATFORM_MEDIA_RESOLUTION_REQUIRED", "生图任务缺少分辨率", false))?;
             let reference_images = references.iter().map(|reference| json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})).collect::<Vec<_>>();
-            let operation = format!("{} · {}", match task.target_type.as_str() { "character" | "character_state" => "角色图生成", "scene" => "场景图生成", _ => "分镜图生成" }, task.target_id);
+            let operation = format!("{} · {}", match task.target_type.as_str() { "character" | "character_state" => "角色图生成", "scene" => "场景图生成", "prop" => "道具图生成", _ => "分镜图生成" }, task.target_id);
             let value = crate::platform_media::generate(&task.base_url, provider_model_id, task_id, json!({
                 "prompt": prompt, "aspect_ratio": task.aspect_ratio, "resolution": resolution,
                 "reference_images": reference_images,
@@ -2543,6 +2699,8 @@ async fn persist_image_result(
         PathBuf::from("characters/states")
     } else if task.target_type == "scene" {
         PathBuf::from("scenes")
+    } else if task.target_type == "prop" {
+        PathBuf::from("props")
     } else if task.target_type == "shot" {
         PathBuf::from("shots/images")
     } else {
@@ -2563,6 +2721,12 @@ async fn persist_image_result(
     tokio::fs::write(&absolute_path, &image.bytes)
         .await
         .map_err(|e| error("AI_IMAGE_WRITE_ERROR", e.to_string(), true))?;
+    archive_generated_asset_without_failing_task(
+        app,
+        &task.project_id,
+        "images",
+        &absolute_path,
+    );
     let relative_path = relative_dir
         .join(absolute_path.file_name().unwrap_or_default())
         .to_string_lossy()
@@ -2820,10 +2984,11 @@ fn ordered_video_references(references: &[ReferenceImage]) -> Vec<&ReferenceImag
                 .iter()
                 .filter(|reference| reference.kind == "character"),
         )
+        .chain(references.iter().filter(|reference| reference.kind == "prop"))
         .chain(references.iter().filter(|reference| {
             !matches!(
                 reference.kind.as_str(),
-                "scene" | "character" | "shot_first_frame" | "shot_reference"
+                "scene" | "character" | "prop" | "shot_first_frame" | "shot_reference"
             )
         }))
         .chain(references.iter().filter(|reference| {
@@ -3247,6 +3412,7 @@ async fn poll_video_url(
 }
 
 async fn download_video_result(
+    app: &tauri::AppHandle,
     project_root: &Path,
     record: &crate::database::generation_records::GenerationRecord,
     url_value: &str,
@@ -3336,6 +3502,12 @@ async fn download_video_result(
     tokio::fs::rename(&temporary_path, &absolute_path)
         .await
         .map_err(|e| error("AI_VIDEO_WRITE_ERROR", e.to_string(), true))?;
+    archive_generated_asset_without_failing_task(
+        app,
+        &record.project_id,
+        "videos",
+        &absolute_path,
+    );
     let relative_path = relative_dir
         .join(absolute_path.file_name().unwrap_or_default())
         .to_string_lossy()
@@ -3350,7 +3522,35 @@ async fn download_video_result(
     )
 }
 
-fn spawn_video_task(project_root: PathBuf, record_id: String) {
+fn platform_login_required_value(value: &Value) -> bool {
+    if value.get("code").and_then(Value::as_str) == Some("PLATFORM_LOGIN_REQUIRED") {
+        return true;
+    }
+    value.get("message").is_some_and(|message| match message {
+        Value::String(text) => text.contains("PLATFORM_LOGIN_REQUIRED") || text.contains("登录已过期"),
+        nested => platform_login_required_value(nested),
+    })
+}
+
+fn platform_login_required_error(message: &str) -> bool {
+    serde_json::from_str::<Value>(message).ok().is_some_and(|value| platform_login_required_value(&value))
+        || message.contains("PLATFORM_LOGIN_REQUIRED")
+        || message.contains("登录已过期")
+}
+
+fn login_error_remote_task_id(message: &str) -> Option<String> {
+    fn find(value: &Value) -> Option<String> {
+        if let Some(id) = value.get("remote_task_id").and_then(Value::as_str) { return Some(id.to_owned()); }
+        match value.get("message") {
+            Some(Value::String(text)) => serde_json::from_str::<Value>(text).ok().and_then(|nested| find(&nested)),
+            Some(nested) => find(nested),
+            None => None,
+        }
+    }
+    serde_json::from_str::<Value>(message).ok().and_then(|value| find(&value))
+}
+
+fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: String) {
     let should_spawn = active_video_tasks()
         .lock()
         .map(|mut active| active.insert(record_id.clone()))
@@ -3361,7 +3561,7 @@ fn spawn_video_task(project_root: PathBuf, record_id: String) {
     tauri::async_runtime::spawn(async move {
         let permit = video_task_limiter().acquire_owned().await;
         let result = match permit {
-            Ok(_permit) => execute_video_task(&project_root, &record_id).await,
+            Ok(_permit) => execute_video_task(&app, &project_root, &record_id).await,
             Err(error) => Err(format!("视频生成并发队列不可用：{error}")),
         };
         if let Err(message) = result {
@@ -3375,8 +3575,12 @@ fn spawn_video_task(project_root: PathBuf, record_id: String) {
                 json!({"record_id": record_id, "error": message}),
             );
             if let Ok(connection) = crate::database::open(&project_root) {
-                let _ =
-                    crate::database::generation_records::fail(&connection, &record_id, &message);
+                if platform_login_required_error(&message) {
+                    let remote_task_id = login_error_remote_task_id(&message);
+                    let _ = crate::database::generation_records::mark_auth_required(&connection, &record_id, remote_task_id.as_deref(), &message);
+                } else {
+                    let _ = crate::database::generation_records::fail(&connection, &record_id, &message);
+                }
             }
         }
         if let Ok(mut active) = active_video_tasks().lock() {
@@ -3385,7 +3589,11 @@ fn spawn_video_task(project_root: PathBuf, record_id: String) {
     });
 }
 
-async fn execute_video_task(project_root: &Path, record_id: &str) -> Result<(), String> {
+async fn execute_video_task(
+    app: &tauri::AppHandle,
+    project_root: &Path,
+    record_id: &str,
+) -> Result<(), String> {
     let connection = crate::database::open(project_root)?;
     let record = crate::database::generation_records::get(&connection, record_id)?
         .ok_or_else(|| format!("找不到视频生成流水：{record_id}"))?;
@@ -3406,11 +3614,9 @@ async fn execute_video_task(project_root: &Path, record_id: &str) -> Result<(), 
         .and_then(|value| value.get("version"))
         .and_then(Value::as_str);
     let reference_assets = reference_inputs(record.result.as_ref());
-    if matches!(
-        record.status.as_str(),
-        crate::database::generation_records::STATUS_COMPLETED
-            | crate::database::generation_records::STATUS_FAILED
-    ) {
+    if record.status == crate::database::generation_records::STATUS_COMPLETED
+        || (record.status == crate::database::generation_records::STATUS_FAILED
+            && !record.error.as_ref().is_some_and(platform_login_required_value)) {
         return Ok(());
     }
     crate::database::generation_records::mark_running(&connection, record_id)?;
@@ -3430,11 +3636,16 @@ async fn execute_video_task(project_root: &Path, record_id: &str) -> Result<(), 
         let resolution = resolution.ok_or_else(|| error("PLATFORM_MEDIA_RESOLUTION_REQUIRED", "视频任务缺少分辨率", false))?;
         let reference_images = references.iter().map(|reference| json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})).collect::<Vec<_>>();
         let operation = format!("分镜视频生成 · {}", record.target_id);
-        let value = crate::platform_media::generate(&record.base_url, provider_model_id, record_id, json!({
-            "prompt": record.prompt, "aspect_ratio": record.aspect_ratio, "duration": duration, "seconds": duration,
-            "resolution": resolution, "version": version, "reference_images": reference_images,
-            "params": {"aspect_ratio": record.aspect_ratio, "duration": duration, "seconds": duration, "resolution": resolution, "version": version, "reference_images": reference_images}
-        }), &operation, metadata.get("workflow_credit_id").and_then(Value::as_str).map(|id| (project_root, id, format!("video:shot:{}", record.target_id)))).await?;
+        let workflow = metadata.get("workflow_credit_id").and_then(Value::as_str).map(|id| (project_root, id, format!("video:shot:{}", record.target_id)));
+        let value = if let Some(remote_task_id) = record.remote_task_id.as_deref() {
+            crate::platform_media::resume(&record.base_url, remote_task_id, record_id, workflow).await?
+        } else {
+            crate::platform_media::generate(&record.base_url, provider_model_id, record_id, json!({
+                "prompt": record.prompt, "aspect_ratio": record.aspect_ratio, "duration": duration, "seconds": duration,
+                "resolution": resolution, "version": version, "reference_images": reference_images,
+                "params": {"aspect_ratio": record.aspect_ratio, "duration": duration, "seconds": duration, "resolution": resolution, "version": version, "reference_images": reference_images}
+            }), &operation, workflow).await?
+        };
         media_result_url(&value).or_else(|| find_media_value(&value, &["video_url", "result_url", "url"], 0).map(str::to_owned)).ok_or_else(|| error("AI_VIDEO_RESPONSE_INVALID", "服务端视频生成结果中没有找到视频地址", true))?
     } else if let Some(remote_id) = record.remote_task_id.as_deref() {
         let connection = crate::database::open(project_root)?;
@@ -3479,7 +3690,7 @@ async fn execute_video_task(project_root: &Path, record_id: &str) -> Result<(), 
     let connection = crate::database::open(project_root)?;
     crate::database::generation_records::mark_downloading(&connection, record_id)?;
     drop(connection);
-    download_video_result(project_root, &record, &result_url).await?;
+    download_video_result(app, project_root, &record, &result_url).await?;
     append_generation_log(
         project_root,
         "video_task_completed",
@@ -3490,7 +3701,7 @@ async fn execute_video_task(project_root: &Path, record_id: &str) -> Result<(), 
 
 #[tauri::command]
 pub fn create_shot_video_generation(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     input: CreateShotVideoGenerationInput,
 ) -> Result<crate::database::generation_records::GenerationRecord, String> {
     let project_root = validate_project_root(&input.project_path)?;
@@ -3600,7 +3811,7 @@ pub fn create_shot_video_generation(
         &json!({"duration": input.duration, "resolution": resolution, "version": version, "reference_assets": reference_assets, "provider_model_id": input.provider_model_id, "workflow_credit_id": input.workflow_credit_id}),
     )?;
     drop(connection);
-    spawn_video_task(project_root, record.id.clone());
+    spawn_video_task(app, project_root, record.id.clone());
     Ok(record)
 }
 
@@ -3786,7 +3997,11 @@ fn probe_media(ffprobe: &Path, path: &Path) -> Result<MediaProbe, String> {
     media_probe_from_value(&value)
 }
 
-fn execute_project_video_composition(project_root: &Path, record_id: &str) -> Result<(), String> {
+fn execute_project_video_composition(
+    app: &tauri::AppHandle,
+    project_root: &Path,
+    record_id: &str,
+) -> Result<(), String> {
     let connection = crate::database::open(project_root)?;
     let record = crate::database::generation_records::get(&connection, record_id)?
         .ok_or_else(|| format!("找不到项目视频合成流水：{record_id}"))?;
@@ -3996,6 +4211,12 @@ fn execute_project_video_composition(project_root: &Path, record_id: &str) -> Re
         let _ = fs::remove_file(&partial_path);
     }
     composition_result?;
+    archive_generated_asset_without_failing_task(
+        app,
+        &record.project_id,
+        "videos",
+        &final_path,
+    );
 
     let relative_path = final_path
         .strip_prefix(project_root)
@@ -4012,7 +4233,11 @@ fn execute_project_video_composition(project_root: &Path, record_id: &str) -> Re
     )
 }
 
-fn spawn_project_video_composition(project_root: PathBuf, record_id: String) {
+fn spawn_project_video_composition(
+    app: tauri::AppHandle,
+    project_root: PathBuf,
+    record_id: String,
+) {
     let should_spawn = active_video_tasks()
         .lock()
         .map(|mut active| active.insert(record_id.clone()))
@@ -4026,8 +4251,9 @@ fn spawn_project_video_composition(project_root: PathBuf, record_id: String) {
             Ok(_permit) => {
                 let task_root = project_root.clone();
                 let task_id = record_id.clone();
+                let task_app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    execute_project_video_composition(&task_root, &task_id)
+                    execute_project_video_composition(&task_app, &task_root, &task_id)
                 })
                 .await
                 .map_err(|e| format!("视频合成任务异常：{e}"))
@@ -4060,6 +4286,7 @@ fn spawn_project_video_composition(project_root: PathBuf, record_id: String) {
 
 #[tauri::command]
 pub fn compose_project_video(
+    app: tauri::AppHandle,
     input: ComposeProjectVideoInput,
 ) -> Result<crate::database::generation_records::GenerationRecord, String> {
     let project_root = validate_project_root(&input.project_path)?;
@@ -4158,7 +4385,7 @@ pub fn compose_project_video(
         &json!({"ordered_shot_ids": input.ordered_shot_ids}),
     )?;
     drop(connection);
-    spawn_project_video_composition(project_root, record.id.clone());
+    spawn_project_video_composition(app, project_root, record.id.clone());
     Ok(record)
 }
 
@@ -4346,15 +4573,16 @@ pub fn export_all_generation_assets(
 }
 
 pub(crate) fn resume_project_video_tasks(
+    app: &tauri::AppHandle,
     project_root: &Path,
 ) -> Result<Vec<crate::database::generation_records::GenerationRecord>, String> {
     let connection = crate::database::open(project_root)?;
     let records = crate::database::generation_records::list_unfinished_videos(&connection)?;
     for record in &records {
         if record.target_type == "project" {
-            spawn_project_video_composition(project_root.to_path_buf(), record.id.clone());
+            spawn_project_video_composition(app.clone(), project_root.to_path_buf(), record.id.clone());
         } else {
-            spawn_video_task(project_root.to_path_buf(), record.id.clone());
+            spawn_video_task(app.clone(), project_root.to_path_buf(), record.id.clone());
         }
     }
     Ok(records)

@@ -61,6 +61,15 @@ def dispatch(request: Dict[str, Any]) -> Any:
                 )
             progress(request_id, 1.0, "completed", "视频地址解析完成")
             return data
+        progress(request_id, 0.08, "public_resolving", "正在直接解析公开视频")
+        try:
+            data = resolve_douyin(target_url)
+            progress(request_id, 1.0, "completed", "公开视频地址解析完成")
+            return data
+        except DouyinResolverError:
+            # Only start the managed browser when the public extractor really
+            # needs an authenticated session or a browser-only fallback.
+            pass
         profile_root = str(params.get("profile_root") or "").strip()
         if not profile_root:
             raise ValueError("managed browser profile path is required")
@@ -154,6 +163,15 @@ def dispatch(request: Dict[str, Any]) -> Any:
                 )
             progress(request_id, 1.0, "completed", "视频下载完成")
             return data
+        progress(request_id, 0.05, "public_download", "正在直接下载公开视频")
+        try:
+            data = download_douyin(target_url, output_path)
+            progress(request_id, 1.0, "completed", "公开视频下载完成")
+            return data
+        except DouyinResolverError:
+            # Authentication is a fallback, not the default path. This keeps
+            # public videos from opening a visible Chrome window every time.
+            pass
         profile_root = str(params.get("profile_root") or "").strip()
         if not profile_root:
             raise ValueError("managed browser profile path is required")

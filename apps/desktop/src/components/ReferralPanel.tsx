@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, LoaderCircle, Wallet } from "lucide-react";
-import { applyReferralWithdrawal, getReferralRecords, getReferralSummary, type ReferralSummary } from "../services/platform";
+import { Copy, LoaderCircle, UsersRound, Wallet } from "lucide-react";
+import { applyReferralWithdrawal, getReferralRecords, getReferralSubordinates, getReferralSummary, type ReferralSummary } from "../services/platform";
 
 const MAX_RECEIPT_IMAGE_BYTES = 2 * 1024 * 1024;
 const money = (fen: number | string | undefined) => `¥${(Number(fen || 0) / 100).toFixed(2)}`;
@@ -15,7 +15,7 @@ export function InvitationCard({ userId }: { userId: string }) {
   return <section className="invitation-card"><h3>邀请好友</h3>
     {summary.error && <div className="error-banner">{String(summary.error)}</div>}
     {!summary.data ? <p>正在读取邀请信息…</p> : <>
-      <p>{summary.data.invitation_anti_abuse_enabled ? `好友通过邀请页注册并完成首笔真实支付后，赠送你 ${summary.data.invitation_reward_credits} 积分。` : `每邀请一位新用户完成注册，赠送你 ${summary.data.invitation_reward_credits} 积分。`} 好友先通过邀请页注册绑定，再下载安装客户端。</p>
+      <p>{summary.data.invitation_anti_abuse_enabled ? `好友通过专属下载页注册并完成首笔真实支付后，赠送你 ${summary.data.invitation_reward_credits} 积分。` : `每邀请一位新用户完成注册，赠送你 ${summary.data.invitation_reward_credits} 积分。`} 专属链接已锁定你的邀请码，好友注册后会自动绑定邀请关系。</p>
       <label>我的邀请码<div className="invitation-copy"><input readOnly value={summary.data.invite_code} /><button type="button" className="secondary-button" onClick={() => void copy(summary.data!.invite_code)}><Copy size={15} />复制</button></div></label>
       <label>邀请链接<div className="invitation-copy"><input readOnly value={summary.data.invitation_url} /><button type="button" className="secondary-button" onClick={() => void copy(summary.data!.invitation_url)}><Copy size={15} />复制链接</button></div></label>
       <small>已邀请 {summary.data.invited_count} 人 · 累计奖励 {summary.data.reward_credits} 积分</small>
@@ -26,7 +26,7 @@ export function InvitationCard({ userId }: { userId: string }) {
 export function ReferralPanel({ userId }: { userId?: string }) {
   const summary = useQuery({ queryKey: ["referral-summary", userId], queryFn: getReferralSummary, refetchInterval: 30000, enabled: Boolean(userId) });
   const [kind, setKind] = useState("commissions"), [page, setPage] = useState(1);
-  const records = useQuery({ queryKey: ["referral-records", userId, kind, page], queryFn: () => getReferralRecords(kind, page), enabled: Boolean(userId) });
+  const records = useQuery({ queryKey: ["referral-records", userId, kind, page], queryFn: () => getReferralRecords(kind, page), enabled: Boolean(userId) && kind !== "subordinates" });
   return <div className="referral-panel">
     {summary.error && <div className="error-banner">{String(summary.error)}</div>}
     {!summary.data ? <div className="account-loading"><LoaderCircle className="spin" />正在读取分润账户…</div> : <>
@@ -34,11 +34,25 @@ export function ReferralPanel({ userId }: { userId?: string }) {
       <p>累计分润 {money(summary.data.earned_fen)}。{summary.data.enabled ? `当前直接分润 ${summary.data.direct_rate_bps / 100}%，间接分润 ${summary.data.indirect_rate_bps / 100}%，最多两级。` : "分销当前关闭，不产生新分润；已有余额仍可按规则提现。"}分润以积分套餐实付金额计算，与积分余额独立。</p>
       <WithdrawalForm summary={summary.data} />
     </>}
-    <div className="referral-tabs">{[["commissions", "分润记录"], ["withdrawals", "提现申请"], ["payouts", "打款记录"], ["rewards", "邀请奖励"]].map(([key, title]) => <button type="button" key={key} className={kind === key ? "active" : ""} onClick={() => { setKind(key!); setPage(1); }}>{title}</button>)}</div>
-    {records.error && <div className="error-banner">{String(records.error)}</div>}
-    <div className="referral-records">{records.isLoading ? <p>正在读取记录…</p> : !records.data?.items.length ? <p>暂无记录</p> : records.data.items.map(row => <article key={row.id}><div><strong>{kind === "rewards" ? `邀请奖励 ${row.credits} 积分 · ${rewardStatusName(row.status)}` : `${money(row.amount_fen)} · ${row.level ? `${row.level === 1 ? "直接" : "间接"}分润` : statusName(row.status)}`}</strong><small>{new Date(row.created_at).toLocaleString("zh-CN")}</small>{row.base_amount_fen !== undefined && <small>实付基数 {money(row.base_amount_fen)} × {Number(row.rate_bps) / 100}%</small>}{(row.review_note || row.status_note) && <small>说明：{row.review_note || row.status_note}</small>}{row.alipay_trade_no && <small>支付宝流水：{row.alipay_trade_no}</small>}</div><code>{row.id}</code></article>)}</div>
-    <div className="referral-pagination"><button className="secondary-button" disabled={page <= 1 || records.isFetching} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} 页</span><button className="secondary-button" disabled={!records.data?.has_more || records.isFetching} onClick={() => setPage(value => value + 1)}>下一页</button></div>
+    <div className="referral-tabs">{[["commissions", "分润记录"], ["withdrawals", "提现申请"], ["payouts", "打款记录"], ["rewards", "邀请奖励"], ["subordinates", "下级用户"]].map(([key, title]) => <button type="button" key={key} className={kind === key ? "active" : ""} onClick={() => { setKind(key!); setPage(1); }}>{title}</button>)}</div>
+    {kind === "subordinates" ? <SubordinateUsers userId={userId} /> : <>
+      {records.error && <div className="error-banner">{String(records.error)}</div>}
+      <div className="referral-records">{records.isLoading ? <p>正在读取记录…</p> : !records.data?.items.length ? <p>暂无记录</p> : records.data.items.map(row => <article key={row.id}><div><strong>{kind === "rewards" ? `邀请奖励 ${row.credits} 积分 · ${rewardStatusName(row.status)}` : `${money(row.amount_fen)} · ${row.level ? `${row.level === 1 ? "直接" : "间接"}分润` : statusName(row.status)}`}</strong><small>{new Date(row.created_at).toLocaleString("zh-CN")}</small>{row.base_amount_fen !== undefined && <small>实付基数 {money(row.base_amount_fen)} × {Number(row.rate_bps) / 100}%</small>}{(row.review_note || row.status_note) && <small>说明：{row.review_note || row.status_note}</small>}{row.alipay_trade_no && <small>支付宝流水：{row.alipay_trade_no}</small>}</div><code>{row.id}</code></article>)}</div>
+      <div className="referral-pagination"><button className="secondary-button" disabled={page <= 1 || records.isFetching} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} 页</span><button className="secondary-button" disabled={!records.data?.has_more || records.isFetching} onClick={() => setPage(value => value + 1)}>下一页</button></div>
+    </>}
   </div>;
+}
+
+export function SubordinateUsers({ userId }: { userId?: string }) {
+  const [level, setLevel] = useState<1 | 2>(1), [page, setPage] = useState(1);
+  const users = useQuery({ queryKey: ["referral-subordinates", userId, level, page], queryFn: () => getReferralSubordinates(level, page), enabled: Boolean(userId) });
+  return <section className="subordinate-users">
+    <header><div><UsersRound size={18} /><div><strong>我的下级用户</strong><small>消费额按用户已完成支付的订单累计。</small></div></div><div className="subordinate-level-tabs"><button type="button" className={level === 1 ? "active" : ""} onClick={() => { setLevel(1); setPage(1); }}>直接下级</button><button type="button" className={level === 2 ? "active" : ""} onClick={() => { setLevel(2); setPage(1); }}>间接下级</button></div></header>
+    {users.error && <div className="error-banner">{String(users.error)}</div>}
+    <div className="subordinate-summary"><article><span>{level === 1 ? "直接" : "间接"}下级人数</span><strong>{users.data?.total ?? "—"}</strong></article><article><span>累计消费额</span><strong>{users.data ? money(users.data.total_consumption_fen) : "—"}</strong></article></div>
+    {users.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在读取下级用户…</div> : !users.data?.items.length ? <div className="account-empty">暂无{level === 1 ? "直接" : "间接"}下级</div> : <div className="subordinate-list">{users.data.items.map(user => <article key={user.id}><div className="subordinate-avatar">{user.display_name?.slice(0, 1).toUpperCase() || "U"}</div><div><strong>{user.display_name || "未设置昵称"}</strong><small>{user.account} · 注册于 {new Date(user.created_at).toLocaleDateString("zh-CN")}</small>{level === 2 && user.parent_display_name && <small>直接上级：{user.parent_display_name}</small>}</div><div><strong>{money(user.consumption_fen)}</strong><small>{user.paid_order_count} 笔已支付订单{user.last_paid_at ? ` · 最近 ${new Date(user.last_paid_at).toLocaleDateString("zh-CN")}` : ""}</small></div></article>)}</div>}
+    <div className="referral-pagination"><button className="secondary-button" disabled={page <= 1 || users.isFetching} onClick={() => setPage(value => value - 1)}>上一页</button><span>第 {page} 页</span><button className="secondary-button" disabled={!users.data?.has_more || users.isFetching} onClick={() => setPage(value => value + 1)}>下一页</button></div>
+  </section>;
 }
 
 function WithdrawalForm({ summary }: { summary: ReferralSummary }) {

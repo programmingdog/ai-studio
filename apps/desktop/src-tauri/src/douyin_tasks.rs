@@ -245,22 +245,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 return;
             }
         };
-        let video_url = value_text(&input.video_info, "download_url");
-        if video_url.is_empty() {
-            finish_failed(&app, &task_id, "解析结果中缺少可访问的视频 URL".to_owned());
-            return;
-        }
         let ext = value_text(&input.video_info, "ext").to_ascii_lowercase();
-        let mime_type = match ext.as_str() {
-            "webm" => "video/webm",
-            "mov" => "video/mov",
-            "mpeg" | "mpg" => "video/mpeg",
-            "avi" => "video/avi",
-            "flv" => "video/x-flv",
-            "wmv" => "video/wmv",
-            "3gp" | "3gpp" => "video/3gpp",
-            _ => "video/mp4",
-        };
         let prompt = match link_analysis_prompt(&input) {
             Ok(value) => value,
             Err(error) => {
@@ -269,18 +254,154 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             }
         };
         let title = value_text(&input.video_info, "title");
-        let video_name = format!("{}.{}", if title.is_empty() { "video" } else { &title }, if ext.is_empty() { "mp4" } else { &ext });
-        update_progress(&app, &task_id, "submitting", 0.28, "正在将解析后的视频公网地址提交到服务端");
-        update_progress(&app, &task_id, "analyzing", 0.55, "服务端 AI 正在理解视频并生成分镜脚本");
-        match crate::platform_video_understanding::understand_public_url(
+        let video_name = format!(
+            "{}.{}",
+            if title.is_empty() { "video" } else { &title },
+            if ext.is_empty() { "mp4" } else { &ext }
+        );
+        let temp_dir = match app.path().app_cache_dir() {
+            Ok(path) => path.join("video-understanding-upload"),
+            Err(error) => {
+                finish_failed(&app, &task_id, format!("无法定位视频缓存目录：{error}"));
+                return;
+            }
+        };
+        if let Err(error) = tokio::fs::create_dir_all(&temp_dir).await {
+            finish_failed(&app, &task_id, format!("无法创建视频缓存目录：{error}"));
+            return;
+        }
+        let downloaded_path =
+            temp_dir.join(format!("{}-source.mp4", uuid::Uuid::new_v4().simple()));
+        let compressed_path =
+            temp_dir.join(format!("{}-compressed.mp4", uuid::Uuid::new_v4().simple()));
+        let download_target = downloaded_path.clone();
+        let share_text = input.share_text.clone();
+        let managed = input.managed;
+        let browser_cookie_source = input.browser_cookie_source.clone();
+        let cookie_file_path = input.cookie_file_path.clone();
+        let profile_root = match app.path().app_data_dir() {
+            Ok(path) => path.join("douyin-managed-chrome"),
+            Err(error) => {
+                finish_failed(&app, &task_id, format!("无法定位浏览器登录目录：{error}"));
+                return;
+            }
+        };
+
+        update_progress(
+            &app,
+            &task_id,
+            "downloading",
+            0.18,
+            "正在下载真实视频并固化分析副本",
+        );
+        let download = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let events = if managed {
+                crate::worker::python::download_douyin_auto(
+                    &share_text,
+                    &download_target,
+                    &profile_root,
+                )?
+            } else {
+                crate::worker::python::download_douyin(
+                    &share_text,
+                    &download_target,
+                    browser_cookie_source.as_deref(),
+                    cookie_file_path.as_deref(),
+                )?
+            };
+            for event in events {
+                match event {
+                    crate::worker::python::WorkerEvent::Result(_) => return Ok(()),
+                    crate::worker::python::WorkerEvent::Error(error) => {
+                        return Err(error.to_string())
+                    }
+                    crate::worker::python::WorkerEvent::Progress { .. } => {}
+                }
+            }
+            Err(json!({
+                "code": "VIDEO_DOWNLOAD_EMPTY_RESULT",
+                "message": "视频下载器没有返回结果",
+                "retryable": true
+            })
+            .to_string())
+        })
+        .await;
+        match download {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = tokio::fs::remove_file(&downloaded_path).await;
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&downloaded_path).await;
+                finish_failed(&app, &task_id, format!("视频下载任务异常：{error}"));
+                return;
+            }
+        }
+
+        let downloaded_size = match tokio::fs::metadata(&downloaded_path).await {
+            Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata.len(),
+            _ => {
+                let _ = tokio::fs::remove_file(&downloaded_path).await;
+                finish_failed(&app, &task_id, "视频下载完成，但本地文件为空".to_owned());
+                return;
+            }
+        };
+        let mut analysis_path = downloaded_path.clone();
+        if downloaded_size > crate::ai::LINGKE_INLINE_TARGET {
+            update_progress(
+                &app,
+                &task_id,
+                "compressing",
+                0.42,
+                "视频较大，正在压缩服务端分析副本",
+            );
+            let compression_source = downloaded_path.clone();
+            let compression_target = compressed_path.clone();
+            let compression = tauri::async_runtime::spawn_blocking(move || {
+                crate::media_tools::compress_video_for_inline_analysis(
+                    &compression_source,
+                    &compression_target,
+                    crate::ai::LINGKE_INLINE_TARGET,
+                )
+            })
+            .await;
+            match compression {
+                Ok(Ok(())) => analysis_path = compressed_path.clone(),
+                Ok(Err(error)) => {
+                    let _ = tokio::fs::remove_file(&downloaded_path).await;
+                    let _ = tokio::fs::remove_file(&compressed_path).await;
+                    finish_failed(&app, &task_id, error);
+                    return;
+                }
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&downloaded_path).await;
+                    let _ = tokio::fs::remove_file(&compressed_path).await;
+                    finish_failed(&app, &task_id, format!("视频压缩任务异常：{error}"));
+                    return;
+                }
+            }
+        }
+
+        update_progress(
+            &app,
+            &task_id,
+            "analyzing",
+            0.58,
+            "正在上传视频文件，服务端 AI 随后会理解视频并生成分镜脚本",
+        );
+        let analysis = crate::platform_video_understanding::understand_uploaded_file(
             input.platform_api_base_url.as_deref(),
-            &video_url,
-            mime_type,
+            &analysis_path,
             &prompt,
             video_name,
+            downloaded_size,
         )
-        .await
-        {
+        .await;
+        let _ = tokio::fs::remove_file(&downloaded_path).await;
+        let _ = tokio::fs::remove_file(&compressed_path).await;
+        match analysis {
             Ok(result) => {
                 if let (Ok(connection), Ok(result_json)) =
                     (open(&app), serde_json::to_string(&result))
@@ -650,6 +771,28 @@ pub fn retry_douyin_understanding_task(
         .map_err(|error| error.to_string())?;
     if changed == 0 {
         return Err("只有失败的任务可以重试".to_owned());
+    }
+    drop(connection);
+    spawn_task(app.clone(), task_id.clone());
+    get_task(&app, &task_id)
+}
+
+#[tauri::command]
+pub fn reparse_douyin_understanding_task(
+    app: tauri::AppHandle,
+    task_id: String,
+) -> Result<Value, String> {
+    let connection = open(&app)?;
+    let changed = connection
+        .execute(
+            "UPDATE douyin_understanding_tasks SET status = 'PENDING', stage = 'queued', progress = 0,
+             message = '已重新加入视频解析队列', error_json = NULL, finished_at = NULL, updated_at = ?2
+             WHERE id = ?1 AND source_kind = 'LINK' AND status = 'COMPLETED'",
+            params![task_id, Utc::now().to_rfc3339()],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 0 {
+        return Err("只有已完成的视频链接任务可以重新解析".to_owned());
     }
     drop(connection);
     spawn_task(app.clone(), task_id.clone());

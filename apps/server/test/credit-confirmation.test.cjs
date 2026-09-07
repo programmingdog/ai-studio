@@ -2,16 +2,16 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { ModelGatewayService } = require('../dist/gateway/model-gateway.service');
-const factors = { get: async () => ({ multipliers: { TEXT_GENERATION: 1.5, VIDEO_UNDERSTANDING: 2, IMAGE_GENERATION: 3, VIDEO_GENERATION: 1.25 } }) };
-const target = (capability, extra = {}) => ({ model_id: 'model-1', model_code: 'demo', model_alias: '模型别名', capability, credit_cost: 2, supports_async_tasks: 0, ...extra });
+const factors = { TEXT_GENERATION: 1.5, VIDEO_UNDERSTANDING: 2, IMAGE_GENERATION: 3, VIDEO_GENERATION: 1.25 };
+const target = (capability, extra = {}) => ({ model_id: 'model-1', model_code: 'demo', model_alias: '模型别名', capability, credit_cost: 2, credit_multiplier: factors[capability], supports_async_tasks: 0, ...extra });
 function service() {
-  const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 4 }] }, { decrypt: () => 'test-only' }, factors);
+  const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 4 }] }, { decrypt: () => 'test-only' });
   gateway.defaultTextTarget = async () => target('TEXT_GENERATION');
   gateway.defaultVideoUnderstandingTarget = async () => target('VIDEO_UNDERSTANDING');
   return gateway;
 }
 
-test('read-only text and understanding quotes include their type multiplier', async () => {
+test('read-only text and understanding quotes include their model multiplier', async () => {
   const gateway = service();
   gateway.call = () => assert.fail('A quote must not call a provider');
   const text = await gateway.quote({ capability: 'TEXT_GENERATION', payload: {} });
@@ -22,7 +22,7 @@ test('read-only text and understanding quotes include their type multiplier', as
   assert.equal((await gateway.quote({ capability: 'VIDEO_UNDERSTANDING', payload: {} })).credits, 4);
 });
 
-test('media quote includes resolution price, seconds and type multiplier', async () => {
+test('media quote includes resolution price, seconds and model multiplier', async () => {
   const gateway = service();
   gateway.target = async () => target('IMAGE_GENERATION');
   assert.equal((await gateway.quote({ providerModelId: 'image', payload: { resolution: '2K' } })).credits, 12);
@@ -139,6 +139,34 @@ test('provider failure releases the hold and never settles', async () => {
   assert.equal(state.settled.length, 0);
 });
 
+test('empty video understanding result releases the hold instead of charging a failed parse', async () => {
+  const state = taskHarness();
+  state.gateway.target = async () => target('VIDEO_UNDERSTANDING');
+  state.gateway.call = async () => ({ ok: true, status: 200, value: { candidates: [{ finishReason: 'SAFETY' }] } });
+  await assert.rejects(
+    state.gateway.create('user', { idempotencyKey: 'video-empty', providerModelId: 'model-1', payload: { prompt: '分析视频' }, expectedCredits: 4 }),
+    /没有返回可用的视频解析结果/,
+  );
+  assert.equal(state.released.length, 1);
+  assert.equal(state.settled.length, 0);
+});
+
+test('video understanding disclaimer is treated as a failed parse and releases the hold', async () => {
+  const state = taskHarness();
+  state.gateway.target = async () => target('VIDEO_UNDERSTANDING');
+  state.gateway.call = async () => ({
+    ok: true,
+    status: 200,
+    value: { candidates: [{ content: { parts: [{ text: '抱歉，当前对话中并没有上传视频，因此无法生成分镜。' }] } }] },
+  });
+  await assert.rejects(
+    state.gateway.create('user', { idempotencyKey: 'video-missing', providerModelId: 'model-1', payload: { prompt: '分析视频' }, expectedCredits: 4 }),
+    /未收到或无法读取视频文件/,
+  );
+  assert.equal(state.released.length, 1);
+  assert.equal(state.settled.length, 0);
+});
+
 test('idempotent replay cannot create a second paid call', async () => {
   const gateway = service();
   gateway.existing = async () => ({ task: { id: 'existing' }, idempotent_replay: true });
@@ -155,10 +183,13 @@ test('URL and upload calls preserve confirmed model and price', async () => {
   assert.equal(url.expectedCredits, 4);
   const upload = await gateway.createVideoUnderstandingUpload('user', { idempotencyKey: 'upload', prompt: '分析', providerModelId: 'model-1', expectedCredits: 4, file: { buffer: Buffer.from('test'), mimetype: 'video/mp4', originalname: 'test.mp4', size: 4 } });
   assert.equal(upload.expectedCredits, 4);
+  assert.equal(upload.payload.contents[0].parts[0].inline_data.mime_type, 'video/mp4');
+  assert.equal(Buffer.from(upload.payload.contents[0].parts[0].inline_data.data, 'base64').toString(), 'test');
+  assert.equal(upload.payload.contents[0].parts[1].text, '分析');
 });
 
 test('default text model must be configured, enabled through target lookup, and synchronous', async () => {
-  const gateway = new ModelGatewayService({ query: async () => [] }, {}, factors);
+  const gateway = new ModelGatewayService({ query: async () => [] }, {});
   await assert.rejects(gateway.defaultTextTarget(), /尚未配置/);
   gateway.database.query = async () => [{ text_model_id: 'configured-text' }];
   gateway.target = async id => { assert.equal(id, 'configured-text'); return target('TEXT_GENERATION'); };

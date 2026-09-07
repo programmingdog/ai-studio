@@ -1,32 +1,27 @@
-# 四类模型积分系数
+# 模型独立积分系数
 
-配置中心「大模型积分系数」分别配置文本生成、视频理解、图片生成、视频生成乘数，默认均为 1。可填写 0.000001～1000，最多 6 位小数。
+供应商与模型配置为每个模型保存独立的积分系数，默认值为 1。系数可填写 0.000001～1000，最多 6 位小数。积分定价页面不再提供按模型类型共享的系数配置。
 
-计算规则：
+## 计费规则
 
-- 文本生成、视频理解：模型基础积分 × 对应类型系数。
-- 图片生成：所选分辨率每次基础积分 × 图片生成系数。
-- 视频生成：所选分辨率每秒基础积分 × 视频生成系数 × 视频秒数。
+- 文本生成、视频理解：模型消耗积分数 × 该模型系数。
+- 图片生成：所选分辨率每次消耗积分数 × 该模型系数。
+- 视频生成：所选分辨率每秒消耗积分数 × 该模型系数 × 视频秒数。
 
-例如图片基础积分 3，系数 1.5，最终每次扣 4.5 积分；视频基础积分 2/秒，系数 1.5，10 秒扣 30 积分。小数积分不强制取整为整数，单价和任务总额按账本精度保留 6 位小数，超出部分向上取到 0.000001 积分。计算使用十进制有理数，避免二进制浮点误差和极小时长被舍为零。
+例如图片消耗积分为 3、模型系数为 1.5，最终每次扣 4.5 积分；视频消耗积分为 2/秒、模型系数为 1.5，生成 10 秒最终扣 30 积分。小数积分按账本精度保留 6 位，超出部分向上取到 0.000001 积分。
 
-## 配置与生效
+迁移 `036_provider_model_credit_multiplier.sql` 在 `provider_models` 增加 `credit_multiplier`，已有模型使用默认值 1。创建或编辑模型时通过供应商模型接口一并保存系数，修改记录写入原有模型审计日志。
 
-迁移 `017_model_credit_multipliers.sql` 新建独立的 `model_credit_multipliers` 单例表，不改动现有模型基础积分或历史账单。保存使用版本检查，四种系数与审计日志同事务写入。
+人民币比例和实时自动定价只更新模型或分辨率的基础消耗积分，不把系数写回基础价，因此反复同步不会叠乘。实时同步会在启用、当前 API Key 可用且可换算的渠道中选择最低价格，再按人民币/积分比例向上换算；无法换算的 Token 报价保留原积分。
 
-- `GET /api/v1/admin/configs/credit-multipliers`：需要 `configs.manage`，返回 `{revision, multipliers}`。
-- `PATCH /api/v1/admin/configs/credit-multipliers`：需要 `configs.manage`、`providers.manage`，提交当前 `revision` 和四类 `multipliers`。
+客户端模型目录的 `credit_cost` 与 `resolution_prices[].credit_cost` 是乘系数后的最终单价，同时返回 `base_credit_cost` 和 `credit_multiplier`。后台模型目录保留可编辑的基础 `credit_cost`，并返回 `final_credit_cost` 供预览。
 
-系数与人民币比例/实时自动定价开关独立：自动定价只改基础积分，不把系数乘回数据库，反复同步不会叠乘。未自动换算的 Token 模型、手工定价模型也会在用户调用时应用其类型系数。
-
-客户端模型目录的 `credit_cost` 与每项 `resolution_prices[].credit_cost` 均为最终单价，并附带 `base_credit_cost` 和 `credit_multiplier`，现有客户端模型选择、场景/角色/分镜生成和工作流使用返回价格即可，不再自行乘系数。后台模型目录保留 `credit_cost` 作为可编辑基础价，另返回 `final_credit_cost` 和 `credit_multiplier`。
-
-服务端创建任务时读取相应系数，按最终积分检查余额及预扣，客户端提交的自定义积分或系数不能覆盖。任务保存乘系数后的 `estimated_credits`；成功结算沿用该值，不读取新的系数或再次相乘。失败释放原预扣，幂等重试沿用原任务；不改变已有用户余额、充值套餐或历史任务费用。
-
-修改系数后，新建任务立即使用新系数；客户端下次读取模型列表获得新价格。管理员在用户已选价但未提交时改价，最终仍以服务端创建任务时的配置为准。
+服务端创建任务时从所选模型读取系数，按最终积分检查余额并预扣；客户端请求中的自定义积分或系数不能覆盖。任务保存最终 `estimated_credits`，成功结算沿用该锁定值，不会在结算时读取新系数或再次相乘。
 
 ## 验证
 
-`npm run test:multipliers --workspace @aivs/server`
-
-覆盖默认值、校验、小数计算、四类模型实际估价、分辨率与时长、客户端/后台价格、配置版本冲突、审计、余额不足阻止提交及任务结算锁价。
+```bash
+npm run test:multipliers --workspace @aivs/server
+npm run test:credit-confirmation --workspace @aivs/server
+npm run test:pricing --workspace @aivs/server
+```

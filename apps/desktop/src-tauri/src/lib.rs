@@ -15,9 +15,11 @@ mod long_idea;
 mod media_tools;
 mod platform_session;
 mod platform_media;
+mod platform_script_analysis;
 mod platform_video_understanding;
 mod project;
 mod shot_policy;
+mod script_tasks;
 mod story_policy;
 mod tray;
 mod video_remix;
@@ -27,7 +29,18 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut updater = tauri_plugin_updater::Builder::new();
+    #[cfg(debug_assertions)]
+    let updater_public_key = option_env!("AIVS_UPDATER_PUBLIC_KEY");
+    #[cfg(not(debug_assertions))]
+    let updater_public_key = Some(env!("AIVS_UPDATER_PUBLIC_KEY", "AIVS_UPDATER_PUBLIC_KEY is required for release builds"));
+    if let Some(public_key) = updater_public_key {
+        updater = updater.pubkey(public_key);
+    }
+
     tauri::Builder::default()
+        .plugin(updater.build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -59,6 +72,10 @@ pub fn run() {
             commands::get_idea_development_workflow,
             commands::update_idea_development_workflow,
             commands::analyze_script,
+            script_tasks::create_script_analysis_task,
+            script_tasks::list_script_analysis_tasks,
+            script_tasks::reanalyze_script_task,
+            script_tasks::delete_script_analysis_task,
             commands::resolve_douyin_url,
             commands::resolve_douyin_auto,
             commands::get_douyin_browser_availability,
@@ -70,6 +87,7 @@ pub fn run() {
             douyin_tasks::list_local_video_understanding_tasks,
             douyin_tasks::create_local_video_understanding_task,
             douyin_tasks::retry_douyin_understanding_task,
+            douyin_tasks::reparse_douyin_understanding_task,
             douyin_tasks::retry_local_video_understanding_task,
             douyin_tasks::delete_video_understanding_task,
             douyin_tasks::save_local_video_understanding_task,
@@ -87,6 +105,9 @@ pub fn run() {
             platform_session::get_platform_session,
             platform_session::save_platform_session,
             platform_session::clear_platform_session,
+            platform_session::get_remembered_credentials,
+            platform_session::save_remembered_credential,
+            platform_session::delete_remembered_credential,
             platform_session::activate_user_context,
             media_tools::probe_local_video,
             ai::analyze_video,

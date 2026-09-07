@@ -52,7 +52,7 @@ test('light surface and semantic text tokens have readable contrast', () => {
 test('no original dark surface remains, including rules masked by later overrides', () => {
   // Saturated brand buttons, tiny indicators and progress fills are intentional;
   // content panels, controls, tags, previews and dialogs are never exempted.
-  const accents = /^(?:\.brand-mark|nav button\.active::before|\.status-dot|\.welcome-glow|\.primary-button(?:,|$)|\.account-identity-avatar|\.asset-library-card\.selected \.asset-selection-check|\.progress i|\.agent-run-progress b|\.generation-record-progress i|\.auto-workflow-overall b|\.bulk-video-overall-progress b|\.idea-workflow-overall b|\.idea-segment-progress i\.(?:active|completed)|\.douyin-task-state > i b|\.video-remix-progress i|\.creative-type-group-mark)$/;
+  const accents = /^(?:\.brand-mark|nav button\.active::before|\.status-dot|\.welcome-glow|\.primary-button(?:,|$)|\.account-identity-avatar|\.asset-library-card\.selected \.asset-selection-check|\.progress i|\.agent-run-progress b|\.generation-record-progress i|\.auto-workflow-overall b|\.bulk-video-overall-progress b|\.idea-workflow-overall b|\.idea-segment-progress i\.(?:active|completed)|\.douyin-task-state > i b|\.video-remix-progress i|\.script-analysis-progress > i b|\.creative-type-group-mark)$/;
   root.walkDecls(/^background/, d => {
     if (d.parent.selector.startsWith('::-webkit-scrollbar-thumb')) return;
     if (accents.test(d.parent.selector.split(',')[0].trim())) return;
@@ -80,4 +80,16 @@ test('component paint is not hidden by blanket important background resets', () 
   });
   assert.match(css, /\.media-resolution-list label:has\(input:checked\)/);
   assert.match(css, /button:focus-visible/);
+});
+
+test('inverted secondary button hovers keep readable purple text', () => {
+  const hover = root.nodes.find(node => node.type === 'rule' && node.selector.includes('.secondary-button:hover:not(:disabled)'));
+  assert.ok(hover);
+  const declarations = Object.fromEntries(hover.nodes.filter(node => node.type === 'decl').map(node => [node.prop, node]));
+  assert.equal(declarations.color.value, '#563e9e');
+  assert.equal(declarations.color.important, true);
+  assert.equal(declarations.background.value, '#f8f6fd');
+  assert.equal(declarations.background.important, true);
+  assert.ok(contrast(declarations.color.value, declarations.background.value) >= 4.5);
+  assert.match(css, /\.active-workflow-button[\s\S]*\.project-video-actions \.batch-video-button[\s\S]*color: #fff !important/);
 });

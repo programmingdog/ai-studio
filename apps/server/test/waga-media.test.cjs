@@ -23,7 +23,7 @@ const schemas = {
   'viduq3': [field('images'),field('aspect_ratio',['9:16']),field('resolution',['720p']),field('duration',['4','8','12','16']),field('model_variant',['turbo','pro']),field('off_peak',['false','true'])],
 };
 function target(code) { return { model_code:code, model_id:'model', model_alias:code, capability:wagaProfiles[code].video?'VIDEO_GENERATION':'IMAGE_GENERATION',
-  api_protocol:'lingkeai_media', base_url:'https://example.com',generation_endpoint:'/v1/media/generate',provider_config_json:{},model_config_json:{},parameter_schema_json:schemas[code] }; }
+  api_protocol:'lingkeai_media', credit_multiplier:1, base_url:'https://example.com',generation_endpoint:'/v1/media/generate',provider_config_json:{},model_config_json:{},parameter_schema_json:schemas[code] }; }
 function payload(code) { const p=wagaProfiles[code]; return { prompt:'fixture prompt', aspect_ratio:'9:16', resolution:code==='hailuo-h3-quannengcankao'?'2k':p.video?'720p':'2K', reference_images:[ref], ...(p.video?{seconds:code==='viduq3'?12:10,version:null}:{}) }; }
 test('all 12 media adapters send documented fields, required parameters and URL arrays', () => {
   const gateway = new ModelGatewayService({},{});
@@ -92,6 +92,6 @@ test('catalog uses live unavailable flags and never exposes obsolete tiers', asy
   const row={...target(code),id:'model',provider_id:'p',provider_code:'wagaai',config_json:{},credit_cost:1,parameter_schema_json:[]};
   const prices=[{provider_model_id:'model',resolution:'480p',credit_cost:1},{provider_model_id:'model',resolution:'720p',credit_cost:2}];
   const service=new ClientConfigService({query:async sql=>sql.includes('FROM provider_model_resolution_prices')?prices:[row]},
-    {get:async()=>({multipliers:{VIDEO_GENERATION:1}})}, {schema:async()=>schemas[code]});
+    {schema:async()=>schemas[code]});
   assert.deepEqual((await service.models())[0].resolution_prices.map(p=>p.resolution),['720p']);
 });

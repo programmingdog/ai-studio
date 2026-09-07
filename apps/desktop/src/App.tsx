@@ -1,33 +1,39 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { WorkflowStartModal, type WorkflowStartChoice, type PlannedMedia } from "./components/WorkflowStartModal";
 import { runningWorkflows, setWorkflowQuiet } from "./services/workflowQuiet";
 import { mergeTaskSnapshots, workflowErrorMessage } from "./services/workflowState";
 import {
   AlertTriangle, BookOpen, Boxes, Check, CheckCircle2, ChevronRight, CircleUserRound, Clapperboard, Coins, Copy, Download, FolderOpen,
   FileDown, FileText, History, Image as ImageIcon, Images, Lightbulb, Link2, LoaderCircle, Lock, LockOpen, Play, Plus, Rocket, RotateCcw, Save, ScanSearch, ScrollText, Settings, Sparkles, Trash2, Upload, WandSparkles, X,
+  Maximize2,
 } from "lucide-react";
-import type { AgentClientAction, AiSettings, ApplicationLogEntry, ApplicationLogLevel, AssetLibraryItem, AutomaticWorkflowStage, AutomaticWorkflowTaskSnapshot, BrowserCookieSource, CanonicalProject, Character, CharacterState, CreativeTypePreset, CreateDouyinUnderstandingTaskInput, CreateImageGenerationTaskItem, CreateProjectInput, CreateShotVideoGenerationInput, CreationSpec, DouyinDownloadResult, DouyinUnderstandingTask, DouyinVideoInfo, Episode, GenerationRecord, GenerationReferenceAssetInput, IdeaDevelopmentAction, IdeaDevelopmentWorkflow, ImageGenerationTask, ProjectBundle, ProjectListItem, ProjectSourceType, Scene, Shot, VideoCreditResolution, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask } from "@aivs/schemas";
-import { chooseCookieFile, chooseProjectDirectory, chooseProjectImage, chooseScriptFile, chooseVideoSavePath, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteVideoRemixTask, deleteVideoUnderstandingTask, downloadDouyinVideo, downloadDouyinVideoAuto, exportAllGenerationAssets, getActiveAutomaticWorkflow, getAiSettings, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importProjectReferenceImage, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listVideoRemixTasks, loadProject, readProjectAsset, resolveDouyinAuto, resolveDouyinUrl, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
+import type { AgentClientAction, AiSettings, ApplicationLogEntry, ApplicationLogLevel, AssetLibraryItem, AutomaticWorkflowStage, AutomaticWorkflowTaskSnapshot, BrowserCookieSource, CanonicalProject, Character, CharacterState, CreativeTypePreset, CreateDouyinUnderstandingTaskInput, CreateImageGenerationTaskItem, CreateProjectInput, CreateShotVideoGenerationInput, CreationSpec, DouyinDownloadResult, DouyinUnderstandingTask, DouyinVideoInfo, Episode, GenerationRecord, GenerationReferenceAssetInput, IdeaDevelopmentAction, IdeaDevelopmentWorkflow, ImageGenerationTask, ProjectBundle, ProjectListItem, ProjectSourceType, Prop, Scene, ScriptAnalysisTask, Shot, VideoCreditResolution, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask } from "@aivs/schemas";
+import { chooseCookieFile, chooseProjectDirectory, chooseProjectImage, chooseScriptFile, chooseVideoSavePath, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createScriptAnalysisTask, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteScriptAnalysisTask, deleteVideoRemixTask, deleteVideoUnderstandingTask, downloadDouyinVideo, downloadDouyinVideoAuto, exportAllGenerationAssets, getActiveAutomaticWorkflow, getAiSettings, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importProjectReferenceImage, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listScriptAnalysisTasks, listVideoRemixTasks, loadProject, readProjectAsset, reanalyzeScriptTask, reparseDouyinUnderstandingTask, resolveDouyinAuto, resolveDouyinUrl, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
 import { type WorkspacePage, useStudioStore } from "./store";
 import { AssetLibraryPickerModal } from "./components/AssetLibraryPickerModal";
 import { AiSettingsModal } from "./components/AiSettingsModal";
 import { AccountCenterModal } from "./components/AccountCenterModal";
 import { ModelCreditNotice } from "./components/CreditConfirmationHost";
+import { ImmediateCreditPurchaseButton } from "./components/CreditPurchaseHost";
+import { isPlatformSessionExpired, requestSessionReauthentication } from "./components/SessionReauthenticationHost";
 import { AgentChatModal } from "./components/AgentChatModal";
 import { VideoUnderstandingPanel } from "./components/VideoUnderstandingPanel";
-import { VisualMentionEditor, type VisualMentionItem } from "./components/VisualMentionEditor";
-import { activatePlatformUserContext, bindPlatformSessionUser, clearInvalidPlatformSession, getCreditBalance, getPlatformUser, listCreativeTypeCategories, listCreativeTypes, listMediaModels, listVisualStyleCategories, listVisualStyles, loadPlatformSession, platformApiBaseUrl, PlatformApiError, type PlatformMediaModel } from "./services/platform";
+import { VideoPromptFullscreenEditor, VisualMentionEditor, type VisualMentionItem } from "./components/VisualMentionEditor";
+import { activatePlatformUserContext, bindPlatformSessionUser, getCreditBalance, getMediaCreditQuote, getPlatformUser, getScriptAnalysisQuote, listCreativeTypeCategories, listCreativeTypes, listMediaModels, listVisualStyleCategories, listVisualStyles, loadPlatformSession, platformApiBaseUrl, PlatformApiError, type ModelCreditQuote, type PlatformMediaModel } from "./services/platform";
 import { CHARACTER_IMAGE_PROMPT } from "./prompts/characterImage";
 import { buildVideoUnderstandingPrompt, type FixedStoryboardSeconds, type StoryboardUnderstandingMode, type StoryboardUnderstandingSelection } from "./videoUnderstandingModes";
 import { supportedLocales, useI18n, type AppLocale } from "./i18n";
 import type { MessageKey } from "./i18n/locales";
 import { useProductBrand } from "./brand";
 import type { AutomaticWorkflowSnapshot } from "@aivs/schemas";
+import { creditRefundCopy, creditRetryCopy, creditText } from "./services/creditCopy";
+import { addManualShot } from "./manualShot";
+import { prepareVideoPromptSubmission, type VideoPromptMention } from "./videoPromptReferences";
 
 const defaultSpec: CreationSpec = {
   project_name: "齐天一小时", input_type: "IDEA", target_duration: 60, aspect_ratio: "9:16",
@@ -39,10 +45,12 @@ type CreateMode = Exclude<ProjectSourceType, "SCRIPT_TEXT"> | "DOUYIN_URL" | "VI
 type CookieSource = BrowserCookieSource | "managed" | "file" | "";
 type DouyinTaskReviewState = { script: string; spec: CreationSpec; rootPath: string };
 type MediaModelSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string };
+type MediaPickerItem = { key: string; seconds?: number };
+type MediaPickerRequest = { id: string; capability: PlatformMediaModel["capability"]; title: string; projectPath: string; items: MediaPickerItem[]; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void };
 const MEDIA_PICKER_EVENT = "aivs:pick-media-model";
 
-function requestMediaModel(capability: PlatformMediaModel["capability"], title: string): Promise<MediaModelSelection> {
-  return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(MEDIA_PICKER_EVENT, { detail: { capability, title, resolve, reject } })));
+function requestMediaModel(capability: PlatformMediaModel["capability"], title: string, projectPath: string, items: MediaPickerItem[]): Promise<MediaModelSelection> {
+  return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(MEDIA_PICKER_EVENT, { detail: { id: crypto.randomUUID(), capability, title, projectPath, items, resolve, reject } satisfies MediaPickerRequest })));
 }
 
 function mediaImageFields(selection: MediaModelSelection) {
@@ -66,21 +74,70 @@ function restoredWorkflowMedia(snapshot: AutomaticWorkflowSnapshot): { image: Me
 }
 
 function MediaModelSelectionHost() {
-  const [request, setRequest] = useState<{ capability: PlatformMediaModel["capability"]; title: string; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void }>();
+  const [request, setRequest] = useState<MediaPickerRequest>();
+  const requestRef = useRef<MediaPickerRequest | undefined>(undefined);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedResolution, setSelectedResolution] = useState("");
+  const [approving, setApproving] = useState(false);
+  const [approvalError, setApprovalError] = useState("");
   useEffect(() => {
-    const listener = (event: Event) => { const detail = (event as CustomEvent).detail; setSelectedModelId(""); setSelectedResolution(""); setRequest((current) => { current?.reject(new Error("已切换到新的模型选择请求")); return detail; }); };
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<MediaPickerRequest>).detail;
+      setSelectedModelId(""); setSelectedResolution(""); setApprovalError("");
+      setRequest((current) => { current?.reject(new Error("已切换到新的模型选择请求")); return detail; });
+      requestRef.current = detail;
+    };
     window.addEventListener(MEDIA_PICKER_EVENT, listener);
     return () => window.removeEventListener(MEDIA_PICKER_EVENT, listener);
   }, []);
   const models = useQuery({ queryKey: ["platform-media-models", request?.capability], queryFn: () => listMediaModels(request!.capability), enabled: Boolean(request), staleTime: 0 });
+  const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance, enabled: Boolean(request), refetchInterval: request ? 5000 : false, retry: false });
+  const quotes = useQuery({
+    queryKey: ["media-model-picker-quotes", request?.id, selectedModelId, selectedResolution],
+    enabled: Boolean(request && selectedModelId && selectedResolution),
+    retry: false,
+    queryFn: async () => {
+      const owner = request!;
+      const cache = new Map<string, ReturnType<typeof getMediaCreditQuote>>();
+      return Promise.all(owner.items.map(async (item) => {
+        const cacheKey = String(item.seconds ?? "image");
+        if (!cache.has(cacheKey)) cache.set(cacheKey, getMediaCreditQuote(selectedModelId, selectedResolution, item.seconds));
+        const quote = await cache.get(cacheKey)!;
+        if (!Number.isFinite(quote.credits) || quote.credits < 0) throw new Error("暂时查不到所需积分，请稍后再试。");
+        return { key: item.key, provider_model_id: selectedModelId, resolution: selectedResolution, seconds: item.seconds, credits: quote.credits, capability: owner.capability };
+      }));
+    },
+  });
   if (!request) return null;
   const selectedModel = models.data?.find((model) => model.id === selectedModelId);
   const selectedPrice = selectedModel?.resolution_prices.find((price) => price.resolution === selectedResolution);
-  const close = () => { setRequest(undefined); request.reject(new Error("已取消选择生成模型")); };
-  const confirm = () => { if (!selectedModel || !selectedPrice) return; setRequest(undefined); request.resolve({ model: selectedModel, resolution: selectedPrice.resolution, creditCost: selectedPrice.credit_cost }); };
-return <div className="modal-backdrop media-model-picker-backdrop"><section className="media-model-picker"><header><div><span className="section-label">选择生成方案</span><h2>{request.title}</h2><p>{request.capability === "VIDEO_GENERATION" ? "先选清晰度，按视频秒数计算积分。开始前会告诉你一共需要多少分。" : "先选清晰度，下方是每张图片需要的积分。开始前会告诉你一共需要多少分。"}</p></div><button type="button" onClick={close}><X size={18} /></button></header><div className="media-model-options">{models.isLoading ? <div className="media-model-empty"><LoaderCircle className="spin" />正在加载可选方案…</div> : models.error ? <div className="error-banner">暂时无法加载，请稍后再试：{readableError(models.error)}</div> : models.data?.length ? models.data.map((model) => <article className={selectedModelId === model.id ? "active" : ""} key={model.id}><button type="button" className="media-model-main" onClick={() => { setSelectedModelId(model.id); setSelectedResolution(model.resolution_prices[0]?.resolution || ""); }}><strong>{model.model_alias}</strong><small>{model.provider_name} · {model.display_name}</small>{model.generation_notice && <small>{model.generation_notice}</small>}</button><div className="media-resolution-list">{model.resolution_prices.map((price) => <label key={price.resolution}><input type="radio" name="media-resolution" checked={selectedModelId === model.id && selectedResolution === price.resolution} onChange={() => { setSelectedModelId(model.id); setSelectedResolution(price.resolution); }} /><span>{price.label || price.resolution}</span><em>{price.credit_cost} 积分{request.capability === "VIDEO_GENERATION" ? "/秒" : "/张"}</em></label>)}</div></article>) : <div className="media-model-empty">暂时没有可用的生成方案，请稍后再试或联系客服。</div>}</div><footer><button className="secondary-button" type="button" onClick={close}>取消</button><button className="primary-button" type="button" onClick={confirm} disabled={!selectedPrice}>确认使用</button></footer></section></div>;
+  const total = quotes.data ? Math.round(quotes.data.reduce((sum, item) => sum + Math.round(item.credits * 1_000_000), 0)) / 1_000_000 : undefined;
+  const insufficient = total !== undefined && balance.data !== undefined && balance.data.available < total;
+  const purchaseRequired = insufficient || isInsufficientBalanceError(approvalError);
+  const videoSeconds = request.items.reduce((sum, item) => sum + (item.seconds ?? 0), 0);
+  const close = () => { if (approving) return; requestRef.current = undefined; setRequest(undefined); request.reject(new Error("已取消选择生成模型和积分确认")); };
+  const confirm = async () => {
+    if (!selectedModel || !selectedPrice || !quotes.data || total === undefined || insufficient || !balance.data || approving) return;
+    const owner = request;
+    setApproving(true); setApprovalError("");
+    let workflowCreditId: string | undefined;
+    try {
+      const currentBalance = await getCreditBalance();
+      if (currentBalance.available < total) throw new Error(`积分不足，本次需要 ${creditText(total)} 分，当前可用 ${creditText(currentBalance.available)} 分。`);
+      workflowCreditId = await invoke<string>("approve_workflow_credit", { projectPath: owner.projectPath, apiBase: platformApiBaseUrl, items: quotes.data });
+      if (requestRef.current !== owner) {
+        await invoke("stop_workflow_credit", { projectPath: owner.projectPath, id: workflowCreditId }).catch(() => undefined);
+        return;
+      }
+      requestRef.current = undefined; setRequest(undefined);
+      owner.resolve({ model: selectedModel, resolution: selectedPrice.resolution, creditCost: selectedPrice.credit_cost, workflowCreditId });
+    } catch (error) {
+      if (workflowCreditId) await invoke("stop_workflow_credit", { projectPath: owner.projectPath, id: workflowCreditId }).catch(() => undefined);
+      if (requestRef.current === owner) setApprovalError(readableError(error));
+    } finally { setApproving(false); }
+  };
+  const ready = Boolean(selectedPrice && quotes.data && !quotes.isFetching && !quotes.error && balance.data && !balance.error && !insufficient && !approving);
+  return <div className="modal-backdrop media-model-picker-backdrop"><section className="media-model-picker"><header><div><span className="section-label">生成方案与积分确认</span><h2>{request.title}</h2><p>选择模型和清晰度后，直接在本窗口确认积分并开始生成，不再进行第二次确认。</p></div><button type="button" disabled={approving} onClick={close}><X size={18} /></button></header><div className="media-model-picker-body"><div className="media-model-options">{models.isLoading ? <div className="media-model-empty"><LoaderCircle className="spin" />正在加载可选方案…</div> : models.error ? <div className="error-banner">暂时无法加载，请稍后再试：{readableError(models.error)}</div> : models.data?.length ? models.data.map((model) => <article className={selectedModelId === model.id ? "active" : ""} key={model.id}><button type="button" className="media-model-main" disabled={approving} onClick={() => { setSelectedModelId(model.id); setSelectedResolution(model.resolution_prices[0]?.resolution || ""); setApprovalError(""); }}><strong>{model.model_alias}</strong><small>{model.provider_name} · {model.display_name}</small>{model.generation_notice && <small>{model.generation_notice}</small>}</button><div className="media-resolution-list">{model.resolution_prices.map((price) => <label key={price.resolution}><input type="radio" name="media-resolution" disabled={approving} checked={selectedModelId === model.id && selectedResolution === price.resolution} onChange={() => { setSelectedModelId(model.id); setSelectedResolution(price.resolution); setApprovalError(""); }} /><span>{price.label || price.resolution}</span><em>{creditText(price.credit_cost)} 积分{request.capability === "VIDEO_GENERATION" ? "/秒" : "/张"}</em></label>)}</div></article>) : <div className="media-model-empty">暂时没有可用的生成方案，请稍后再试或联系客服。</div>}</div><section className="media-model-credit-summary"><header><div><Coins size={19} /><strong>本次积分确认</strong></div><b>{total === undefined ? "—" : creditText(total)} 积分</b></header><div><span>生成内容</span><strong>{request.capability === "VIDEO_GENERATION" ? `${request.items.length} 段视频 · ${creditText(videoSeconds)} 秒` : `${request.items.length} 张图片`}</strong></div><div><span>剩余可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 分` : "正在查询…"}</strong></div><small>{creditRefundCopy}{creditRetryCopy}</small>{quotes.isFetching && <p><LoaderCircle className="spin" size={15} />正在计算准确积分…</p>}{quotes.error && <p className="error-banner">{readableError(quotes.error)}</p>}{balance.error && <p className="error-banner">暂时查不到剩余积分，请稍后再试。</p>}{purchaseRequired && <div className="insufficient-credit-callout"><p className="error-banner">{insufficient ? <>积分不足，本次需要 {creditText(total!)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : approvalError}</p><ImmediateCreditPurchaseButton onPurchased={() => { setApprovalError(""); void balance.refetch(); }} /></div>}{approvalError && !purchaseRequired && <p className="error-banner">{approvalError}</p>}</section></div><footer><button className="secondary-button" type="button" disabled={approving} onClick={close}>取消，不扣分</button><button className="primary-button" type="button" onClick={() => void confirm()} disabled={!ready}>{approving ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{approving ? "正在确认…" : total === undefined ? "确认并开始生成" : `确认并开始生成（${creditText(total)} 积分）`}</button></footer></section></div>;
 }
 
 function readableError(error: unknown): string {
@@ -233,8 +290,40 @@ function GroupedVisualStyleSelect({ value, onChange, presets, categories, automa
 
 const navItems: Array<[WorkspacePage, MessageKey, typeof BookOpen]> = [
   ["story", "story", BookOpen], ["scenes", "scenes", Boxes], ["characters", "characters", CircleUserRound],
+  ["props", "props", WandSparkles],
   ["storyboard", "storyboard", Clapperboard],
 ];
+
+function useProgressiveRenderCount(total: number, resetKey: string, initialCount: number, batchSize: number) {
+  const [visibleCount, setVisibleCount] = useState(() => Math.min(total, initialCount));
+  useEffect(() => {
+    setVisibleCount(Math.min(total, initialCount));
+  }, [resetKey]);
+  useEffect(() => {
+    if (visibleCount > total) {
+      setVisibleCount(total);
+      return;
+    }
+    if (visibleCount >= total) return;
+    const frame = window.requestAnimationFrame(() => {
+      setVisibleCount((current) => Math.min(total, current + batchSize));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [batchSize, total, visibleCount]);
+  return visibleCount;
+}
+
+function WorkspacePageLoading({ label }: { label: string }) {
+  return <div className="workspace-page-loading" role="status" aria-live="polite">
+    <div className="workspace-page-loading-heading"><LoaderCircle className="spin" size={24} /><div><strong>正在打开{label}</strong><span>后台并发加载项目数据与本地素材…</span></div></div>
+    <div className="workspace-page-loading-grid" aria-hidden="true"><i /><i /><i /></div>
+  </div>;
+}
+
+function ProgressiveListLoading({ visible, total, label }: { visible: number; total: number; label: string }) {
+  if (visible >= total) return null;
+  return <div className="progressive-list-loading" role="status"><LoaderCircle className="spin" size={16} /><span>正在载入{label} {visible}/{total}</span></div>;
+}
 
 function AccountIdentity({ onOpenAccount }: { onOpenAccount: () => void }) {
   const session = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
@@ -261,25 +350,62 @@ function AccountEntry() {
 
 export function App() {
   const { t } = useI18n();
-  const { bundle, page, dirty, setBundle, setPage, markSaved, setPendingAgentProduction } = useStudioStore();
+  const { bundle, page, dirty, revision, setBundle, setPage, markSaved, setPendingAgentProduction } = useStudioStore();
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [showGenerationRecords, setShowGenerationRecords] = useState(false);
-  const [showApplicationLogs, setShowApplicationLogs] = useState(false);
   const [showAgentChat, setShowAgentChat] = useState(false);
   const queryClient = useQueryClient();
+  const [renderedPage, setRenderedPage] = useState<WorkspacePage | null>(page);
+  const navigationFrame = useRef<number | undefined>(undefined);
+  const navigationTarget = useRef<WorkspacePage>(page);
+  const managedNavigation = useRef<WorkspacePage | null>(null);
   const platformSession = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
   const platformUser = useQuery({ queryKey: ["platform-user"], queryFn: getPlatformUser, enabled: Boolean(platformSession.data), retry: false });
   const authenticated = Boolean(platformSession.data?.user_id && platformSession.data.user_id === platformUser.data?.id);
   const authenticationChecking = platformSession.isLoading || Boolean(platformSession.data && platformUser.isLoading) || Boolean(platformUser.data && !authenticated);
+  const [mainWindowReady, setMainWindowReady] = useState(false);
+  const [windowPreparationError, setWindowPreparationError] = useState("");
+  const [windowPreparationAttempt, setWindowPreparationAttempt] = useState(0);
+  const windowPreparation = useRef<Promise<void>>(Promise.resolve());
   const activeUserId = useRef<string | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const autoSaveRetryTimer = useRef<number | undefined>(undefined);
+  const [autoSaveError, setAutoSaveError] = useState("");
+  const [autoSaveAttempt, setAutoSaveAttempt] = useState(0);
+  useEffect(() => () => {
+    if (navigationFrame.current !== undefined) window.cancelAnimationFrame(navigationFrame.current);
+  }, []);
   useEffect(() => {
-    if (authenticationChecking || !("__TAURI_INTERNALS__" in window)) return;
+    navigationTarget.current = page;
+    if (managedNavigation.current === page) return;
+    if (navigationFrame.current !== undefined) window.cancelAnimationFrame(navigationFrame.current);
+    navigationFrame.current = undefined;
+    setRenderedPage(page);
+  }, [bundle?.project.id, page]);
+  useEffect(() => {
+    setMainWindowReady(false);
+    setWindowPreparationError("");
+    if (authenticationChecking) return;
+    if (!("__TAURI_INTERNALS__" in window)) { setMainWindowReady(authenticated); return; }
+    let cancelled = false;
     const appWindow = getCurrentWindow();
-    void (async () => {
+    // Serialize native resizing so an earlier login/logout transition cannot finish last.
+    const preparation = windowPreparation.current.then(async () => {
+      if (cancelled) return;
       if (authenticated) {
         await appWindow.setResizable(true);
-        await appWindow.maximize();
-        await appWindow.setMinSize(new LogicalSize(1080, 720));
+        await appWindow.unmaximize();
+        const monitor = await currentMonitor();
+        const availableSize = monitor?.workArea.size.toLogical(monitor.scaleFactor);
+        const width = Math.max(1, Math.floor((availableSize?.width ?? window.screen.availWidth) * 0.8));
+        const height = Math.max(1, Math.floor((availableSize?.height ?? window.screen.availHeight) * 0.8));
+        await appWindow.setMinSize(null);
+        await appWindow.setSize(new LogicalSize(width, height));
+        await appWindow.center();
+        await appWindow.setMinSize(new LogicalSize(Math.min(1080, width), Math.min(720, height)));
+        // Allow the webview to paint at its new dimensions before mounting the workspace.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (!cancelled) setMainWindowReady(true);
         return;
       }
       await appWindow.unmaximize();
@@ -287,8 +413,13 @@ export function App() {
       await appWindow.setSize(new LogicalSize(560, 720));
       await appWindow.center();
       await appWindow.setResizable(false);
-    })().catch(error => console.error("调整登录窗口失败", error));
-  }, [authenticated, authenticationChecking]);
+    }).catch(error => {
+      console.error("调整窗口失败", error);
+      if (!cancelled) setWindowPreparationError("窗口调整失败，请重试。");
+    });
+    windowPreparation.current = preparation;
+    return () => { cancelled = true; };
+  }, [authenticated, authenticationChecking, windowPreparationAttempt]);
   useEffect(() => {
     const userId = platformUser.data?.id;
     if (!userId || platformSession.data?.user_id === userId) return;
@@ -310,12 +441,8 @@ export function App() {
   }, [platformUser.data?.id, queryClient, setBundle]);
   useEffect(() => {
     if (!(platformUser.error instanceof PlatformApiError) || platformUser.error.status !== 401) return;
-    void clearInvalidPlatformSession().finally(() => {
-      queryClient.setQueryData(["platform-session"], null);
-      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "platform-session" });
-      setBundle(undefined);
-    });
-  }, [platformUser.error, queryClient, setBundle]);
+    requestSessionReauthentication(platformUser.error);
+  }, [platformUser.error]);
   const handleAgentProjectAction = async (action: AgentClientAction) => {
     const opened = await loadProject(action.project_path);
     if (action.type === "open_project_and_start_production" && (action.production_mode === "fast" || action.production_mode === "storyboard")) {
@@ -324,10 +451,72 @@ export function App() {
     setBundle(opened);
     setShowAgentChat(false);
   };
+  const enqueueSave = useCallback((snapshot: ProjectBundle, snapshotRevision: number) => {
+    const run = saveQueue.current.catch(() => undefined).then(async () => {
+      await saveCanonical(snapshot);
+      markSaved(snapshotRevision);
+    });
+    saveQueue.current = run.catch(() => undefined);
+    return run;
+  }, [markSaved]);
   const save = useMutation({
-    mutationFn: () => saveCanonical(bundle!),
-    onSuccess: (result) => { setBundle(result); markSaved(); },
+    mutationFn: ({ snapshot, snapshotRevision }: { snapshot: ProjectBundle; snapshotRevision: number }) => enqueueSave(snapshot, snapshotRevision),
+    onMutate: () => setAutoSaveError(""),
+    onError: (error) => setAutoSaveError(readableError(error)),
   });
+  useEffect(() => {
+    if (autoSaveRetryTimer.current !== undefined) {
+      window.clearTimeout(autoSaveRetryTimer.current);
+      autoSaveRetryTimer.current = undefined;
+    }
+    if (!dirty || !bundle?.canonical) return;
+    const snapshot = bundle;
+    const snapshotRevision = revision;
+    const timer = window.setTimeout(() => {
+      setAutoSaveError("");
+      void enqueueSave(snapshot, snapshotRevision).catch((error) => {
+        setAutoSaveError(readableError(error));
+        autoSaveRetryTimer.current = window.setTimeout(() => setAutoSaveAttempt((attempt) => attempt + 1), 5_000);
+      });
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [autoSaveAttempt, bundle, dirty, enqueueSave, revision]);
+  useEffect(() => () => {
+    if (autoSaveRetryTimer.current !== undefined) window.clearTimeout(autoSaveRetryTimer.current);
+  }, []);
+  const prefetchWorkspacePage = (target: WorkspacePage) => {
+    const projectPath = bundle?.project.project_path;
+    if (!projectPath) return;
+    const requests: Promise<void>[] = [];
+    if (["story", "characters", "scenes", "props", "storyboard"].includes(target)) {
+      requests.push(queryClient.prefetchQuery({ queryKey: ["image-generation-tasks", projectPath], queryFn: () => listImageGenerationTasks(projectPath) }));
+    }
+    if (["story", "storyboard"].includes(target)) {
+      requests.push(queryClient.prefetchQuery({ queryKey: ["generation-records", projectPath], queryFn: () => listGenerationRecords(projectPath) }));
+    }
+    if (["story", "characters", "storyboard"].includes(target)) {
+      requests.push(queryClient.prefetchQuery({ queryKey: ["ai-settings"], queryFn: getAiSettings }));
+    }
+    void Promise.allSettled(requests);
+  };
+  const navigateWorkspacePage = (target: WorkspacePage) => {
+    if (target === page && target === renderedPage) return;
+    navigationTarget.current = target;
+    managedNavigation.current = target;
+    if (navigationFrame.current !== undefined) window.cancelAnimationFrame(navigationFrame.current);
+    setPage(target);
+    setRenderedPage(null);
+    prefetchWorkspacePage(target);
+    navigationFrame.current = window.requestAnimationFrame(() => {
+      navigationFrame.current = window.requestAnimationFrame(() => {
+        navigationFrame.current = undefined;
+        if (navigationTarget.current === target) {
+          managedNavigation.current = null;
+          setRenderedPage(target);
+        }
+      });
+    });
+  };
   const startupWorkflowRecovery = useQuery({
     queryKey: ["startup-active-automatic-workflow"],
     queryFn: async (): Promise<ProjectBundle | null> => {
@@ -354,18 +543,18 @@ export function App() {
     if (!bundle && startupWorkflowRecovery.data) setBundle(startupWorkflowRecovery.data);
   }, [bundle, setBundle, startupWorkflowRecovery.data, startupWorkflowRecovery.isLoading]);
 
-  if (authenticationChecking) return <div className="account-auth-gate"><LoaderCircle className="spin" size={28} /><span>正在验证登录状态…</span></div>;
+  if (authenticationChecking || (authenticated && !mainWindowReady)) return <div className="account-auth-gate" role="status" aria-live="polite">{windowPreparationError ? <><span>{windowPreparationError}</span><button className="primary-button" onClick={() => setWindowPreparationAttempt((attempt) => attempt + 1)}>重试</button></> : <><LoaderCircle className="spin" size={28} aria-hidden="true" /><span>{authenticationChecking ? "正在验证登录状态…" : "正在打开主界面…"}</span></>}</div>;
   if (!authenticated) return <AccountCenterModal required onClose={() => undefined} />;
-  if (!bundle?.canonical) return <><CreateProjectScreen initialBundle={bundle} onReady={setBundle} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} onOpenLogs={() => setShowApplicationLogs(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showApplicationLogs && <ApplicationLogsModal onClose={() => setShowApplicationLogs(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}</>;
+  if (!bundle?.canonical) return <><CreateProjectScreen initialBundle={bundle} onReady={setBundle} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}</>;
 
   return (
     <div className="studio-shell">
       <aside className="sidebar">
         <AccountEntry />
-        <div className="project-chip"><div className="project-avatar">{bundle.project.name.slice(0, 1)}</div><div><strong>{bundle.project.name}</strong><span>{bundle.canonical.story.aspect_ratio ?? bundle.creation_spec.aspect_ratio} · {bundle.creation_spec.target_duration}s</span></div></div>
+        <div className="project-chip"><div className="project-avatar">{bundle.project.name.slice(0, 1)}</div><div><strong>{bundle.project.name}</strong><span>{bundle.canonical.story.aspect_ratio ?? bundle.creation_spec.aspect_ratio}{bundle.source_type === "SCRIPT_FILE" ? "" : ` · ${bundle.creation_spec.target_duration}s`}</span></div></div>
         <nav className="workspace-nav">
           {navItems.map(([id, labelKey, Icon]) => (
-            <button key={id} className={page === id ? "active" : ""} onClick={() => setPage(id)}>
+            <button key={id} className={page === id ? "active" : ""} onPointerEnter={() => prefetchWorkspacePage(id)} onFocus={() => prefetchWorkspacePage(id)} onClick={() => navigateWorkspacePage(id)}>
               <Icon size={18} /><span>{t(labelKey)}</span>
               {page === id && <ChevronRight size={15} className="nav-arrow" />}
             </button>
@@ -376,34 +565,34 @@ export function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="top-actions">
-            <span className={dirty ? "save-state dirty" : "save-state"}>{dirty ? t("unsaved") : t("savedLocally")}</span>
+            <span className={dirty ? "save-state dirty" : "save-state"} title={autoSaveError || undefined}>{autoSaveError ? "自动保存失败，正在重试…" : dirty ? "正在自动保存…" : t("savedLocally")}</span>
             <button className="secondary-button toolbar-button" onClick={() => setShowAiSettings(true)}><Settings size={15} /> {t("systemSettings")}</button>
             <button className="secondary-button toolbar-button" onClick={() => setShowGenerationRecords(true)}><History size={15} /> 生成记录</button>
-            <button className="secondary-button toolbar-button" onClick={() => setShowApplicationLogs(true)}><ScrollText size={15} /> 日志</button>
             <button className="secondary-button toolbar-button" onClick={() => { if (!dirty || window.confirm("当前更改尚未保存，仍要返回首页吗？")) setBundle(undefined); }}><FolderOpen size={15} /> 返回首页</button>
-            <button className="secondary-button toolbar-button" onClick={() => save.mutate()} disabled={!dirty || save.isPending}>
+            <button className="secondary-button toolbar-button" onClick={() => save.mutate({ snapshot: bundle, snapshotRevision: revision })} disabled={!dirty || save.isPending}>
               {save.isPending ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />} {t("save")}
             </button>
           </div>
         </header>
         <div className="page-content">
-          {page === "story" && <StoryPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
-          {page === "characters" && <CharactersPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
-          {page === "scenes" && <ScenesPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
-          {page === "storyboard" && <StoryboardPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
-          {page === "jobs" && <JobsPage bundle={bundle} />}
+          {renderedPage === null && <WorkspacePageLoading label={t(navItems.find(([id]) => id === page)?.[1] ?? "story")} />}
+          {renderedPage === "story" && <StoryPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
+          {renderedPage === "characters" && <CharactersPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
+          {renderedPage === "scenes" && <ScenesPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
+          {renderedPage === "props" && <PropsPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
+          {renderedPage === "storyboard" && <StoryboardPage canonical={bundle.canonical} projectPath={bundle.project.project_path} projectId={bundle.project.id} />}
+          {renderedPage === "jobs" && <JobsPage bundle={bundle} />}
         </div>
       </main>
       {showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}
       {showGenerationRecords && <GenerationRecordsModal projectPath={bundle.project.project_path} onClose={() => setShowGenerationRecords(false)} />}
-      {showApplicationLogs && <ApplicationLogsModal onClose={() => setShowApplicationLogs(false)} />}
       {showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}
       <MediaModelSelectionHost />
     </div>
   );
 }
 
-function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLogs }: { initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onOpenAgent: () => void; onOpenSettings: () => void; onOpenLogs: () => void }) {
+function CreateProjectScreen({ initialBundle, onReady, onOpenSettings }: { initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onOpenAgent: () => void; onOpenSettings: () => void }) {
   const { t } = useI18n();
   const [spec, setSpec] = useState(defaultSpec);
   const [sourceType, setSourceType] = useState<CreateMode>(() => initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? "IDEA" : "DOUYIN_URL");
@@ -413,6 +602,9 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   const [cookieSource, setCookieSource] = useState<CookieSource>("managed");
   const [cookieFilePath, setCookieFilePath] = useState("");
   const [showProjectCenter, setShowProjectCenter] = useState(false);
+  const [projectCenterPreparing, setProjectCenterPreparing] = useState(false);
+  const projectCenterFrame = useRef<number | undefined>(undefined);
+  const projectCenterLoadRevision = useRef(0);
   const [showAssetLibrary, setShowAssetLibrary] = useState(false);
   const [projectPendingDelete, setProjectPendingDelete] = useState<ProjectListItem>();
   const [showCreativeTypeSelector, setShowCreativeTypeSelector] = useState(false);
@@ -421,6 +613,7 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   const [localVideoTaskReviews, setLocalVideoTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [douyinTaskReviews, setDouyinTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [creatingDouyinTaskId, setCreatingDouyinTaskId] = useState<string>();
+  const [scriptConfirmation, setScriptConfirmation] = useState<{ kind: "create" } | { kind: "reanalyze"; taskId: string }>();
   const [ideaWorkflowBundle, setIdeaWorkflowBundle] = useState<ProjectBundle | undefined>(
     initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? initialBundle : undefined,
   );
@@ -430,6 +623,10 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
     setIdeaWorkflowBundle(initialBundle);
     setShowIdeaWorkflow(true);
   }, [initialBundle]);
+  useEffect(() => () => {
+    projectCenterLoadRevision.current += 1;
+    if (projectCenterFrame.current !== undefined) window.cancelAnimationFrame(projectCenterFrame.current);
+  }, []);
   const create = useMutation({
     mutationFn: async (input: CreateProjectInput) => {
       const skeleton = await createProject(input);
@@ -483,6 +680,31 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
     onSuccess: onReady,
   });
   const projectList = useMutation({ mutationFn: listProjects });
+  const scriptTasks = useQuery({
+    queryKey: ["script-analysis-tasks"], queryFn: listScriptAnalysisTasks,
+    enabled: sourceType === "SCRIPT_FILE", refetchInterval: sourceType === "SCRIPT_FILE" ? 1_200 : false,
+  });
+  const scriptQuote = useQuery({ queryKey: ["script-analysis-quote"], queryFn: getScriptAnalysisQuote, enabled: sourceType === "SCRIPT_FILE", staleTime: 20_000 });
+  const scriptAnalysis = useMutation({
+    mutationFn: async (confirmation: NonNullable<typeof scriptConfirmation>) => {
+      if (!scriptQuote.data) throw new Error("暂时无法获取剧本提取积分，请稍后重试");
+      if (confirmation.kind === "reanalyze") return reanalyzeScriptTask(confirmation.taskId, scriptQuote.data.credits);
+      return createScriptAnalysisTask({
+        source_path: sourcePath, root_path: rootPath, expected_credits: scriptQuote.data.credits,
+        platform_api_base_url: platformApiBaseUrl,
+        creation_spec: { ...spec, input_type: "SCRIPT", target_duration: 0 },
+      });
+    },
+    onSuccess: async (_, confirmation) => {
+      setScriptConfirmation(undefined);
+      if (confirmation.kind === "create") { setSourcePath(""); setSpec((current) => ({ ...current, project_name: "" })); }
+      await scriptTasks.refetch();
+    },
+  });
+  const deleteScriptRecord = useMutation({
+    mutationFn: deleteScriptAnalysisTask,
+    onSuccess: () => scriptTasks.refetch(),
+  });
   const assetLibrary = useQuery({ queryKey: ["asset-library"], queryFn: listAssetLibrary, enabled: showAssetLibrary });
   const deleteLocalProject = useMutation({
     mutationFn: (project: ProjectListItem) => deleteProject(project.id),
@@ -565,6 +787,13 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
     mutationFn: retryDouyinUnderstandingTask,
     onSuccess: () => douyinTasks.refetch(),
   });
+  const reparseDouyinTask = useMutation({
+    mutationFn: reparseDouyinUnderstandingTask,
+    onSuccess: async (_, taskId) => {
+      setDouyinTaskReviews((reviews) => { const next = { ...reviews }; delete next[taskId]; return next; });
+      await douyinTasks.refetch();
+    },
+  });
   const retryLocalVideoTask = useMutation({
     mutationFn: retryLocalVideoUnderstandingTask,
     onSuccess: () => localVideoTasks.refetch(),
@@ -581,6 +810,11 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
     if (window.confirm("确定删除这条视频解析/理解记录吗？该记录下的所有二创记录也会一并删除，且无法恢复。")) {
       deleteUnderstandingTask.mutate(taskId);
     }
+  };
+  const confirmReparseDouyinTask = (taskId: string) => {
+    if (!window.confirm("确定重新解析这个视频吗？重新解析会再次调用视频理解模型并消耗相应积分，成功后将用新结果替换当前结果。")) return false;
+    reparseDouyinTask.mutate(taskId);
+    return true;
   };
   const openDouyinTaskResult = (task: DouyinUnderstandingTask) => {
     if (!task.result?.text) return;
@@ -606,6 +840,10 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   };
 
   const selectSourceType = (value: CreateMode) => {
+    projectCenterLoadRevision.current += 1;
+    if (projectCenterFrame.current !== undefined) window.cancelAnimationFrame(projectCenterFrame.current);
+    projectCenterFrame.current = undefined;
+    setProjectCenterPreparing(false);
     setShowProjectCenter(false);
     setShowAssetLibrary(false);
     setSourceType(value);
@@ -626,9 +864,23 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   const openProjectCenter = () => {
     setShowProjectCenter(true);
     setShowAssetLibrary(false);
-    projectList.mutate();
+    setProjectCenterPreparing(true);
+    const revision = ++projectCenterLoadRevision.current;
+    if (projectCenterFrame.current !== undefined) window.cancelAnimationFrame(projectCenterFrame.current);
+    projectCenterFrame.current = window.requestAnimationFrame(() => {
+      projectCenterFrame.current = window.requestAnimationFrame(() => {
+        projectCenterFrame.current = undefined;
+        void projectList.mutateAsync().catch(() => undefined).finally(() => {
+          if (projectCenterLoadRevision.current === revision) setProjectCenterPreparing(false);
+        });
+      });
+    });
   };
   const openAssetLibrary = () => {
+    projectCenterLoadRevision.current += 1;
+    if (projectCenterFrame.current !== undefined) window.cancelAnimationFrame(projectCenterFrame.current);
+    projectCenterFrame.current = undefined;
+    setProjectCenterPreparing(false);
     setShowProjectCenter(false);
     setShowAssetLibrary(true);
   };
@@ -653,11 +905,16 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   const autoLoginUnavailable = browserAvailability.data?.can_auto_login === false;
   const isCookieReady = cookieSource !== "file" || Boolean(cookieFilePath);
   const submit = () => {
+    if (sourceType === "SCRIPT_FILE") {
+      scriptAnalysis.reset();
+      setScriptConfirmation({ kind: "create" });
+      return;
+    }
     const input: CreateProjectInput = {
       root_path: rootPath,
       source_type: sourceType as ProjectSourceType,
-      source_text: sourceType === "SCRIPT_FILE" ? undefined : sourceText,
-      source_path: sourceType === "SCRIPT_FILE" ? sourcePath : undefined,
+      source_text: sourceText,
+      source_path: undefined,
       creation_spec: sourceType === "IDEA" && selectedCreativeType ? {
         ...spec,
         creative_type_name: selectedCreativeType.name,
@@ -761,7 +1018,7 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
   return (
     <div className="welcome-shell">
       <div className="welcome-glow" />
-      <header className="welcome-header"><AccountEntry /><div className="welcome-actions"><button className="secondary-button toolbar-button" onClick={onOpenSettings}><Settings size={15} /> {t("systemSettings")}</button><button className="secondary-button toolbar-button" onClick={onOpenLogs}><ScrollText size={15} /> 日志</button><span>V0.3 · Local-first</span></div></header>
+      <header className="welcome-header"><AccountEntry /><div className="welcome-actions"><button className="secondary-button toolbar-button" onClick={onOpenSettings}><Settings size={15} /> {t("systemSettings")}</button><span>V0.3 · Local-first</span></div></header>
       <main className="create-layout">
         <aside className="create-navigation" aria-label="创建方式">
           <nav className="source-options">
@@ -775,14 +1032,14 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
           <div className="create-navigation-footer"><span className="status-dot" /> 服务端接口已连接</div>
         </aside>
         <section className="create-card create-workspace-panel">
-          {showAssetLibrary ? <AssetLibraryPanel assets={assetLibrary.data ?? []} loading={assetLibrary.isLoading || assetLibrary.isFetching} error={assetLibrary.error} onRefresh={() => assetLibrary.refetch()} /> : showProjectCenter ? <ProjectCenterPanel projects={projectList.data ?? []} loading={projectList.isPending} loadingProjectId={openProject.variables?.id} onRefresh={() => projectList.mutate()} onOpen={(project) => openProject.mutate(project)} onDelete={setProjectPendingDelete} /> : sourceType === "VIDEO_UNDERSTANDING" ? <VideoUnderstandingPanel
+          {showAssetLibrary ? <AssetLibraryPanel assets={assetLibrary.data ?? []} loading={assetLibrary.isLoading || assetLibrary.isFetching} error={assetLibrary.error} onRefresh={() => assetLibrary.refetch()} /> : showProjectCenter ? <ProjectCenterPanel projects={projectList.data ?? []} loading={projectCenterPreparing || projectList.isPending} loadingProjectId={openProject.variables?.id} onRefresh={() => projectList.mutate()} onOpen={(project) => openProject.mutate(project)} onDelete={setProjectPendingDelete} /> : sourceType === "VIDEO_UNDERSTANDING" ? <VideoUnderstandingPanel
             onRequestModeSelection={(handler) => { setVideoUnderstandingModeHandler(() => handler); setShowStoryboardMode(true); }}
             onTaskCreated={async () => { await localVideoTasks.refetch(); }}
             records={<DouyinTaskList
               variant="local"
               tasks={localVideoTasks.data ?? []}
               loading={localVideoTasks.isLoading}
-              retryingTaskId={retryLocalVideoTask.variables}
+              retryingTaskId={retryLocalVideoTask.isPending ? retryLocalVideoTask.variables : undefined}
               onRetry={(taskId) => retryLocalVideoTask.mutate(taskId)}
               deletingTaskId={deleteUnderstandingTask.variables}
               onDelete={confirmDeleteUnderstandingTask}
@@ -801,17 +1058,17 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
               {douyin.isPending ? <><LoaderCircle className="spin" size={18} /> {cookieSource === "managed" ? "正在识别平台并解析视频…" : "正在解析视频…"}</> : <><Link2 size={18} /> {cookieSource === "managed" ? "自动识别并解析" : cookieSource === "file" ? "使用 Cookie 文件解析" : cookieSource ? `使用 ${cookieSource === "edge" ? "Edge" : cookieSource === "chrome" ? "Chrome" : "Firefox"} Cookie 解析` : "解析下载地址"} <ChevronRight size={18} /></>}
             </button></div>
             {douyin.data && <DouyinResult info={douyin.data} onDownload={() => startDownload(douyin.data)} downloading={download.isPending} downloadResult={download.data} downloadError={download.error} onGenerateStoryboard={startDouyinStoryboard} generatingStoryboard={douyinStoryboard.isPending} storyboardError={douyinStoryboard.error} />}
-            <DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryDouyinTask.variables} onRetry={(taskId) => retryDouyinTask.mutate(taskId)} deletingTaskId={deleteUnderstandingTask.variables} onDelete={confirmDeleteUnderstandingTask} deleteError={deleteUnderstandingTask.error} onOpenResult={openDouyinTaskResult} renderResult={(task) => { const review = douyinTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateDouyinTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateDouyinTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} rootPath={review.rootPath} onRootPathChange={(nextRootPath) => updateDouyinTaskReview(task.id, { rootPath: nextRootPath })} onSelectRoot={() => void selectDouyinTaskRoot(task.id)} onCreate={() => submitStoryboardProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} defaultRootPath={review.rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }} />
+            <DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryDouyinTask.isPending ? retryDouyinTask.variables : undefined} onRetry={(taskId) => retryDouyinTask.mutate(taskId)} reparsingTaskId={reparseDouyinTask.isPending ? reparseDouyinTask.variables : undefined} onReparse={confirmReparseDouyinTask} reparseError={reparseDouyinTask.error} deletingTaskId={deleteUnderstandingTask.variables} onDelete={confirmDeleteUnderstandingTask} deleteError={deleteUnderstandingTask.error} onOpenResult={openDouyinTaskResult} renderResult={(task) => { const review = douyinTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateDouyinTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateDouyinTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} rootPath={review.rootPath} onRootPathChange={(nextRootPath) => updateDouyinTaskReview(task.id, { rootPath: nextRootPath })} onSelectRoot={() => void selectDouyinTaskRoot(task.id)} onCreate={() => submitStoryboardProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} defaultRootPath={review.rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }} />
             <p className="resolver-notice">仅解析您有权访问和使用的公开视频。媒体地址由平台签名，可能在一段时间后失效。</p>
           </> : <>
-            <label>{t("projectName")}<input value={spec.project_name} onChange={(event) => setSpec({ ...spec, project_name: event.target.value })} /></label>
+            <label>{t("projectName")}<input value={spec.project_name} placeholder={sourceType === "SCRIPT_FILE" ? "可不填，将从剧本原文标题自动提取" : undefined} onChange={(event) => setSpec({ ...spec, project_name: event.target.value })} />{sourceType === "SCRIPT_FILE" && <small>留空时，文本大模型分析完成后会优先使用剧本原文中的标题。</small>}</label>
             {sourceType === "IDEA" && <label>创作类型<button className={selectedCreativeType ? "creative-type-picker selected" : "creative-type-picker"} type="button" onClick={() => setShowCreativeTypeSelector(true)}>
               <span><BookOpen size={18} /><span><strong>{selectedCreativeType?.name || "请选择创作类型"}</strong><small>{selectedCreativeType?.description || "从经典电影、电视剧、短剧和漫剧类型中选择"}</small></span></span><ChevronRight size={18} />
             </button><small>类型提示词用于第一步整体大纲；只有确认大纲后，才会继续拆分分集。</small></label>}
             {sourceType === "IDEA" && <label>一句话创意<textarea rows={4} value={sourceText} onChange={(event) => setSourceText(event.target.value)} /></label>}
             {sourceType === "SCRIPT_FILE" && <label>剧本文件<button className="file-picker" onClick={selectScript}><Upload size={18} /><span>{sourcePath || "点击选择 TXT、MD、DOCX 或 PDF"}</span></button></label>}
             <div className={sourceType === "IDEA" ? "field-grid idea-creation-fields" : "field-grid"}>
-              <label>{t("targetDuration")}<div className="unit-input"><input type="number" min={5} max={3600} step={1} value={spec.target_duration} onChange={(event) => setSpec({ ...spec, target_duration: Number(event.target.value) })} /><span>{t("seconds")}</span></div></label>
+              {sourceType === "IDEA" && <label>{t("targetDuration")}<div className="unit-input"><input type="number" min={10} max={3600} step={1} value={spec.target_duration} onChange={(event) => setSpec({ ...spec, target_duration: Number(event.target.value) })} /><span>{t("seconds")}</span></div></label>}
               <label>{t("aspectRatio")}<select value={spec.aspect_ratio} onChange={(event) => setSpec({ ...spec, aspect_ratio: event.target.value })}><option>9:16</option><option>16:9</option></select></label>
               <label>{t("projectLanguage")}<select value={spec.language} onChange={(event) => setSpec({ ...spec, language: event.target.value })}>{supportedLocales.map((item) => <option key={item.code} value={item.code}>{item.nativeName}</option>)}</select></label>
               <GroupedVisualStyleSelect value={spec.visual_style} onChange={(visual_style) => setSpec({ ...spec, visual_style })} presets={visualStyles.data ?? []} categories={visualStyleCategories.data?.map((item) => item.name)} />
@@ -819,10 +1076,14 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
             </div>
             <label>{t("projectRoot")}<div className="path-input"><FolderOpen size={17} /><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} /><button type="button" onClick={selectRoot}>{t("choose")}</button></div></label>
             {sourceType === "IDEA" && <ModelCreditNotice capability="TEXT_GENERATION" action="大纲生成" />}
-            {create.error && <div className="error-banner">{readableError(create.error)}</div>}
-            <button className="primary-button" onClick={submit} disabled={create.isPending || !isSourceValid || !spec.project_name.trim() || !rootPath.trim() || (sourceType === "IDEA" && !selectedCreativeType)}>
-              {create.isPending ? <><LoaderCircle className="spin" size={18} /> {t("creating")}</> : <><Sparkles size={18} /> {t("createLocalProject")}（{sourceType === "IDEA" ? "生成大纲需积分" : "免费"}） <ChevronRight size={18} /></>}
-            </button>
+            {sourceType === "SCRIPT_FILE" && <div className="script-analysis-notice"><Coins size={17} /><div><strong>完整剧本将交给后台默认文本大模型</strong><span>只做忠实提取，不改编、不发挥、不衍生。{scriptQuote.data ? `每次分析需要 ${creditText(scriptQuote.data.credits)} 积分。` : "正在读取所需积分…"}</span></div></div>}
+            {(create.error || scriptAnalysis.error || scriptQuote.error) && <div className="error-banner">{readableError(create.error ?? scriptAnalysis.error ?? scriptQuote.error)}</div>}
+            <div className={sourceType === "SCRIPT_FILE" ? "script-create-project-action" : sourceType === "IDEA" ? "idea-create-project-action" : undefined}>
+              <button className="primary-button" onClick={submit} disabled={create.isPending || scriptAnalysis.isPending || !isSourceValid || !rootPath.trim() || (sourceType === "IDEA" && (!spec.project_name.trim() || !selectedCreativeType)) || (sourceType === "SCRIPT_FILE" && !scriptQuote.data)}>
+                {create.isPending || scriptAnalysis.isPending ? <><LoaderCircle className="spin" size={18} /> {t("creating")}</> : <><Sparkles size={18} /> {t("createLocalProject")}（{sourceType === "IDEA" ? "生成大纲需积分" : sourceType === "SCRIPT_FILE" ? "分析剧本需积分" : "免费"}） <ChevronRight size={18} /></>}
+              </button>
+            </div>
+            {sourceType === "SCRIPT_FILE" && <ScriptAnalysisRecords tasks={scriptTasks.data ?? []} loading={scriptTasks.isLoading} deletingId={deleteScriptRecord.variables} onOpen={(task) => task.project_path && openProject.mutate({ id: task.project_id || "", name: task.project_name || "", project_path: task.project_path, input_type: "SCRIPT", status: "ACTIVE", created_at: task.created_at, updated_at: task.updated_at, is_example: false })} onReanalyze={(task) => { scriptAnalysis.reset(); setScriptConfirmation({ kind: "reanalyze", taskId: task.id }); }} onDelete={(task) => { if (window.confirm("只删除这条剧本分析记录？已创建的本地项目和原剧本文件不会被删除。")) deleteScriptRecord.mutate(task.id); }} />}
             {ideaWorkflowBundle && <button className="secondary-button long-form-open-progress" type="button" onClick={() => setShowIdeaWorkflow(true)}><History size={17} /> 打开创意分步向导</button>}
             {initialBundle && <p className="hint">已创建项目骨架，请在创意分步向导中完成大纲、分集、角色场景和分镜确认。</p>}
           </>}
@@ -833,8 +1094,43 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings, onOpenLog
       {showStoryboardMode && <StoryboardModeModal onClose={closeStoryboardMode} onSelect={confirmStoryboardMode} />}
       {showIdeaWorkflow && ideaWorkflowBundle && <IdeaDevelopmentProgressModal workflow={ideaWorkflow.data} loading={ideaWorkflow.isLoading} fallbackError={ideaWorkflowAction.error ?? create.error} running={create.isPending || ideaWorkflowAction.isPending || ideaWorkflow.data?.status === "RUNNING"} onClose={() => setShowIdeaWorkflow(false)} onAction={(action, payload) => { ideaWorkflowAction.reset(); ideaWorkflowAction.mutate({ action, payload }); }} />}
       {projectPendingDelete && <DeleteProjectConfirmModal project={projectPendingDelete} deleting={deleteLocalProject.isPending} error={deleteLocalProject.error} onCancel={() => { if (!deleteLocalProject.isPending) { deleteLocalProject.reset(); setProjectPendingDelete(undefined); } }} onConfirm={() => deleteLocalProject.mutate(projectPendingDelete)} />}
+      {scriptConfirmation && scriptQuote.data && <ScriptAnalysisCreditModal quote={scriptQuote.data} task={scriptConfirmation.kind === "reanalyze" ? scriptTasks.data?.find((item) => item.id === scriptConfirmation.taskId) : undefined} busy={scriptAnalysis.isPending} error={scriptAnalysis.error} onCancel={() => { if (!scriptAnalysis.isPending) setScriptConfirmation(undefined); }} onCreditsPurchased={() => scriptAnalysis.reset()} onConfirm={() => scriptAnalysis.mutate(scriptConfirmation)} />}
     </div>
   );
+}
+
+function ScriptAnalysisRecords({ tasks, loading, deletingId, onOpen, onReanalyze, onDelete }: {
+  tasks: ScriptAnalysisTask[]; loading: boolean; deletingId?: string;
+  onOpen: (task: ScriptAnalysisTask) => void; onReanalyze: (task: ScriptAnalysisTask) => void; onDelete: (task: ScriptAnalysisTask) => void;
+}) {
+  const running = (status: ScriptAnalysisTask["status"]) => ["PENDING", "UPLOADING", "RUNNING", "POST_PROCESSING"].includes(status);
+  const statusLabel = (task: ScriptAnalysisTask) => task.status === "COMPLETED" ? "已完成" : task.status === "FAILED" ? "失败" : task.status === "UPLOADING" ? "上传中" : task.status === "POST_PROCESSING" ? "创建项目" : task.status === "PENDING" ? "等待中" : "分析中";
+  return <section className="script-analysis-records">
+    <header><div><span className="section-label">SCRIPT RECORDS</span><h3>剧本记录</h3><p>每个剧本独立并行分析；离开此页面不会停止任务，可随时回来查看。</p></div><span>{tasks.length} 条</span></header>
+    {loading ? <div className="douyin-task-empty"><LoaderCircle className="spin" size={16} />正在读取剧本记录…</div> : tasks.length ? <div className="script-analysis-list">{tasks.map((task) => <article className={`script-analysis-row ${task.status.toLowerCase()}`} key={task.id}>
+      <div className="script-analysis-file"><span><FileText size={19} /></span><div><strong>{task.project_name || task.requested_project_name || task.source_name}</strong><small>{task.source_name}</small><em>{new Date(task.created_at).toLocaleString()}</em></div></div>
+      <div className="script-analysis-progress"><div><span>{task.message}</span><strong>{Math.round(Math.max(0, Math.min(1, task.progress)) * 100)}%</strong></div><i><b style={{ width: `${Math.max(0, Math.min(1, task.progress)) * 100}%` }} /></i>{task.error && <small>{task.error}</small>}</div>
+      <em className="script-analysis-status">{running(task.status) && <LoaderCircle className="spin" size={13} />}{statusLabel(task)}</em>
+      <div className="script-analysis-actions">
+        {task.status === "COMPLETED" && task.project_path && <button className="primary-button" type="button" onClick={() => onOpen(task)}><FolderOpen size={14} />进入项目</button>}
+        {!running(task.status) && <button className="secondary-button" type="button" onClick={() => onReanalyze(task)}><RotateCcw size={14} />重新分析</button>}
+        {!running(task.status) && <button className="secondary-button danger-button" type="button" disabled={deletingId === task.id} onClick={() => onDelete(task)}><Trash2 size={14} />{deletingId === task.id ? "删除中" : "删除记录"}</button>}
+      </div>
+    </article>)}</div> : <div className="douyin-task-empty"><ScrollText size={17} />选择剧本并创建后，分析进度会显示在这里</div>}
+  </section>;
+}
+
+function ScriptAnalysisCreditModal({ quote, task, busy, error, onCancel, onConfirm, onCreditsPurchased }: {
+  quote: ModelCreditQuote; task?: ScriptAnalysisTask; busy: boolean; error?: unknown; onCancel: () => void; onConfirm: () => void; onCreditsPurchased?: () => void;
+}) {
+  const balance = useQuery({ queryKey: ["credit-balance", "script-analysis"], queryFn: getCreditBalance, refetchOnMount: "always" });
+  const insufficient = Boolean(balance.data && balance.data.available < quote.credits);
+  const purchaseRequired = insufficient || isInsufficientBalanceError(error);
+  return createPortal(<div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="script-analysis-confirm-title">
+    <header><span><Coins size={23} /></span><div><small>SCRIPT ANALYSIS</small><h2 id="script-analysis-confirm-title">确认分析剧本并扣除积分</h2><p>{task ? `将重新分析《${task.project_name || task.source_name}》` : "确认后会上传完整剧本文件，并由后台默认文本大模型忠实提取项目内容。"}</p></div><button type="button" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={17} /></button></header>
+    <div className="script-analysis-confirm-body"><div><span>本次所需积分</span><strong>{creditText(quote.credits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div><p><AlertTriangle size={17} />模型只会从剧本原文提取剧情、场景、角色和分镜，禁止发挥、补写或衍生。分析可能耗时较久，关闭弹窗后可在剧本记录中继续查看进度。</p>{purchaseRequired && <div className="insufficient-credit-callout"><div className="error-banner">{insufficient ? <>积分不足，需要 {creditText(quote.credits)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : readableError(error)}</div><ImmediateCreditPurchaseButton onPurchased={() => { void balance.refetch(); onCreditsPurchased?.(); }} /></div>}{Boolean(balance.error) && <div className="error-banner">暂时无法确认积分余额，请稍后重试。</div>}{Boolean(error) && !purchaseRequired && <div className="error-banner">{readableError(error)}</div>}</div>
+    <footer><button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>取消，不扣分</button><button className="primary-button" type="button" disabled={busy || balance.isLoading || Boolean(balance.error) || insufficient} onClick={onConfirm}>{busy ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{busy ? "正在创建分析任务…" : `确认并开始（${creditText(quote.credits)} 积分）`}</button></footer>
+  </section></div>, document.body);
 }
 
 function IdeaDevelopmentProgressModal({ workflow, loading, fallbackError, running, onClose, onAction }: { workflow?: IdeaDevelopmentWorkflow | null; loading: boolean; fallbackError?: unknown; running: boolean; onClose: () => void; onAction: (action: IdeaDevelopmentAction, payload?: Record<string, unknown>) => void }) {
@@ -937,12 +1233,13 @@ const douyinTaskStageLabels: Record<string, string> = {
   processing: "处理并上传本地视频", analyzing: "AI理解并生成分镜", completed: "已完成", failed: "执行失败",
 };
 
-function DouyinTaskList({ tasks, loading, retryingTaskId, onRetry, deletingTaskId, onDelete, deleteError, onOpenResult, renderResult, variant = "link" }: { tasks: DouyinUnderstandingTask[]; loading: boolean; retryingTaskId?: string; onRetry: (taskId: string) => void; deletingTaskId?: string; onDelete?: (taskId: string) => void; deleteError?: Error | null; onOpenResult?: (task: DouyinUnderstandingTask) => void; renderResult?: (task: DouyinUnderstandingTask) => ReactNode; variant?: "link" | "local" }) {
+function DouyinTaskList({ tasks, loading, retryingTaskId, onRetry, reparsingTaskId, onReparse, reparseError, deletingTaskId, onDelete, deleteError, onOpenResult, renderResult, variant = "link" }: { tasks: DouyinUnderstandingTask[]; loading: boolean; retryingTaskId?: string; onRetry: (taskId: string) => void; reparsingTaskId?: string; onReparse?: (taskId: string) => boolean | void; reparseError?: Error | null; deletingTaskId?: string; onDelete?: (taskId: string) => void; deleteError?: Error | null; onOpenResult?: (task: DouyinUnderstandingTask) => void; renderResult?: (task: DouyinUnderstandingTask) => ReactNode; variant?: "link" | "local" }) {
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(() => new Set());
   const activeCount = tasks.filter((task) => task.status === "PENDING" || task.status === "RUNNING").length;
   return <section className={`douyin-task-center ${variant === "local" ? "local-video-task-center" : ""}`}>
     <header><div><span className="eyebrow">{variant === "local" ? "LOCAL VIDEO HISTORY" : "BACKGROUND TASKS"}</span><h3>{variant === "local" ? "视频理解记录" : "视频链接解析与理解任务"}</h3><p>{variant === "local" ? "本地视频理解结果保存在本机数据库中，可随时重新打开、创建项目或进行二创。" : "任务保存在本机数据库中并可同时运行；提交后可以立即继续输入下一条链接。"}</p></div><span className={activeCount ? "task-count active" : "task-count"}>{activeCount ? `${activeCount} 个进行中` : `${tasks.length} 条记录`}</span></header>
     {deleteError && <div className="error-banner">删除失败：{readableError(deleteError)}</div>}
+    {reparseError && <div className="error-banner">重新解析失败：{readableError(reparseError)}</div>}
     {loading ? <div className="douyin-task-empty"><LoaderCircle className="spin" size={20} />正在读取任务…</div> : tasks.length === 0 ? <div className="douyin-task-empty">{variant === "local" ? "还没有视频理解任务。选择本地视频并提交后，任务会立即显示在这里。" : "还没有任务。解析视频并选择分镜模式后，任务会显示在这里。"}</div> : <div className="douyin-task-list">{tasks.map((task) => {
       const active = task.status === "PENDING" || task.status === "RUNNING";
       const expanded = expandedTaskIds.has(task.id);
@@ -950,7 +1247,7 @@ function DouyinTaskList({ tasks, loading, retryingTaskId, onRetry, deletingTaskI
       return <article className={`douyin-task-card ${task.status.toLowerCase()}`} key={task.id}>
         <div className="douyin-task-main">{task.source_kind === "LOCAL" ? <video className="douyin-task-video" src={convertFileSrc(task.share_text)} controls preload="metadata" playsInline /> : task.thumbnail ? <img src={task.thumbnail} alt="视频封面" referrerPolicy="no-referrer" /> : <span className="douyin-task-cover"><Clapperboard size={22} /></span>}<div><strong>{task.title || "未命名视频"}</strong><small>{task.source_kind === "LOCAL" ? "本地视频" : videoPlatformLabel(task.platform)} · {task.uploader || "未知作者"} · {duration} · {task.mode === "detailed" ? "详细模式" : task.mode === "fixed" ? `固定${task.fixed_seconds ?? 10}秒` : "标准模式"}</small><em>{new Date(task.created_at).toLocaleString("zh-CN")}</em></div></div>
         <div className="douyin-task-state"><div><span>{active && <LoaderCircle className="spin" size={14} />}{task.status === "COMPLETED" && <CheckCircle2 size={14} />}{task.status === "FAILED" && <AlertTriangle size={14} />}{douyinTaskStageLabels[task.stage] || task.message}</span><strong>{Math.round(task.progress * 100)}%</strong></div><i><b style={{ width: `${Math.round(task.progress * 100)}%` }} /></i><small>{task.error?.message || task.message}</small></div>
-        <div className="douyin-task-actions">{task.status === "FAILED" && <button className="secondary-button" type="button" disabled={retryingTaskId === task.id || deletingTaskId === task.id} onClick={() => onRetry(task.id)}>{retryingTaskId === task.id ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}重试</button>}{task.status === "COMPLETED" && <button className={expanded ? "secondary-button" : "primary-button"} type="button" disabled={deletingTaskId === task.id} onClick={() => setExpandedTaskIds((current) => { const next = new Set(current); if (next.has(task.id)) next.delete(task.id); else { next.add(task.id); onOpenResult?.(task); } return next; })}><ScrollText size={15} />{expanded ? "收起结果" : "查看结果"}</button>}{onDelete && <button className="secondary-button danger-button" type="button" disabled={deletingTaskId === task.id} onClick={() => onDelete(task.id)}>{deletingTaskId === task.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deletingTaskId === task.id ? "删除中…" : "删除"}</button>}</div>
+        <div className="douyin-task-actions">{task.status === "FAILED" && <button className="secondary-button" type="button" disabled={retryingTaskId === task.id || deletingTaskId === task.id} onClick={() => onRetry(task.id)}>{retryingTaskId === task.id ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}重试</button>}{task.status === "COMPLETED" && <button className={expanded ? "secondary-button" : "primary-button"} type="button" disabled={deletingTaskId === task.id || reparsingTaskId === task.id} onClick={() => setExpandedTaskIds((current) => { const next = new Set(current); if (next.has(task.id)) next.delete(task.id); else { next.add(task.id); onOpenResult?.(task); } return next; })}><ScrollText size={15} />{expanded ? "收起结果" : "查看结果"}</button>}{variant === "link" && task.status === "COMPLETED" && onReparse && <button className="secondary-button" type="button" disabled={reparsingTaskId === task.id || deletingTaskId === task.id} onClick={() => { if (onReparse(task.id) === false) return; setExpandedTaskIds((current) => { const next = new Set(current); next.delete(task.id); return next; }); }}>{reparsingTaskId === task.id ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{reparsingTaskId === task.id ? "重新解析中…" : "重新解析"}</button>}{onDelete && <button className="secondary-button danger-button" type="button" disabled={deletingTaskId === task.id || reparsingTaskId === task.id} onClick={() => onDelete(task.id)}>{deletingTaskId === task.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deletingTaskId === task.id ? "删除中…" : "删除"}</button>}</div>
         {expanded && task.result?.text && <div className="douyin-task-inline-result">{renderResult ? renderResult(task) : <DouyinTaskReadOnlyResult task={task} />}</div>}
       </article>;
     })}</div>}
@@ -1132,10 +1429,12 @@ function ShieldCheckIcon() {
 }
 
 function ProjectCenterPanel({ projects, loading, loadingProjectId, onRefresh, onOpen, onDelete }: { projects: ProjectListItem[]; loading: boolean; loadingProjectId?: string; onRefresh: () => void; onOpen: (project: ProjectListItem) => void; onDelete: (project: ProjectListItem) => void }) {
-  const visibleProjects = projects.filter((project) => !project.is_example);
+  const projectsWithoutExamples = useMemo(() => projects.filter((project) => !project.is_example), [projects]);
+  const visibleProjectCount = useProgressiveRenderCount(projectsWithoutExamples.length, "project-center", 12, 12);
+  const visibleProjects = projectsWithoutExamples.slice(0, visibleProjectCount);
   return <section className="project-center-panel">
-    <div className="project-center-toolbar"><span>{loading ? "正在读取本地项目…" : `共 ${visibleProjects.length} 个本地项目`}</span><button className="secondary-button toolbar-button" type="button" onClick={onRefresh} disabled={loading}>{loading ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}刷新</button></div>
-    <div className="project-list project-center-list">{loading && visibleProjects.length === 0 ? <div className="project-center-empty"><LoaderCircle className="spin" size={24} /><span>正在加载项目…</span></div> : visibleProjects.length === 0 ? <div className="project-center-empty"><FolderOpen size={32} /><strong>还没有已创建的项目</strong><span>可从左侧其他创建方式建立第一个本地项目。</span></div> : visibleProjects.map((project) => <article className="project-center-row" key={project.id}><button className="project-list-item" onClick={() => onOpen(project)} disabled={Boolean(loadingProjectId)}><div className="project-list-icon"><Clapperboard size={20} /></div><div><div className="project-list-title"><strong>{project.name}</strong></div><small>{project.input_type} · {project.status} · {new Date(project.updated_at).toLocaleString("zh-CN")}</small><em>{project.project_path}</em></div><ChevronRight size={18} />{loadingProjectId === project.id && <LoaderCircle className="spin project-loading" size={18} />}</button><button className="project-delete-button" type="button" aria-label={`删除项目 ${project.name}`} title="删除项目" onClick={() => onDelete(project)} disabled={Boolean(loadingProjectId)}><Trash2 size={17} /><span>删除</span></button></article>)}</div>
+    <div className="project-center-toolbar"><span>{loading ? "正在后台读取本地项目…" : `共 ${projectsWithoutExamples.length} 个本地项目`}</span><button className="secondary-button toolbar-button" type="button" onClick={onRefresh} disabled={loading}>{loading ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}刷新</button></div>
+    <div className="project-list project-center-list">{loading && projectsWithoutExamples.length === 0 ? <div className="project-center-empty"><LoaderCircle className="spin" size={24} /><strong>项目中心</strong><span>正在后台加载项目，不会阻塞其他界面操作…</span></div> : projectsWithoutExamples.length === 0 ? <div className="project-center-empty"><FolderOpen size={32} /><strong>还没有已创建的项目</strong><span>可从左侧其他创建方式建立第一个本地项目。</span></div> : <>{visibleProjects.map((project) => <article className="project-center-row" key={project.id}><button className="project-list-item" onClick={() => onOpen(project)} disabled={Boolean(loadingProjectId)}><div className="project-list-icon"><Clapperboard size={20} /></div><div><div className="project-list-title"><strong>{project.name}</strong></div><small>{project.input_type} · {project.status} · {new Date(project.updated_at).toLocaleString("zh-CN")}</small><em>{project.project_path}</em></div><ChevronRight size={18} />{loadingProjectId === project.id && <LoaderCircle className="spin project-loading" size={18} />}</button><button className="project-delete-button" type="button" aria-label={`删除项目 ${project.name}`} title="删除项目" onClick={() => onDelete(project)} disabled={Boolean(loadingProjectId)}><Trash2 size={17} /><span>删除</span></button></article>)}<ProgressiveListLoading visible={visibleProjectCount} total={projectsWithoutExamples.length} label="项目" /></>}</div>
   </section>;
 }
 
@@ -1143,7 +1442,7 @@ function DeleteProjectConfirmModal({ project, deleting, error, onCancel, onConfi
   return createPortal(<div className="modal-backdrop project-delete-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) onCancel(); }}>
     <section className="project-delete-modal" role="dialog" aria-modal="true" aria-labelledby="project-delete-title">
       <header><div className="project-delete-icon"><AlertTriangle size={23} /></div><div><h2 id="project-delete-title">确认删除整个项目？</h2><p>此操作将永久删除项目数据以及该项目生成的视频文件。</p></div><button className="modal-close" type="button" aria-label="关闭删除确认" onClick={onCancel} disabled={deleting}><X size={18} /></button></header>
-      <div className="project-delete-body"><strong>{project.name}</strong><span>{project.project_path}</span><div className="project-delete-preserve"><Images size={18} /><div><b>场景图和角色图会保留</b><small>删除开始前会先写入独立资产库，之后仍可在“资产库”中查看。</small></div></div>{Boolean(error) && <div className="error-banner">{readableError(error)}</div>}</div>
+      <div className="project-delete-body"><strong>{project.name}</strong><span>{project.project_path}</span><div className="project-delete-preserve"><Images size={18} /><div><b>场景图、角色图和道具图会保留</b><small>删除开始前会先写入独立资产库，之后仍可在“资产库”中查看。</small></div></div>{Boolean(error) && <div className="error-banner">{readableError(error)}</div>}</div>
       <footer><button className="secondary-button" type="button" onClick={onCancel} disabled={deleting}>取消</button><button className="danger-button project-delete-confirm" type="button" onClick={onConfirm} disabled={deleting}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}{deleting ? "正在同步资产并删除…" : "确认删除整个项目"}</button></footer>
     </section>
   </div>, document.body);
@@ -1190,7 +1489,7 @@ function DeleteAssetsConfirmModal({ count, deleting, error, onCancel, onConfirm 
   return createPortal(<div className="modal-backdrop project-delete-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) onCancel(); }}>
     <section className="project-delete-modal asset-delete-modal" role="dialog" aria-modal="true" aria-labelledby="asset-delete-title">
       <header><div className="project-delete-icon"><Trash2 size={23} /></div><div><h2 id="asset-delete-title">确认删除选中的 {count} 项资产？</h2><p>此操作会永久删除资产库中的数据记录和图片文件。</p></div><button className="modal-close" type="button" aria-label="关闭资产删除确认" onClick={onCancel} disabled={deleting}><X size={18} /></button></header>
-      <div className="project-delete-body"><div className="asset-delete-warning"><AlertTriangle size={18} /><div><b>删除后无法恢复</b><small>项目目录中的原始场景图和角色图不会被删除，且已删除资产不会在下次启动时被自动重新导入。</small></div></div>{Boolean(error) && <div className="error-banner">{readableError(error)}</div>}</div>
+      <div className="project-delete-body"><div className="asset-delete-warning"><AlertTriangle size={18} /><div><b>删除后无法恢复</b><small>项目目录中的原始场景图、角色图和道具图不会被删除，且已删除资产不会在下次启动时被自动重新导入。</small></div></div>{Boolean(error) && <div className="error-banner">{readableError(error)}</div>}</div>
       <footer><button className="secondary-button" type="button" onClick={onCancel} disabled={deleting}>取消</button><button className="danger-button project-delete-confirm" type="button" onClick={onConfirm} disabled={deleting}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}{deleting ? "正在删除资产和图片…" : `确认删除 ${count} 项资产`}</button></footer>
     </section>
   </div>, document.body);
@@ -1252,7 +1551,7 @@ function AssetLibraryPanel({ assets, loading, error, onRefresh }: { assets: Asse
 }
 
 function StoryboardModeModal({ onClose, onSelect }: { onClose: () => void; onSelect: (selection: StoryboardUnderstandingSelection) => void }) {
-  const [selectedMode, setSelectedMode] = useState<StoryboardUnderstandingMode>("standard");
+  const [selectedMode, setSelectedMode] = useState<StoryboardUnderstandingMode>("fixed");
   const [fixedSeconds, setFixedSeconds] = useState<FixedStoryboardSeconds>(10);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -1263,15 +1562,15 @@ function StoryboardModeModal({ onClose, onSelect }: { onClose: () => void; onSel
     <section className="storyboard-mode-modal" role="dialog" aria-modal="true" aria-labelledby="storyboard-mode-title">
       <header><div><span className="eyebrow">VIDEO UNDERSTANDING MODE</span><h2 id="storyboard-mode-title">选择视频理解模式</h2><p>三种模式都会输出可查看、可编辑并可直接创建项目的结构化分镜。</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
       <div className="storyboard-mode-options">
-        <button className={`storyboard-mode-option recommended${selectedMode === "standard" ? " active" : ""}`} type="button" onClick={() => setSelectedMode("standard")} aria-pressed={selectedMode === "standard"}>
-          <span className="mode-icon"><Sparkles size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>标准模式</strong><em>推荐</em></span><small>使用默认视频理解提示词，按 10～15 秒组织分镜，速度与信息密度更均衡。</small></span>{selectedMode === "standard" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
+        <section className={`storyboard-mode-option fixed-duration-mode${selectedMode === "fixed" ? " active" : ""}`} role="button" tabIndex={0} aria-pressed={selectedMode === "fixed"} onClick={() => setSelectedMode("fixed")} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedMode("fixed"); } }}>
+          <span className="mode-icon"><Clapperboard size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>固定秒数模式</strong><em>推荐</em></span><small>除最后一段外，所有分镜严格使用相同的固定时长。</small><label className="fixed-duration-select">每个分镜<select value={fixedSeconds} onChange={(event) => { setFixedSeconds(Number(event.target.value) as FixedStoryboardSeconds); setSelectedMode("fixed"); }}><option value={10}>10 秒（默认）</option><option value={15}>15 秒</option><option value={6}>6 秒</option></select></label></span>{selectedMode === "fixed" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
+        </section>
+        <button className={`storyboard-mode-option${selectedMode === "standard" ? " active" : ""}`} type="button" onClick={() => setSelectedMode("standard")} aria-pressed={selectedMode === "standard"}>
+          <span className="mode-icon"><Sparkles size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>标准模式</strong></span><small>使用默认视频理解提示词，按 10～15 秒组织分镜，速度与信息密度更均衡。</small></span>{selectedMode === "standard" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
         </button>
         <button className={`storyboard-mode-option${selectedMode === "detailed" ? " active" : ""}`} type="button" onClick={() => setSelectedMode("detailed")} aria-pressed={selectedMode === "detailed"}>
           <span className="mode-icon"><ScanSearch size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>详细模式</strong></span><small>进一步把每个分镜的画面按内容节奏细分到秒，逐段写明运镜，并把台词放入对应画面。</small></span>{selectedMode === "detailed" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
         </button>
-        <section className={`storyboard-mode-option fixed-duration-mode${selectedMode === "fixed" ? " active" : ""}`} role="button" tabIndex={0} aria-pressed={selectedMode === "fixed"} onClick={() => setSelectedMode("fixed")} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedMode("fixed"); } }}>
-          <span className="mode-icon"><Clapperboard size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>固定秒数模式</strong></span><small>除最后一段外，所有分镜严格使用相同的固定时长。</small><label className="fixed-duration-select">每个分镜<select value={fixedSeconds} onChange={(event) => { setFixedSeconds(Number(event.target.value) as FixedStoryboardSeconds); setSelectedMode("fixed"); }}><option value={10}>10 秒（默认）</option><option value={15}>15 秒</option><option value={6}>6 秒</option></select></label></span>{selectedMode === "fixed" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
-        </section>
       </div>
       <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button storyboard-mode-confirm" type="button" onClick={() => onSelect({ mode: selectedMode, fixedSeconds: selectedMode === "fixed" ? fixedSeconds : undefined })}><ScanSearch size={17} />确定开始分析</button></footer>
     </section>
@@ -1342,7 +1641,7 @@ function GenerationRecordsModal({ projectPath, onClose }: { projectPath: string;
       <div className="generation-records-body">
         {recordsQuery.isLoading ? <div className="settings-loading"><LoaderCircle className="spin" /> 正在读取生成记录…</div> : recordsQuery.error ? <div className="error-banner">{readableError(recordsQuery.error)}</div> : records.length === 0 ? <div className="generation-records-empty"><History size={38} /><strong>暂无生成记录</strong><span>角色图、场景图、分镜图和分镜视频的生成流水会显示在这里。</span></div> : <div className="generation-records-grid">{records.map((record) => <article className="generation-record-card" key={record.id}>
           <div className="generation-record-media"><GenerationRecordPreview projectPath={projectPath} record={record} /><span className={`generation-record-status ${record.status.toLowerCase()}`}>{generationStatusLabels[record.status]}</span></div>
-          <div className="generation-record-info"><div className="generation-record-title"><strong>{record.target_type === "project" ? "项目合成视频" : record.target_id}</strong><span>{record.media_type === "image" ? "图片" : "视频"} · {record.target_type === "character" ? "角色" : record.target_type === "scene" ? "场景" : record.target_type === "project" ? "项目" : "分镜"}</span></div><small>{record.model} · {record.aspect_ratio} · {new Date(record.created_at).toLocaleString("zh-CN")}</small><div className="generation-record-progress"><i style={{ width: `${Math.max(0, Math.min(100, record.progress * 100))}%` }} /></div>{record.error?.message && <p className="generation-record-error">{record.error.message}</p>}<details><summary>查看生成提示词</summary><p>{record.prompt}</p></details><div className="generation-record-card-actions"><button type="button" onClick={() => saveRecord(record)} disabled={exportingRecordId === record.id || record.status !== "COMPLETED" || !record.result_relative_path}>{exportingRecordId === record.id ? <LoaderCircle className="spin" size={14} /> : <FileDown size={14} />}{exportingRecordId === record.id ? "正在保存…" : "另存为"}</button></div></div>
+          <div className="generation-record-info"><div className="generation-record-title"><strong>{record.target_type === "project" ? "项目合成视频" : record.target_id}</strong><span>{record.media_type === "image" ? "图片" : "视频"} · {record.target_type === "character" || record.target_type === "character_state" ? "角色" : record.target_type === "scene" ? "场景" : record.target_type === "prop" ? "道具" : record.target_type === "project" ? "项目" : "分镜"}</span></div><small>{record.model} · {record.aspect_ratio} · {new Date(record.created_at).toLocaleString("zh-CN")}</small><div className="generation-record-progress"><i style={{ width: `${Math.max(0, Math.min(100, record.progress * 100))}%` }} /></div>{record.error?.message && <p className="generation-record-error">{record.error.message}</p>}<details><summary>查看生成提示词</summary><p>{record.prompt}</p></details><div className="generation-record-card-actions"><button type="button" onClick={() => saveRecord(record)} disabled={exportingRecordId === record.id || record.status !== "COMPLETED" || !record.result_relative_path}>{exportingRecordId === record.id ? <LoaderCircle className="spin" size={14} /> : <FileDown size={14} />}{exportingRecordId === record.id ? "正在保存…" : "另存为"}</button></div></div>
         </article>)}</div>}
       </div>
       <footer><button className="secondary-button" type="button" onClick={() => recordsQuery.refetch()} disabled={recordsQuery.isFetching}>{recordsQuery.isFetching ? <LoaderCircle className="spin" size={16} /> : <History size={16} />} 刷新</button><button className="primary-button" type="button" onClick={onClose}>关闭</button></footer>
@@ -1606,8 +1905,9 @@ function automaticWorkflowProgress(items: AutomaticWorkflowTaskSnapshot[]): numb
   return items.length ? items.reduce((sum, item) => sum + item.progress, 0) / items.length : 1;
 }
 
-function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, onStop, onClose }: { canonical: CanonicalProject; projectPath: string; state: AutoProjectWorkflowState; stopping: boolean; onStop: () => void; onClose: () => void }) {
+function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, onStop, onRestart, onClose }: { canonical: CanonicalProject; projectPath: string; state: AutoProjectWorkflowState; stopping: boolean; onStop: () => void; onRestart: () => void; onClose: () => void }) {
   const [showComposedVideo, setShowComposedVideo] = useState(false);
+  const purchaseRequired = state.cancelled && isInsufficientBalanceError(state.message);
   const sceneRows = canonical.scenes.map((scene) => { const task = latestTargetTask(state.imageTasks, "scene", scene.id); const path = preferredProjectAsset(scene.reference_assets, latestTargetImage(state.imageTasks, "scene", scene.id)); return { id: scene.id, name: scene.name, task, path, ...workflowTaskStatus(task, Boolean(path), "等待启动") }; });
   const characterRows = canonical.characters.flatMap((character) => characterStates(character).map((characterState) => { const task = latestTargetTask(state.imageTasks, "character_state", characterState.id); const path = characterStateImage(character, characterState, state.imageTasks); return { id: characterState.id, name: character.name + " · " + characterState.name, task, path, ...workflowTaskStatus(task, Boolean(path), "等待启动") }; }));
   const shotImageRows = canonical.shots.map((shot) => { const task = latestTargetTask(state.imageTasks, "shot", shot.id); const path = latestTargetImage(state.imageTasks, "shot", shot.id) ?? firstProjectAsset(shot.reference_assets); const skipped = state.mode === "fast"; return { id: shot.id, name: shot.visual || shot.action, task, path, ...(skipped ? { label: "快速模式跳过", progress: 1, className: "skipped" } : workflowTaskStatus(task, Boolean(path), state.stage === "assets" ? "等待资产完成" : "等待启动")) }; });
@@ -1621,7 +1921,7 @@ function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, onS
   const renderImageRow = (row: typeof sceneRows[number]) => <article className={`auto-workflow-task ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ProjectAssetPreview projectPath={projectPath} relativePath={row.path} fallback={<ImageIcon size={22} />} /> : <ImageIcon size={22} />}</div><div><strong>{row.id} · {row.name}</strong><span>{row.task?.error?.message || row.label}</span></div><i title="制作阶段，并非实际生成百分比"><b style={{ width: `${row.progress * 100}%` }} /></i><em>{row.path ? "100%" : row.task?.status === "FAILED" ? "失败" : activeImageTask(row.task) ? <LoaderCircle className="spin" size={15} aria-label="生成中" /> : "—"}</em></article>;
   const renderVideoRow = (row: typeof videoRows[number]) => <article className={`auto-workflow-task video ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ShotGeneratedMedia projectPath={projectPath} relativePath={row.path} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{row.id}</strong><span>{row.record?.error?.message || row.label}</span></div><i><b style={{ width: `${row.progress * 100}%` }} /></i><em>{Math.round(row.progress * 100)}%</em></article>;
   const renderCompositionRow = <article className={`auto-workflow-task video composition ${compositionRow.className}`}><div className="auto-workflow-preview">{compositionPath ? <ShotGeneratedMedia projectPath={projectPath} relativePath={compositionPath} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{compositionRow.name}</strong><span>{compositionRecord?.error?.message || compositionRow.label}</span>{compositionPath && <button className="auto-workflow-play-button" type="button" onClick={() => setShowComposedVideo(true)}><Play size={13} />播放合成视频</button>}</div><i><b style={{ width: `${compositionRow.progress * 100}%` }} /></i><em>{Math.round(compositionRow.progress * 100)}%</em></article>;
-  return createPortal(<><div className="modal-backdrop"><section className="auto-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="auto-workflow-title"><header><div><span className="eyebrow">AUTOMATIC PRODUCTION</span><h2 id="auto-workflow-title">项目自动制作工作流</h2><p>{state.mode === "fast" ? "快速模式" : "分镜图模式"} · {state.resolution === "default" ? "模型默认分辨率" : videoResolutionLabel(state.resolution)} · {state.message}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="隐藏工作流"><X size={18} /></button></header><div className="auto-workflow-overall"><div><span>{state.running ? "工作流执行中" : state.cancelled ? "工作流已停止" : "工作流已完成"}</span><strong>{Math.round(overall * 100)}%</strong></div><i><b style={{ width: `${overall * 100}%` }} /></i>{state.retryMessage && <p><LoaderCircle className={state.running ? "spin" : ""} size={14} />{state.retryMessage}</p>}</div><div className="auto-workflow-body"><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 01</span><div><strong>场景图生成</strong><small>与角色图并行启动</small></div></header><div className="auto-workflow-task-list">{sceneRows.map(renderImageRow)}</div></section><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 02</span><div><strong>角色图生成</strong><small>与场景图并行启动</small></div></header><div className="auto-workflow-task-list">{characterRows.map(renderImageRow)}</div></section><section className={state.mode === "fast" ? "skipped" : state.stage === "storyboard" ? "active" : ["video", "composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 03</span><div><strong>分镜图生成</strong><small>{state.mode === "fast" ? "快速模式自动跳过" : "等待场景图和角色图全部完成"}</small></div></header>{state.mode === "storyboard" && <div className="auto-workflow-task-list">{shotImageRows.map(renderImageRow)}</div>}</section><section className={state.stage === "video" ? "active" : ["composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 04</span><div><strong>分镜视频生成</strong><small>严格等待所有前置资产完成</small></div></header><div className="auto-workflow-task-list">{videoRows.map(renderVideoRow)}</div></section><section className={state.stage === "composition" ? "active" : state.stage === "completed" ? "completed" : "pending"}><header><span>STEP 05</span><div><strong>完整视频合成</strong><small>按照项目分镜顺序合成为一个完整视频</small></div></header><div className="auto-workflow-task-list">{renderCompositionRow}</div></section></div><footer><span>{state.running ? "任务失败时将停留在当前步骤并自动重新检查、重试，不能跳过；隐藏弹窗不会停止工作流。" : state.cancelled ? "工作流已停止，不会继续创建或重试后续任务；已经完成的结果会保留。" : "所有项目制作步骤及完整视频合成均已完成。"}</span><div className="auto-workflow-footer-actions">{state.running && <button className="secondary-button danger-button" type="button" onClick={onStop} disabled={stopping}><X size={16} />{stopping ? "正在停止…" : "停止工作流"}</button>}<button className="primary-button" type="button" onClick={onClose}>{state.running ? "隐藏工作流" : state.cancelled ? "关闭" : "完成"}</button></div></footer></section></div>{showComposedVideo && compositionPath && currentComposition && <ProjectVideoPlayerModal projectPath={projectPath} record={currentComposition} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowComposedVideo(false)} />}</>, document.body);
+  return createPortal(<><div className="modal-backdrop"><section className="auto-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="auto-workflow-title"><header><div><span className="eyebrow">AUTOMATIC PRODUCTION</span><h2 id="auto-workflow-title">项目自动制作工作流</h2><p>{state.mode === "fast" ? "快速模式" : "分镜图模式"} · {state.resolution === "default" ? "模型默认分辨率" : videoResolutionLabel(state.resolution)} · {state.message}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="隐藏工作流"><X size={18} /></button></header><div className="auto-workflow-overall"><div><span>{state.running ? "工作流执行中" : state.cancelled ? "工作流已停止" : "工作流已完成"}</span><strong>{Math.round(overall * 100)}%</strong></div><i><b style={{ width: `${overall * 100}%` }} /></i>{state.retryMessage && <p><LoaderCircle className={state.running ? "spin" : ""} size={14} />{state.retryMessage}</p>}{purchaseRequired && <div className="insufficient-credit-callout workflow-insufficient-credit"><div className="error-banner">积分不足，购买完成后可继续未完成的自动制作任务。</div><ImmediateCreditPurchaseButton label="立即购买积分并继续" onPurchased={onRestart} /></div>}</div><div className="auto-workflow-body"><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 01</span><div><strong>场景图生成</strong><small>与角色图并行启动</small></div></header><div className="auto-workflow-task-list">{sceneRows.map(renderImageRow)}</div></section><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 02</span><div><strong>角色图生成</strong><small>与场景图并行启动</small></div></header><div className="auto-workflow-task-list">{characterRows.map(renderImageRow)}</div></section><section className={state.mode === "fast" ? "skipped" : state.stage === "storyboard" ? "active" : ["video", "composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 03</span><div><strong>分镜图生成</strong><small>{state.mode === "fast" ? "快速模式自动跳过" : "等待场景图和角色图全部完成"}</small></div></header>{state.mode === "storyboard" && <div className="auto-workflow-task-list">{shotImageRows.map(renderImageRow)}</div>}</section><section className={state.stage === "video" ? "active" : ["composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 04</span><div><strong>分镜视频生成</strong><small>严格等待所有前置资产完成</small></div></header><div className="auto-workflow-task-list">{videoRows.map(renderVideoRow)}</div></section><section className={state.stage === "composition" ? "active" : state.stage === "completed" ? "completed" : "pending"}><header><span>STEP 05</span><div><strong>完整视频合成</strong><small>按照项目分镜顺序合成为一个完整视频</small></div></header><div className="auto-workflow-task-list">{renderCompositionRow}</div></section></div><footer><span>{state.running ? "任务失败时将停留在当前步骤并自动重新检查、重试，不能跳过；隐藏弹窗不会停止工作流。" : state.cancelled ? "工作流已停止；重启时只会为未完成内容重新选择模型并确认积分。" : "所有项目制作步骤及完整视频合成均已完成。"}</span><div className="auto-workflow-footer-actions">{state.running && <button className="secondary-button danger-button" type="button" onClick={onStop} disabled={stopping}><X size={16} />{stopping ? "正在停止…" : "停止工作流"}</button>}<button className={state.cancelled ? "secondary-button" : "primary-button"} type="button" onClick={onClose}>{state.running ? "隐藏工作流" : state.cancelled ? "关闭" : "完成"}</button>{state.cancelled && <button className="primary-button" type="button" onClick={onRestart}><RotateCcw size={16} />重启工作流</button>}</div></footer></section></div>{showComposedVideo && compositionPath && currentComposition && <ProjectVideoPlayerModal projectPath={projectPath} record={currentComposition} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowComposedVideo(false)} />}</>, document.body);
 }
 
 function StoryPage({ canonical, projectPath, projectId }: { canonical: CanonicalProject; projectPath: string; projectId: string }) {
@@ -1641,6 +1941,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
   const generationRecordsQuery = useProjectGenerationRecords(projectPath);
   const activeWorkflowQuery = useQuery({ queryKey: ["active-automatic-workflow", projectPath, projectId], queryFn: () => getActiveAutomaticWorkflow(projectPath, projectId), refetchInterval: 2000 });
   const [showAutoMode, setShowAutoMode] = useState(false);
+  const [restartWorkflowId, setRestartWorkflowId] = useState<string>();
   const [autoMode, setAutoMode] = useState<AutoProjectMode>("fast");
   const [autoResolution, setAutoResolution] = useState("720p");
   const [startingWorkflow, setStartingWorkflow] = useState(false);
@@ -1963,13 +2264,31 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       setStoppingWorkflow(false);
     }
   };
+  const openRestartWorkflow = () => {
+    if (!workflow.id || workflow.running || !workflow.cancelled) return;
+    setAutoMode(workflow.mode);
+    setAutoResolution(workflow.resolution);
+    setWorkflowStartError("");
+    setRestartWorkflowId(workflow.id);
+    setWorkflow((current) => ({ ...current, visible: false }));
+    setShowAutoMode(true);
+    void Promise.all([imageTasksQuery.refetch(), generationRecordsQuery.refetch()]);
+  };
+  const closeWorkflowStart = () => {
+    setShowAutoMode(false);
+    if (!restartWorkflowId) return;
+    setRestartWorkflowId(undefined);
+    setWorkflow((current) => ({ ...current, visible: true }));
+  };
   const startAutoWorkflow = async (choice: WorkflowStartChoice) => {
     if (startingWorkflow) return;
+    const restarting = Boolean(restartWorkflowId);
+    const selectedMode = restarting ? workflow.mode : autoMode;
     setStartingWorkflow(true);
     setWorkflowStartError("");
     let creditId: string | undefined;
     try {
-      if (imageTasks.some(activeImageTask) || records.some(activeGeneration)) throw new Error("还有内容正在生成，请等待完成后再开始自动创作。");
+      if (!restarting && (imageTasks.some(activeImageTask) || records.some(activeGeneration))) throw new Error("还有内容正在生成，请等待完成后再开始自动创作。");
       const currentBalance = await getCreditBalance();
       const total = choice.items.reduce((sum,item)=>sum+Math.round(item.credits*1e6),0)/1e6;
       if(currentBalance.available < total) throw new Error(`积分不够，本次需要 ${total} 分。`);
@@ -1979,15 +2298,19 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       workflowMediaSelections.current = { image, video };
       const selectedResolution = video.resolution;
       setAutoResolution(selectedResolution);
-      const created = await createAutomaticWorkflow({ project_path: projectPath, project_id: projectId, mode: autoMode, resolution: selectedResolution });
-      await updateAutomaticWorkflow({ project_path: projectPath, project_id: projectId, workflow_id: created.id, status: "RUNNING", stage: "assets", progress: 0, message: "正在初始化自动制作工作流", snapshot: { items: [], ...workflowMediaSnapshot(workflowMediaSelections.current) } });
+      const created = await createAutomaticWorkflow({ project_path: projectPath, project_id: projectId, mode: selectedMode, resolution: selectedResolution });
+      const initialItems = automaticWorkflowSnapshot(canonical, selectedMode, imageTasks, records);
+      const initialMessage = restarting ? "正在重启自动制作工作流并检查未完成任务" : "正在初始化自动制作工作流";
+      await updateAutomaticWorkflow({ project_path: projectPath, project_id: projectId, workflow_id: created.id, status: "RUNNING", stage: "assets", progress: automaticWorkflowProgress(initialItems), message: initialMessage, snapshot: { items: initialItems, ...workflowMediaSnapshot(workflowMediaSelections.current) } });
       resumedWorkflowId.current = created.id;
+      setRestartWorkflowId(undefined);
       setShowAutoMode(false);
-      setWorkflow({ id: created.id, visible: true, running: true, cancelled: false, mode: autoMode, resolution: selectedResolution, stage: "assets", message: "正在初始化自动制作工作流", retryMessage: "", imageTasks, records });
-      void runAutomaticWorkflow(autoMode, selectedResolution, created.id);
+      setWorkflow({ id: created.id, visible: true, running: true, cancelled: false, mode: selectedMode, resolution: selectedResolution, stage: "assets", message: initialMessage, retryMessage: "", imageTasks, records });
+      void runAutomaticWorkflow(selectedMode, selectedResolution, created.id);
+      void activeWorkflowQuery.refetch();
     } catch (error) {
       if(creditId) await invoke("stop_workflow_credit",{projectPath,id:creditId}).catch(()=>undefined);
-      setWorkflowStartError(`无法启动自动制作：${readableError(error)}`);
+      setWorkflowStartError(`${restarting ? "无法重启自动制作" : "无法启动自动制作"}：${readableError(error)}`);
     } finally {
       setStartingWorkflow(false);
     }
@@ -2042,10 +2365,10 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     });
   },[activeWorkflowQuery.data,activeWorkflowQuery.isSuccess,imageTasksQuery.data,generationRecordsQuery.data]);
   const planned: PlannedMedia[] = [
-    ...canonical.scenes.filter(scene=>!preferredProjectAsset(scene.reference_assets,latestTargetImage(imageTasks,"scene",scene.id))).map(scene=>({key:`image:scene:${scene.id}`,group:"场景图" as const})),
-    ...canonical.characters.flatMap(character=>characterStates(character).filter(state=>!characterStateImage(character,state,imageTasks)).map(state=>({key:`image:character_state:${state.id}`,group:"角色图" as const}))),
-    ...(autoMode==="storyboard"?canonical.shots.filter(shot=>!(latestTargetImage(imageTasks,"shot",shot.id)??firstProjectAsset(shot.reference_assets))).map(shot=>({key:`image:shot:${shot.id}`,group:"分镜图" as const})):[]),
-    ...canonical.shots.filter(shot=>!records.some(record=>record.media_type==="video"&&record.target_type==="shot"&&record.target_id===shot.id&&record.status==="COMPLETED"&&record.result_relative_path)&&!firstProjectAsset(shot.video_assets)).map(shot=>({key:`video:shot:${shot.id}`,group:"分镜视频" as const,seconds:shot.duration})),
+    ...canonical.scenes.filter(scene=>!preferredProjectAsset(scene.reference_assets,latestTargetImage(imageTasks,"scene",scene.id))&&!activeImageTask(latestTargetTask(imageTasks,"scene",scene.id))).map(scene=>({key:`image:scene:${scene.id}`,group:"场景图" as const})),
+    ...canonical.characters.flatMap(character=>characterStates(character).filter(state=>!characterStateImage(character,state,imageTasks)&&!activeImageTask(latestTargetTask(imageTasks,"character_state",state.id))).map(state=>({key:`image:character_state:${state.id}`,group:"角色图" as const}))),
+    ...(autoMode==="storyboard"?canonical.shots.filter(shot=>!(latestTargetImage(imageTasks,"shot",shot.id)??firstProjectAsset(shot.reference_assets))&&!activeImageTask(latestTargetTask(imageTasks,"shot",shot.id))).map(shot=>({key:`image:shot:${shot.id}`,group:"分镜图" as const})):[]),
+    ...canonical.shots.filter(shot=>!records.some(record=>record.media_type==="video"&&record.target_type==="shot"&&record.target_id===shot.id&&record.status==="COMPLETED"&&record.result_relative_path)&&!firstProjectAsset(shot.video_assets)&&!records.some(record=>record.media_type==="video"&&record.target_type==="shot"&&record.target_id===shot.id&&activeGeneration(record))).map(shot=>({key:`video:shot:${shot.id}`,group:"分镜视频" as const,seconds:shot.duration})),
   ];
   return <div className="story-page-layout"><section className="panel story-main story-main-single">
 
@@ -2056,8 +2379,8 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     <label>{t("synopsis")}<textarea value={story.synopsis} rows={7} onChange={(e) => setStory({ synopsis: e.target.value })} /></label>
     {projectEpisodes.length > 0 && <section className="story-episodes"><header><div><span className="section-label">EPISODES</span><h3>分集内容</h3></div></header><div>{projectEpisodes.map((episode, index) => <article key={episode.id}><header><span>{String(index + 1).padStart(2, "0")}</span><input value={episode.title} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, title: event.target.value } : item))} /><em>{Math.round(episode.duration)}秒</em></header><textarea rows={7} value={episode.content} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, content: event.target.value } : item))} /></article>)}</div></section>}
     <label>{t("projectStyle")}<textarea rows={4} value={story.visual_style ?? canonical.shots[0]?.visual_style ?? ""} onChange={(e) => setVisualStyle(e.target.value)} /><small>默认采用视频理解结果；选择预设或直接编辑后，会同步到全部分镜。</small></label>
-    {showAutoMode && settings.data && <WorkflowStartModal mode={autoMode} planned={planned} onModeChange={setAutoMode} onCancel={() => setShowAutoMode(false)} onStart={choice=>void startAutoWorkflow(choice)} busy={startingWorkflow} error={workflowStartError} />}
-    {workflow.visible && <AutoProjectWorkflowModal canonical={canonical} projectPath={projectPath} state={workflow} stopping={stoppingWorkflow} onStop={() => void stopAutomaticWorkflow()} onClose={() => setWorkflow((current) => ({ ...current, visible: false }))} />}
+    {showAutoMode && settings.data && <WorkflowStartModal mode={autoMode} planned={planned} onModeChange={setAutoMode} onCancel={closeWorkflowStart} onCreditsPurchased={() => setWorkflowStartError("")} onStart={choice=>void startAutoWorkflow(choice)} busy={startingWorkflow} error={workflowStartError} restart={Boolean(restartWorkflowId)} />}
+    {workflow.visible && <AutoProjectWorkflowModal canonical={canonical} projectPath={projectPath} state={workflow} stopping={stoppingWorkflow} onStop={() => void stopAutomaticWorkflow()} onRestart={openRestartWorkflow} onClose={() => setWorkflow((current) => ({ ...current, visible: false }))} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
   </section><footer className="story-auto-footer"><div className="story-auto-actions">{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}{hasRunningWorkflow ? <button className="secondary-button active-workflow-button" type="button" onClick={() => setWorkflow((current) => ({ ...current, visible: true }))}><LoaderCircle className="spin" size={17} />打开正在进行的工作流</button> : <button className="primary-button" type="button" onClick={() => setShowAutoMode(true)} disabled={settings.isLoading || imageTasksQuery.isLoading || generationRecordsQuery.isLoading || activeWorkflowQuery.isLoading || startingWorkflow}><WandSparkles size={17} />{startingWorkflow ? "正在创建工作流…" : "一键自动创作"}</button>}</div></footer></div>;
 }
@@ -2183,6 +2506,7 @@ function localizedShotParameter(value: string, locale: AppLocale): string {
 function defaultShotVideoPrompt(shot: Shot, canonical: CanonicalProject, references: GenerationReferenceAssetInput[], locale: AppLocale = "zh-CN"): string {
   const sceneReference = references.find((item) => item.kind === "scene");
   const characterReferences = references.filter((item) => item.kind === "character");
+  const propReferences = references.filter((item) => item.kind === "prop");
   return [
     `运镜：${localizedShotParameter(shot.camera_movement || "STATIC", locale)}`,
     `画面：${shot.visual}`,
@@ -2192,6 +2516,7 @@ function defaultShotVideoPrompt(shot: Shot, canonical: CanonicalProject, referen
     `约束：${shot.constraints || shot.negative_prompt || "角色、场景与参考图一致；动作自然；无畸形；无文字水印；不要字幕"}`,
     sceneReference ? `场景参考图：${sceneReference.label}` : "场景参考图：未生成，不传递",
     ...characterReferences.map((item) => `角色参考图：${item.label}`),
+    ...propReferences.map((item) => `道具参考图：${item.label}`),
     shot.use_image_as_video_first_frame
       ? "首帧要求：使用当前分镜图作为视频第一帧，并从该画面自然开始运动。"
       : shot.use_image_as_video_reference
@@ -2258,7 +2583,7 @@ function importedProjectAsset(paths?: string[]): string | undefined {
 function firstProjectAsset(paths?: string[]): string | undefined {
   return (paths ?? []).find((path) => {
     const normalized = path.trim().replaceAll("\\", "/").replace(/^\.\//, "");
-    return ["assets/", "characters/", "scenes/", "shots/", "storyboard/", "generated/", "derived/"].some((prefix) => normalized.startsWith(prefix));
+    return ["assets/", "characters/", "scenes/", "props/", "shots/", "storyboard/", "generated/", "derived/"].some((prefix) => normalized.startsWith(prefix));
   });
 }
 
@@ -2273,6 +2598,32 @@ function characterStateImage(character: Character, state: CharacterState, imageT
       : undefined);
 }
 
+interface VideoAssetPrerequisite {
+  ready: boolean;
+  missingScenes: string[];
+  missingCharacterStates: string[];
+}
+
+function videoAssetPrerequisite(canonical: CanonicalProject, imageTasks: ImageGenerationTask[]): VideoAssetPrerequisite {
+  const missingScenes = canonical.scenes
+    .filter((scene) => !preferredProjectAsset(scene.reference_assets, latestTargetImage(imageTasks, "scene", scene.id)))
+    .map((scene) => `${scene.id} · ${scene.name}`);
+  const missingCharacterStates = canonical.characters.flatMap((character) => characterStates(character)
+    .filter((state) => !characterStateImage(character, state, imageTasks))
+    .map((state) => `${character.name} · ${state.name}`));
+  return { ready: missingScenes.length === 0 && missingCharacterStates.length === 0, missingScenes, missingCharacterStates };
+}
+
+function videoAssetPrerequisiteMessage(prerequisite: VideoAssetPrerequisite): string {
+  const details = [
+    prerequisite.missingScenes.length ? `${prerequisite.missingScenes.length} 个场景图` : "",
+    prerequisite.missingCharacterStates.length ? `${prerequisite.missingCharacterStates.length} 个角色状态图` : "",
+  ].filter(Boolean).join("、");
+  const examples = [...prerequisite.missingScenes, ...prerequisite.missingCharacterStates].slice(0, 3).join("、");
+  const remaining = prerequisite.missingScenes.length + prerequisite.missingCharacterStates.length - Math.min(3, prerequisite.missingScenes.length + prerequisite.missingCharacterStates.length);
+  return `请先完成全部场景图和角色图，再生成分镜视频。当前还缺少${details || "必需素材"}${examples ? `（${examples}${remaining > 0 ? `等 ${remaining + 3} 项` : ""}）` : ""}。`;
+}
+
 function normalizedShotCharacterStates(characterIds: string[], current: Record<string, string> | undefined, canonical: CanonicalProject): Record<string, string> {
   return Object.fromEntries(characterIds.flatMap((characterId) => {
     const character = canonical.characters.find((item) => item.id === characterId);
@@ -2285,6 +2636,10 @@ function normalizedShotCharacterStates(characterIds: string[], current: Record<s
 
 function shotCharacterIds(shot: Shot): string[] {
   return Array.isArray(shot.character_ids) ? shot.character_ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+}
+
+function shotPropIds(shot: Shot): string[] {
+  return Array.isArray(shot.prop_ids) ? shot.prop_ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
 }
 
 function shotCharacterLockText(characterIds: string[], stateIds: Record<string, string>, canonical: CanonicalProject): string {
@@ -2309,7 +2664,31 @@ function shotReferenceAssets(shot: Shot, canonical: CanonicalProject, imageTasks
     const characterPath = characterStateImage(character, state, imageTasks);
     if (characterPath) references.push({ relative_path: characterPath, label: `角色“${character.name}”·${state.name}`, kind: "character" });
   }
+  for (const propId of shotPropIds(shot)) {
+    const prop = projectProps(canonical).find((item) => item.id === propId);
+    if (!prop) continue;
+    const propPath = preferredProjectAsset(prop.reference_assets, latestTargetImage(imageTasks, "prop", prop.id));
+    if (propPath) references.push({ relative_path: propPath, label: `道具“${prop.name}”`, kind: "prop" });
+  }
   return references;
+}
+
+function shotVideoPromptMentions(shot: Shot, canonical: CanonicalProject, imageTasks: ImageGenerationTask[], records: GenerationRecord[], shotKind: "shot_first_frame" | "shot_reference" = "shot_reference"): VideoPromptMention[] {
+  const mentions: VideoPromptMention[] = [];
+  const scene = canonical.scenes.find((item) => item.id === shot.scene_id);
+  const scenePath = scene ? preferredProjectAsset(scene.reference_assets, latestTargetImage(imageTasks, "scene", scene.id)) : undefined;
+  mentions.push({ token: "@场景图", relativePath: scenePath, kind: "scene" });
+  shotCharacterIds(shot).forEach((characterId, index) => {
+    const character = canonical.characters.find((item) => item.id === characterId);
+    const state = character ? selectedCharacterState(shot, character) : undefined;
+    mentions.push({ token: `@角色图${index + 1}`, relativePath: character && state ? characterStateImage(character, state, imageTasks) : undefined, kind: "character" });
+  });
+  shotPropIds(shot).forEach((propId, index) => {
+    const prop = projectProps(canonical).find((item) => item.id === propId);
+    mentions.push({ token: `@道具图${index + 1}`, relativePath: prop ? preferredProjectAsset(prop.reference_assets, latestTargetImage(imageTasks, "prop", prop.id)) : undefined, kind: "prop" });
+  });
+  mentions.push({ token: "@分镜图", relativePath: completedShotImagePath(shot, records), kind: shotKind });
+  return mentions;
 }
 
 function completedShotImagePath(shot: Shot, records: GenerationRecord[]): string | undefined {
@@ -2334,8 +2713,21 @@ function buildShotVideoGenerationInput(
     : options?.shotImageMode === "none"
       ? false
       : Boolean(shot.use_image_as_video_reference && !useFirstFrame && shotImagePath);
-  const mode = useFirstFrame ? "first_frame" : useShotReference ? "reference" : undefined;
   const basePrompt = shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, references, options?.locale);
+  const mentionRequestsShotReference = Boolean(shotImagePath && basePrompt.includes("@分镜图") && !useFirstFrame);
+  const includeShotReference = useShotReference || mentionRequestsShotReference;
+  const mode = useFirstFrame ? "first_frame" : includeShotReference ? "reference" : undefined;
+  const regularReferences: GenerationReferenceAssetInput[] = includeShotReference && shotImagePath
+    ? [...references, { relative_path: shotImagePath, label: "当前分镜图（视频整体参考图）", kind: "shot_reference" }]
+    : references;
+  const ordinalReferences: GenerationReferenceAssetInput[] = useFirstFrame && shotImagePath
+    ? [...regularReferences, { relative_path: shotImagePath, label: "分镜图（视频首帧）", kind: "shot_first_frame" }]
+    : regularReferences;
+  const prepared = prepareVideoPromptSubmission(
+    withShotImageInstruction(basePrompt, mode),
+    ordinalReferences,
+    shotVideoPromptMentions(shot, canonical, imageTasks, records, useFirstFrame ? "shot_first_frame" : "shot_reference"),
+  );
   const requestedResolution = options?.mediaSelection?.resolution ?? options?.resolution;
   const requiresStandardSeedance = videoModel === "kwvideo-v2-ref" && ["1080p", "4K"].includes(requestedResolution ?? "");
   const version: SeedanceVideoVersion = requiresStandardSeedance ? "标准" : videoModel === "kwvideo-v2-ref" && matchesSeedanceVersion(shot.video_version) ? shot.video_version : "标准";
@@ -2346,23 +2738,21 @@ function buildShotVideoGenerationInput(
     project_path: projectPath,
     project_id: projectId,
     shot_id: shot.id,
-    prompt: withShotImageInstruction(basePrompt, mode),
+    prompt: prepared.prompt,
     aspect_ratio: canonical.story.aspect_ratio || shot.aspect_ratio || "9:16",
     duration: shot.duration,
     resolution,
     version: videoModel === "kwvideo-v2-ref" ? version : undefined,
-    reference_assets: useShotReference && shotImagePath
-      ? [...references, { relative_path: shotImagePath, label: "当前分镜图（视频整体参考图）", kind: "shot_reference" }]
-      : references,
+    reference_assets: prepared.references.filter((reference) => reference.kind !== "shot_first_frame"),
     first_frame_relative_path: useFirstFrame ? shotImagePath : undefined,
   };
 }
 
-function latestTargetTask(tasks: ImageGenerationTask[], targetType: "character" | "character_state" | "scene" | "shot", targetId: string) {
+function latestTargetTask(tasks: ImageGenerationTask[], targetType: "character" | "character_state" | "scene" | "prop" | "shot", targetId: string) {
   return tasks.find((task) => task.target_type === targetType && task.target_id === targetId);
 }
 
-function latestTargetImage(tasks: ImageGenerationTask[], targetType: "character" | "character_state" | "scene" | "shot", targetId: string) {
+function latestTargetImage(tasks: ImageGenerationTask[], targetType: "character" | "character_state" | "scene" | "prop" | "shot", targetId: string) {
   return tasks.find((task) => task.target_type === targetType && task.target_id === targetId && task.status === "COMPLETED" && task.result_relative_path)?.result_relative_path;
 }
 
@@ -2449,7 +2839,8 @@ function CharactersPage({ canonical, projectPath, projectId }: { canonical: Cano
     setSubmittingId(entries.length === 1 ? entries[0]!.state.id : "ALL");
     setGenerationError("");
     try {
-      const selection = await requestMediaModel("IMAGE_GENERATION", "选择角色图生成模型");
+      const selection = await requestMediaModel("IMAGE_GENERATION", "选择角色图生成模型", projectPath,
+        queueable.map(({ state }) => ({ key: `image:character_state:${state.id}` })));
       const template = aiSettings.data?.character_image_prompt || CHARACTER_IMAGE_PROMPT;
       const created = await createImageGenerationTasks({
         project_path: projectPath,
@@ -2468,11 +2859,13 @@ function CharactersPage({ canonical, projectPath, projectId }: { canonical: Cano
   };
   const allStates = canonical.characters.flatMap((character) => characterStates(character).map((state) => ({ character, state })));
   const tasks = imageTasks.data ?? [];
+  const visibleCharacterCount = useProgressiveRenderCount(canonical.characters.length, projectPath, 2, 2);
+  const visibleCharacters = canonical.characters.slice(0, visibleCharacterCount);
   return <div>
     <div className="section-intro"><div><span className="section-label">CHARACTER BIBLE</span><h2>{t("characterBible")}</h2></div><div className="section-actions"><span>{canonical.characters.length} 个角色 · {allStates.length} 个状态</span><button className="secondary-button" type="button" onClick={() => void queueStates(allStates)} disabled={Boolean(submittingId)}>{submittingId === "ALL" ? <LoaderCircle className="spin" size={16} /> : <Images size={16} />} 按状态生成全部图片</button></div></div>
     {generationError && <div className="error-banner generation-error">{generationError}</div>}
     {queueNotice && <div className="queue-notice">{queueNotice}</div>}
-    <div className="character-state-list">{canonical.characters.map((character, index) => <article className="character-state-card" key={character.id}>
+    <div className="character-state-list">{visibleCharacters.map((character, index) => <article className="character-state-card" key={character.id}>
       <header className="character-state-card-heading"><div className={`character-avatar color-${index % 5}`}><CircleUserRound size={34} /></div><div><input value={character.name} onChange={(event) => updateCharacter(character.id, { name: event.target.value })} /><span>{character.id} · {character.role}</span></div><button className={character.locked ? "lock active" : "lock"} onClick={() => updateCharacter(character.id, { locked: !character.locked })}>{character.locked ? <Lock size={17} /> : <LockOpen size={17} />}</button></header>
       <div className="character-base-fields"><label>基础外貌<textarea rows={2} value={character.appearance_lock ?? character.appearance.face} onChange={(event) => updateCharacter(character.id, { appearance_lock: event.target.value })} /></label><label>{t("voiceLock")}<textarea rows={2} value={character.voice_lock ?? character.voice} onChange={(event) => updateCharacter(character.id, { voice_lock: event.target.value, voice: event.target.value })} /></label></div>
       <div className="character-state-section"><header><div><strong>角色状态</strong><small>每个状态独立生成参考图，分镜按情境选择</small></div><button type="button" onClick={() => addState(character)}><Plus size={14} />添加状态</button></header>
@@ -2497,10 +2890,137 @@ function CharactersPage({ canonical, projectPath, projectId }: { canonical: Cano
         })}</div>
       </div>
     </article>)}</div>
+    <ProgressiveListLoading visible={visibleCharacterCount} total={canonical.characters.length} label="角色" />
     {libraryTarget && <AssetLibraryPickerModal assetType="character" onClose={() => setLibraryTarget(undefined)} onConfirm={async (asset) => {
       await importStateImage(libraryTarget.character, libraryTarget.state, asset.image_path);
       setLibraryTarget(undefined);
     }} />}
+  </div>;
+}
+
+function projectProps(canonical: CanonicalProject): Prop[] {
+  return Array.isArray(canonical.props) ? canonical.props : [];
+}
+
+function nextPropId(props: Prop[]): string {
+  const used = new Set(props.map((prop) => prop.id));
+  let index = props.length + 1;
+  while (used.has(`PROP_${String(index).padStart(3, "0")}`)) index += 1;
+  return `PROP_${String(index).padStart(3, "0")}`;
+}
+
+function propImageTask(prop: Prop, canonical: CanonicalProject): CreateImageGenerationTaskItem {
+  const prompt = [
+    "独立道具概念设定图",
+    `道具名称：${prop.name.trim()}`,
+    `道具风格：${prop.style.trim()}`,
+    `道具描述：${prop.description.trim()}`,
+    "仅展示该道具本体，完整清晰地表现造型、材质、颜色、纹理和关键细节；干净中性背景，无人物、无手持、无文字、无水印，适合作为后续分镜与视频生成的统一参考图",
+  ].join("。\n");
+  return { target_type: "prop", target_id: prop.id, prompt, aspect_ratio: canonical.story.aspect_ratio || "9:16" };
+}
+
+function PropsPage({ canonical, projectPath, projectId }: { canonical: CanonicalProject; projectPath: string; projectId: string }) {
+  const update = useStudioStore((state) => state.updateCanonical);
+  const imageTasks = useProjectImageTasks(projectPath);
+  const [submittingId, setSubmittingId] = useState("");
+  const [importingId, setImportingId] = useState("");
+  const [libraryTarget, setLibraryTarget] = useState<Prop>();
+  const [generationError, setGenerationError] = useState("");
+  const [queueNotice, setQueueNotice] = useState("");
+  const props = projectProps(canonical);
+  const updateProp = (id: string, patch: Partial<Prop>) => update((model) => ({
+    ...model,
+    props: projectProps(model).map((item) => item.id === id ? { ...item, ...patch } : item),
+  }));
+  const addProp = () => update((model) => ({
+    ...model,
+    props: [...projectProps(model), { id: nextPropId(projectProps(model)), name: "新道具", style: model.story.visual_style || "", description: "", reference_assets: [], locked: false }],
+  }));
+  const removeProp = (prop: Prop) => {
+    if (!window.confirm(`确定删除道具“${prop.name}”吗？项目中的分镜将同时移除对它的引用。`)) return;
+    update((model) => ({
+      ...model,
+      props: projectProps(model).filter((item) => item.id !== prop.id),
+      shots: model.shots.map((shot) => ({ ...shot, prop_ids: (shot.prop_ids ?? []).filter((id) => id !== prop.id) })),
+    }));
+  };
+  const importPropImage = async (prop: Prop, libraryPath?: string) => {
+    const sourcePath = libraryPath ?? await chooseProjectImage();
+    if (!sourcePath) return;
+    setImportingId(prop.id);
+    setGenerationError("");
+    setQueueNotice("");
+    try {
+      const relativePath = await importProjectReferenceImage(projectPath, sourcePath, "prop", prop.id);
+      const remaining = (prop.reference_assets ?? []).filter((path) => !path.replaceAll("\\", "/").startsWith("assets/imported/"));
+      updateProp(prop.id, { reference_assets: [relativePath, ...remaining] });
+      setQueueNotice(`已将“${prop.name}”的${libraryPath ? "资产库道具图" : "本地道具图"}复制到项目中。`);
+    } catch (error) {
+      setGenerationError(readableError(error));
+      if (libraryPath) throw new Error(readableError(error));
+    } finally {
+      setImportingId("");
+    }
+  };
+  const queueProps = async (entries: Prop[]) => {
+    const complete = entries.filter((prop) => prop.name.trim() && prop.style.trim() && prop.description.trim());
+    const queueable = complete.filter((prop) => !activeImageTask(latestTargetTask(imageTasks.data ?? [], "prop", prop.id)));
+    setQueueNotice("");
+    if (!queueable.length) {
+      setGenerationError("");
+      setQueueNotice(complete.length ? "所选道具图正在生成中，本次没有创建重复任务。" : "请先完整填写道具的名称、风格和描述。");
+      return;
+    }
+    setSubmittingId(entries.length === 1 ? entries[0]!.id : "ALL");
+    setGenerationError("");
+    try {
+      const selection = await requestMediaModel("IMAGE_GENERATION", "选择道具图生成模型", projectPath,
+        queueable.map((prop) => ({ key: `image:prop:${prop.id}` })));
+      // A prop can be created and generated before the debounced workspace save fires.
+      // Persist the latest canonical snapshot first so the task and asset-library record
+      // can resolve the prop's user-facing name and metadata reliably.
+      const currentBundle = useStudioStore.getState().bundle;
+      if (!currentBundle?.canonical) throw new Error("当前项目数据尚未就绪，请稍后重试。");
+      await saveCanonical(currentBundle);
+      const created = await createImageGenerationTasks({
+        project_path: projectPath,
+        project_id: projectId,
+        ...mediaImageFields(selection),
+        tasks: queueable.map((prop) => propImageTask(prop, canonical)),
+      });
+      const skipped = entries.length - created.length;
+      if (skipped > 0) setQueueNotice(`已跳过 ${skipped} 个资料不完整或正在生成的道具，只启动其余道具图任务。`);
+      await imageTasks.refetch();
+    } catch (error) {
+      setGenerationError(readableError(error));
+    } finally {
+      setSubmittingId("");
+    }
+  };
+  const tasks = imageTasks.data ?? [];
+  const visiblePropCount = useProgressiveRenderCount(props.length, projectPath, 6, 6);
+  const visibleProps = props.slice(0, visiblePropCount);
+  return <div>
+    <div className="section-intro"><div><span className="section-label">PROP LIBRARY</span><h2>按需创建和管理道具图</h2><p>道具不会由项目自动提取，也不会自动加入任何分镜。</p></div><div className="section-actions"><span>{props.length} 个道具</span>{props.length > 0 && <button className="secondary-button" type="button" onClick={() => void queueProps(props)} disabled={Boolean(submittingId)}>{submittingId === "ALL" ? <LoaderCircle className="spin" size={16} /> : <Images size={16} />}生成全部道具图</button>}<button className="primary-button" type="button" onClick={addProp}><Plus size={16} />添加道具</button></div></div>
+    {generationError && <div className="error-banner generation-error">{generationError}</div>}
+    {queueNotice && <div className="queue-notice">{queueNotice}</div>}
+    {!props.length ? <div className="asset-library-empty prop-empty"><WandSparkles size={24} /><strong>还没有道具</strong><span>点击“添加道具”，再填写名称、风格和描述。</span></div> : <div className="prop-list">{visibleProps.map((prop) => {
+      const task = latestTargetTask(tasks, "prop", prop.id);
+      const imagePath = preferredProjectAsset(prop.reference_assets, latestTargetImage(tasks, "prop", prop.id));
+      const ready = Boolean(prop.name.trim() && prop.style.trim() && prop.description.trim());
+      return <article className="prop-card" key={prop.id}>
+        <div className="prop-visual"><ProjectAssetPreview projectPath={projectPath} relativePath={imagePath} fallback={<WandSparkles size={42} />} /><span>{prop.id}</span></div>
+        <div className="prop-info"><div className="entity-title"><div><span>{prop.id}</span><input aria-label="道具名称" value={prop.name} placeholder="道具名称" onChange={(event) => updateProp(prop.id, { name: event.target.value })} /></div><div className="entity-title-actions"><button className={prop.locked ? "lock active" : "lock"} type="button" onClick={() => updateProp(prop.id, { locked: !prop.locked })}>{prop.locked ? <Lock size={17} /> : <LockOpen size={17} />}</button><button className="lock danger" type="button" title="删除道具" onClick={() => removeProp(prop)}><Trash2 size={16} /></button></div></div>
+          <label>风格<input value={prop.style} placeholder="例如：复古蒸汽朋克、青铜做旧" onChange={(event) => updateProp(prop.id, { style: event.target.value })} /></label>
+          <label>描述<textarea rows={4} value={prop.description} placeholder="描述造型、材质、颜色、尺寸与关键细节" onChange={(event) => updateProp(prop.id, { description: event.target.value })} /></label>
+          <div className="asset-source-actions asset-source-actions-with-library"><button className="asset-import-button" type="button" onClick={() => setLibraryTarget(prop)} disabled={Boolean(importingId)}><Images size={16} />从资产库选择</button><button className="asset-import-button" type="button" onClick={() => void importPropImage(prop)} disabled={Boolean(importingId)}>{importingId === prop.id ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}{importedProjectAsset(prop.reference_assets) ? "更换本地图片" : "选择本地图片"}</button><button className="asset-generate-button" type="button" title={ready ? undefined : "请先填写名称、风格和描述"} onClick={() => void queueProps([prop])} disabled={!ready || Boolean(submittingId) || activeImageTask(task)}>{submittingId === prop.id || activeImageTask(task) ? <LoaderCircle className="spin" size={16} /> : <ImageIcon size={16} />}{activeImageTask(task) ? `生成中 ${Math.round((task?.progress ?? 0) * 100)}%` : imagePath ? "重新生成道具图" : "生成道具图"}</button></div>
+          {task?.status === "FAILED" && <small className="image-task-error">生成失败：{task.error?.message ?? "未知错误"}</small>}
+        </div>
+      </article>;
+    })}</div>}
+    <ProgressiveListLoading visible={visiblePropCount} total={props.length} label="道具" />
+    {libraryTarget && <AssetLibraryPickerModal assetType="prop" onClose={() => setLibraryTarget(undefined)} onConfirm={async (asset) => { await importPropImage(libraryTarget, asset.image_path); setLibraryTarget(undefined); }} />}
   </div>;
 }
 
@@ -2551,7 +3071,8 @@ function ScenesPage({ canonical, projectPath, projectId }: { canonical: Canonica
     setSubmittingId(scenes.length === 1 ? scenes[0]!.id : "ALL");
     setGenerationError("");
     try {
-      const selection = await requestMediaModel("IMAGE_GENERATION", "选择场景图生成模型");
+      const selection = await requestMediaModel("IMAGE_GENERATION", "选择场景图生成模型", projectPath,
+        queueable.map((scene) => ({ key: `image:scene:${scene.id}` })));
       const created = await createImageGenerationTasks({ project_path: projectPath, project_id: projectId, ...mediaImageFields(selection), tasks: queueable.map((scene) => sceneImageTask(scene, canonical)) });
       const totalSkipped = scenes.length - created.length;
       if (totalSkipped > 0 || skipped > 0) setQueueNotice(`已跳过 ${Math.max(totalSkipped, skipped)} 个正在生成中的场景，只启动其余场景的生图任务。`);
@@ -2563,16 +3084,19 @@ function ScenesPage({ canonical, projectPath, projectId }: { canonical: Canonica
     }
   };
   const tasks = imageTasks.data ?? [];
+  const visibleSceneCount = useProgressiveRenderCount(canonical.scenes.length, projectPath, 6, 6);
+  const visibleScenes = canonical.scenes.slice(0, visibleSceneCount);
   return <div>
     <div className="section-intro"><div><span className="section-label">SCENE MEMORY</span><h2>{t("sceneMemory")}</h2></div><div className="section-actions"><span>{t("sceneCount", { count: canonical.scenes.length })}</span><button className="secondary-button" type="button" onClick={() => void queueScenes(canonical.scenes)} disabled={Boolean(submittingId)}>{submittingId === "ALL" ? <LoaderCircle className="spin" size={16} /> : <Images size={16} />} {t("generateAll")}</button></div></div>
     {generationError && <div className="error-banner generation-error">{generationError}</div>}
     {queueNotice && <div className="queue-notice">{queueNotice}</div>}
-    <div className="scene-list">{canonical.scenes.map((scene, index) => {
+    <div className="scene-list">{visibleScenes.map((scene, index) => {
       const task = latestTargetTask(tasks, "scene", scene.id);
       const importedPath = importedProjectAsset(scene.reference_assets);
       const imagePath = preferredProjectAsset(scene.reference_assets, latestTargetImage(tasks, "scene", scene.id));
       return <article className="scene-card" key={scene.id}><div className={`scene-visual scene-${index}`}><ProjectAssetPreview projectPath={projectPath} relativePath={imagePath} fallback={<Boxes size={42} />} /><span>{scene.time_of_day}</span></div><div className="scene-info"><div className="entity-title"><div><span>{scene.id}</span><input value={scene.name} onChange={(e) => updateScene(scene.id, { name: e.target.value })} /></div><button className={scene.locked ? "lock active" : "lock"} onClick={() => updateScene(scene.id, { locked: !scene.locked })}>{scene.locked ? <Lock size={17} /> : <LockOpen size={17} />}</button></div><div className="asset-source-actions asset-source-actions-with-library"><button className="asset-import-button" type="button" onClick={() => setLibraryTarget(scene)} disabled={Boolean(importingId)}><Images size={16} />从资产库选择</button><button className="asset-import-button" type="button" onClick={() => void importSceneImage(scene)} disabled={Boolean(importingId)}>{importingId === scene.id ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}{importedPath ? "更换本地图片" : "选择本地图片"}</button><button className="asset-generate-button" type="button" onClick={() => void queueScenes([scene])} disabled={Boolean(submittingId) || activeImageTask(task)}>{submittingId === scene.id || activeImageTask(task) ? <LoaderCircle className="spin" size={16} /> : <ImageIcon size={16} />}{activeImageTask(task) ? `生成中 ${Math.round((task?.progress ?? 0) * 100)}%` : imagePath ? "重新生图" : "生图"}</button></div>{task?.status === "FAILED" && <small className="image-task-error">生成失败：{task.error?.message ?? "未知错误"}</small>}<textarea rows={3} value={scene.description} onChange={(e) => updateScene(scene.id, { description: e.target.value })} /><div className="scene-meta"><span>{scene.location_type}</span><span>{scene.lighting}</span></div></div></article>;
     })}</div>
+    <ProgressiveListLoading visible={visibleSceneCount} total={canonical.scenes.length} label="场景" />
     {libraryTarget && <AssetLibraryPickerModal assetType="scene" onClose={() => setLibraryTarget(undefined)} onConfirm={async (asset) => {
       await importSceneImage(libraryTarget, asset.image_path);
       setLibraryTarget(undefined);
@@ -2626,6 +3150,7 @@ function LegacyStoryboardPage({ canonical, projectPath }: { canonical: Canonical
 }
 
 type BulkVideoLaunchPhase = "pending" | "creating" | "created" | "existing" | "skipped" | "failed";
+type BulkVideoGenerationMode = "missing" | "regenerate";
 
 interface BulkVideoLaunchItem {
   phase: BulkVideoLaunchPhase;
@@ -2635,20 +3160,29 @@ interface BulkVideoLaunchItem {
 
 type BulkVideoLaunchMap = Record<string, BulkVideoLaunchItem>;
 
-function GenerateAllVideosConfirmModal({ total, completed, active, onCancel, onConfirm }: { total: number; completed: number; active: number; onCancel: () => void; onConfirm: () => void }) {
-  const pending = Math.max(0, total - completed - active);
+function RegenerateAllVideosConfirmModal({ total, onCancel, onConfirm }: { total: number; onCancel: () => void; onConfirm: () => void }) {
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancel(); };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onCancel]);
   return createPortal(<div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-    <section className="bulk-video-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-video-confirm-title">
-      <header><div className="bulk-video-modal-icon"><Clapperboard size={24} /></div><div><span className="eyebrow">BATCH VIDEO GENERATION</span><h2 id="bulk-video-confirm-title">生成所有分镜视频？</h2><p>确认后将为尚未生成视频的分镜创建生成任务。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭"><X size={18} /></button></header>
-      <div className="bulk-video-confirm-body"><div className="bulk-video-warning"><AlertTriangle size={19} /><div><strong>已经生成过分镜视频的分镜会自动跳过</strong><span>正在生成中的任务也不会重复创建；关闭后生成任务仍会在后台继续执行。</span></div></div><div className="bulk-video-confirm-stats"><div><strong>{total}</strong><span>全部分镜</span></div><div><strong>{completed}</strong><span>已有视频，跳过</span></div><div><strong>{active}</strong><span>正在生成</span></div><div><strong>{pending}</strong><span>本次新建任务</span></div></div></div>
-      <footer><button className="secondary-button" type="button" onClick={onCancel}>取消</button><button className="primary-button" type="button" onClick={onConfirm}><Clapperboard size={16} />确认并开始生成</button></footer>
+    <section className="bulk-video-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-video-regenerate-title">
+      <header><div className="bulk-video-modal-icon"><RotateCcw size={24} /></div><div><span className="eyebrow">REGENERATE ALL VIDEOS</span><h2 id="bulk-video-regenerate-title">重新生成全部分镜视频？</h2><p>将为项目中的 {total} 个分镜全部创建一轮新的视频生成任务。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭"><X size={18} /></button></header>
+      <div className="bulk-video-confirm-body"><div className="bulk-video-warning"><AlertTriangle size={19} /><div><strong>全部分镜都会重新生成并重新计算积分</strong><span>已有视频会保留在生成记录中；下一步可以重新选择模型和清晰度，并查看本轮所需积分。</span></div></div></div>
+      <footer><button className="secondary-button" type="button" onClick={onCancel}>否，取消</button><button className="primary-button" type="button" onClick={onConfirm}><RotateCcw size={16} />是，继续选择模型</button></footer>
     </section>
   </div>, document.body);
+}
+
+function shotVideoProgressRecord(records: GenerationRecord[], shotId: string, preferredRecordId?: string): GenerationRecord | undefined {
+  const matching = records.filter((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shotId);
+  const preferred = preferredRecordId ? matching.find((record) => record.id === preferredRecordId) : undefined;
+  return (preferred && activeGeneration(preferred) ? preferred : undefined)
+    ?? matching.find((record) => activeGeneration(record))
+    ?? preferred
+    ?? matching.find((record) => record.status === "COMPLETED" && Boolean(record.result_relative_path))
+    ?? matching[0];
 }
 
 function GenerateAllVideosProgressModal({ shots, records, launches, launching, onClose }: { shots: Shot[]; records: GenerationRecord[]; launches: BulkVideoLaunchMap; launching: boolean; onClose: () => void }) {
@@ -2658,8 +3192,10 @@ function GenerateAllVideosProgressModal({ shots, records, launches, launching, o
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose]);
   const rows = shots.map((shot) => {
-    const launch = launches[shot.id] ?? { phase: "pending" as const };
-    const record = launch.recordId ? records.find((item) => item.id === launch.recordId) : undefined;
+    const trackedLaunch = launches[shot.id];
+    const record = shotVideoProgressRecord(records, shot.id, trackedLaunch?.recordId);
+    const launch = trackedLaunch ?? (record ? { phase: "existing" as const, recordId: record.id } : { phase: "pending" as const });
+    if (!trackedLaunch && !record && shot.video_assets?.[0]) return { shot, launch, record, status: "生成完成", progress: 1, terminal: true, className: "completed" };
     if (launch.phase === "skipped") return { shot, launch, record, status: "已有视频，已跳过", progress: 1, terminal: true, className: "skipped" };
     if (launch.phase === "failed" && !record) return { shot, launch, record, status: "任务创建失败", progress: 0, terminal: true, className: "failed" };
     if (launch.phase === "creating") return { shot, launch, record, status: "正在创建任务", progress: 0.03, terminal: false, className: "running" };
@@ -2686,14 +3222,29 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const aiSettings = useQuery({ queryKey: ["ai-settings"], queryFn: getAiSettings });
   const [showProjectVideo, setShowProjectVideo] = useState(false);
   const [awaitingProjectVideoId, setAwaitingProjectVideoId] = useState("");
-  const [showBulkVideoConfirm, setShowBulkVideoConfirm] = useState(false);
   const [showBulkVideoProgress, setShowBulkVideoProgress] = useState(false);
+  const [showRegenerateAllVideosConfirm, setShowRegenerateAllVideosConfirm] = useState(false);
+  const [showVideoPromptEditor, setShowVideoPromptEditor] = useState(false);
   const [bulkVideoLaunches, setBulkVideoLaunches] = useState<BulkVideoLaunchMap>({});
   const selected = canonical.shots.find((shot) => shot.id === selectedShotId) ?? canonical.shots[0];
   const selectedCharacterIds = selected ? shotCharacterIds(selected) : [];
+  const selectedPropIds = selected ? shotPropIds(selected) : [];
   const updateShot = (id: string, patch: Partial<Shot>) => updateCanonical((model) => ({ ...model, shots: model.shots.map((shot) => shot.id === id ? { ...shot, ...patch } : shot) }));
+  const createManualShot = () => {
+    let createdShotId = "";
+    updateCanonical((model) => {
+      const result = addManualShot(model, selected?.id);
+      createdShotId = result.shotId;
+      return result.canonical;
+    });
+    if (createdShotId) setSelectedShotId(createdShotId);
+  };
   const sourceRange = selected?.source_time_range ?? { start: 0, end: selected?.duration ?? 0 };
   const records = generationRecords.data ?? [];
+  const expiredVideoRecord = records.find((record) => record.media_type === "video" && isPlatformSessionExpired(record.error));
+  useEffect(() => {
+    if (expiredVideoRecord?.error) requestSessionReauthentication(expiredVideoRecord.error);
+  }, [expiredVideoRecord?.id, expiredVideoRecord?.updated_at]);
   const projectVideoRecord = records.find((record) => record.media_type === "video" && record.target_type === "project");
   const completedProjectVideoRecord = records.find((record) => record.media_type === "video" && record.target_type === "project" && record.status === "COMPLETED" && record.result_relative_path);
   const projectVideoPath = completedProjectVideoRecord?.result_relative_path;
@@ -2702,9 +3253,6 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     ...canonical.shots.filter((shot) => Boolean(shot.video_assets?.[0])).map((shot) => shot.id),
   ]);
   const missingShotVideoIds = canonical.shots.filter((shot) => !completedShotVideoIds.has(shot.id)).map((shot) => shot.id);
-  const activeShotVideoIds = new Set(records.filter((record) => record.media_type === "video" && record.target_type === "shot" && activeGeneration(record) && !completedShotVideoIds.has(record.target_id)).map((record) => record.target_id));
-  const completedShotVideoCount = canonical.shots.filter((shot) => completedShotVideoIds.has(shot.id)).length;
-  const activeShotVideoCount = canonical.shots.filter((shot) => activeShotVideoIds.has(shot.id)).length;
   const shotImageRecord = selected ? records.find((record) => record.media_type === "image" && record.target_type === "shot" && record.target_id === selected.id) : undefined;
   const shotVideoRecord = selected ? records.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === selected.id) : undefined;
   const shotImagePath = records.find((record) => record.media_type === "image" && record.target_type === "shot" && record.target_id === selected?.id && record.status === "COMPLETED" && record.result_relative_path)?.result_relative_path ?? selected?.reference_assets?.[0];
@@ -2716,41 +3264,49 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   };
   const selectCharacters = (ids: string[]) => { if (selected) { const stateIds = normalizedShotCharacterStates(ids, selected.character_state_ids, canonical); updateShot(selected.id, { character_ids: ids, character_state_ids: stateIds, character_lock: shotCharacterLockText(ids, stateIds, canonical) }); } };
   const selectCharacterState = (characterId: string, stateId: string) => { if (selected) { const stateIds = { ...normalizedShotCharacterStates(selectedCharacterIds, selected.character_state_ids, canonical), [characterId]: stateId }; updateShot(selected.id, { character_state_ids: stateIds, character_lock: shotCharacterLockText(selectedCharacterIds, stateIds, canonical) }); } };
+  const selectProps = (ids: string[]) => { if (selected) updateShot(selected.id, { prop_ids: ids }); };
   const mentionItems: VisualMentionItem[] = [];
+  const videoMentionItems: VisualMentionItem[] = [];
   const referenceAssets: GenerationReferenceAssetInput[] = [];
   const tasks = imageTasks.data ?? [];
+  const currentVideoAssetPrerequisite = videoAssetPrerequisite(canonical, tasks);
+  const canGenerateShotVideos = !imageTasks.isLoading && currentVideoAssetPrerequisite.ready;
   if (selected) {
     const scene = canonical.scenes.find((item) => item.id === selected.scene_id);
     const scenePath = scene ? preferredProjectAsset(scene.reference_assets, latestTargetImage(tasks, "scene", scene.id)) : undefined;
-    if (scene) mentionItems.push({ id: `scene:${scene.id}`, label: "场景图", detail: `${scene.id} · ${scene.name}${scenePath ? "" : " · 尚未生成图片"}`, insertText: "@场景图", relativePath: scenePath });
+    if (scene) {
+      mentionItems.push({ id: `scene:${scene.id}`, label: "场景图", detail: `${scene.id} · ${scene.name}${scenePath ? "" : " · 尚未生成图片"}`, insertText: "@场景图", relativePath: scenePath });
+      videoMentionItems.push({ id: `video-scene:${scene.id}`, label: `场景图 · ${scene.name}`, detail: scene.id, insertText: "@场景图", relativePath: scenePath, group: "scene" });
+    }
     if (scene && scenePath) referenceAssets.push({ relative_path: scenePath, label: `场景“${scene.name}”`, kind: "scene" });
-    for (const characterId of selectedCharacterIds) {
+    for (const [characterIndex, characterId] of selectedCharacterIds.entries()) {
       const character = canonical.characters.find((item) => item.id === characterId);
       const characterState = character ? selectedCharacterState(selected, character) : undefined;
       const characterPath = character && characterState ? characterStateImage(character, characterState, tasks) : undefined;
       if (character && characterState) mentionItems.push({ id: `character:${character.id}:${characterState.id}`, label: `${character.name}·${characterState.name}`, detail: `角色状态图 · ${characterState.id}${characterPath ? "" : " · 尚未生成图片"}`, insertText: `@${character.name}·${characterState.name}`, relativePath: characterPath });
+      if (character && characterState) videoMentionItems.push({ id: `video-character:${character.id}:${characterState.id}`, label: `角色图${characterIndex + 1} · ${character.name}`, detail: characterState.name, insertText: `@角色图${characterIndex + 1}`, relativePath: characterPath, group: "character" });
       if (character && characterState && characterPath) referenceAssets.push({ relative_path: characterPath, label: `角色“${character.name}”·${characterState.name}`, kind: "character" });
     }
+    for (const [propIndex, propId] of selectedPropIds.entries()) {
+      const prop = projectProps(canonical).find((item) => item.id === propId);
+      const propPath = prop ? preferredProjectAsset(prop.reference_assets, latestTargetImage(tasks, "prop", prop.id)) : undefined;
+      if (prop) mentionItems.push({ id: `prop:${prop.id}`, label: prop.name, detail: `道具图 · ${prop.id}${propPath ? "" : " · 尚未生成图片"}`, insertText: `@${prop.name}`, relativePath: propPath });
+      if (prop) videoMentionItems.push({ id: `video-prop:${prop.id}`, label: `道具图${propIndex + 1} · ${prop.name}`, detail: prop.id, insertText: `@道具图${propIndex + 1}`, relativePath: propPath, group: "prop" });
+      if (prop && propPath) referenceAssets.push({ relative_path: propPath, label: `道具“${prop.name}”`, kind: "prop" });
+    }
     mentionItems.push({ id: `shot:${selected.id}`, label: "分镜图", detail: `${selected.id}${shotImagePath ? " · 当前分镜生成图" : " · 尚未生成图片"}`, insertText: "@分镜图", relativePath: shotImagePath });
+    videoMentionItems.push({ id: `video-shot:${selected.id}`, label: `分镜图 · ${selected.id}`, detail: "当前分镜生成图", insertText: "@分镜图", relativePath: shotImagePath, group: "shot" });
   }
   const imagePrompt = selected ? selected.image_prompt_customized ? selected.image_prompt : defaultShotImagePrompt(selected, canonical) : "";
   const videoPrompt = selected ? selected.video_prompt_customized ? selected.video_prompt : defaultShotVideoPrompt(selected, canonical, referenceAssets, locale) : "";
   const useShotImageAsFirstFrame = Boolean(selected?.use_image_as_video_first_frame);
   const useShotImageAsReference = Boolean(selected?.use_image_as_video_reference && !useShotImageAsFirstFrame);
-  const videoGenerationModel = aiSettings.data?.video_generation_model;
-  const isSeedanceVideoModel = videoGenerationModel === "kwvideo-v2-ref";
-  const isOmniFlashVideoModel = videoGenerationModel === "omni_flash-10s";
-  const videoVersion: SeedanceVideoVersion = isSeedanceVideoModel && matchesSeedanceVersion(selected?.video_version) ? selected!.video_version as SeedanceVideoVersion : "标准";
-  const supportedVideoResolutions = videoResolutionOptions(videoGenerationModel, videoVersion);
-  const videoResolution = selected?.video_resolution && supportedVideoResolutions.includes(selected.video_resolution) ? selected.video_resolution : supportedVideoResolutions[0];
-  const videoReferenceAssets: GenerationReferenceAssetInput[] = useShotImageAsReference && shotImagePath
-    ? [...referenceAssets, { relative_path: shotImagePath, label: "当前分镜图（视频整体参考图）", kind: "shot_reference" }]
-    : referenceAssets;
   const generateImage = useMutation({
     mutationFn: async () => {
       if (!selected) throw new Error("请先选择分镜");
       updateShot(selected.id, { image_prompt: imagePrompt, image_prompt_customized: true });
-      const selection = await requestMediaModel("IMAGE_GENERATION", "选择分镜图生成模型");
+      const selection = await requestMediaModel("IMAGE_GENERATION", "选择分镜图生成模型", projectPath,
+        [{ key: `image:shot:${selected.id}` }]);
       return createImageGenerationTasks({ project_path: projectPath, project_id: projectId, ...mediaImageFields(selection), tasks: [{ target_type: "shot", target_id: selected.id, prompt: imagePrompt, aspect_ratio: canonical.story.aspect_ratio || selected.aspect_ratio || "9:16", reference_assets: referenceAssets }] });
     },
     onSuccess: async () => { await Promise.all([imageTasks.refetch(), generationRecords.refetch()]); },
@@ -2758,33 +3314,61 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const generateVideo = useMutation({
     mutationFn: async () => {
       if (!selected) throw new Error("请先选择分镜");
-      const selection = await requestMediaModel("VIDEO_GENERATION", "选择分镜视频生成模型和分辨率");
-      updateShot(selected.id, { video_prompt: videoPrompt, video_prompt_customized: true });
-      updateShot(selected.id, { video_resolution: selection.resolution, video_version: undefined });
-      return createShotVideoGeneration({ project_path: projectPath, project_id: projectId, shot_id: selected.id, prompt: videoPrompt, aspect_ratio: canonical.story.aspect_ratio || selected.aspect_ratio || "9:16", duration: selected.duration, ...mediaVideoFields(selection), reference_assets: videoReferenceAssets, first_frame_relative_path: useShotImageAsFirstFrame ? shotImagePath : undefined });
+      const refreshedTasks = await imageTasks.refetch();
+      const currentImageTasks = refreshedTasks.data ?? tasks;
+      const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
+      if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
+      const selection = await requestMediaModel("VIDEO_GENERATION", "选择分镜视频生成模型和分辨率", projectPath,
+        [{ key: `video:shot:${selected.id}`, seconds: selected.duration }]);
+      const input = buildShotVideoGenerationInput(selected, canonical, projectPath, projectId, currentImageTasks, records, selection.model.model_alias, { locale, mediaSelection: selection });
+      updateShot(selected.id, { video_prompt: videoPrompt, video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
+      return createShotVideoGeneration(input);
     },
     onSuccess: async () => { await generationRecords.refetch(); },
   });
   const bulkVideoGeneration = useMutation({
-    mutationFn: async () => {
-      const selection = await requestMediaModel("VIDEO_GENERATION", "统一选择全部分镜的视频模型和分辨率");
-      const refreshed = await generationRecords.refetch();
-      let currentRecords = refreshed.data ?? records;
+    mutationFn: async (mode: BulkVideoGenerationMode) => {
+      const [refreshedRecords, refreshedTasks] = await Promise.all([generationRecords.refetch(), imageTasks.refetch()]);
+      let currentRecords = refreshedRecords.data ?? records;
+      const currentImageTasks = refreshedTasks.data ?? tasks;
+      if (mode === "regenerate") {
+        const activeShots = canonical.shots.filter((shot) => currentRecords.some((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && activeGeneration(record)));
+        if (activeShots.length) throw new Error("还有分镜视频正在生成，请等待全部任务结束后再重新生成。");
+      }
+      const plannedShots = canonical.shots.filter((shot) => {
+        if (mode === "regenerate") return true;
+        const completed = currentRecords.some((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && record.status === "COMPLETED" && record.result_relative_path);
+        const active = currentRecords.some((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && activeGeneration(record));
+        return !completed && !active && !shot.video_assets?.[0];
+      });
+      if (!plannedShots.length) return;
+      const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
+      if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
+      const selection = await requestMediaModel("VIDEO_GENERATION", mode === "regenerate" ? "重新生成所有分镜视频" : "生成所有分镜视频", projectPath,
+        plannedShots.map((shot) => ({ key: `video:shot:${shot.id}`, seconds: shot.duration })));
+      const initial: BulkVideoLaunchMap = {};
       for (const shot of canonical.shots) {
         const completedRecord = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && record.status === "COMPLETED" && record.result_relative_path);
-        if (completedRecord || shot.video_assets?.[0]) {
-          setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "skipped", recordId: completedRecord?.id } }));
-          continue;
-        }
+        const activeRecord = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && activeGeneration(record));
+        initial[shot.id] = activeRecord ? { phase: "existing", recordId: activeRecord.id } : mode === "missing" && (completedRecord || shot.video_assets?.[0]) ? { phase: "skipped", recordId: completedRecord?.id } : { phase: "pending" };
+      }
+      setBulkVideoLaunches(initial);
+      setShowBulkVideoProgress(true);
+      for (const shot of canonical.shots) {
+        const completedRecord = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && record.status === "COMPLETED" && record.result_relative_path);
         const activeRecord = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && activeGeneration(record));
         if (activeRecord) {
           setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "existing", recordId: activeRecord.id } }));
           continue;
         }
+        if (mode === "missing" && (completedRecord || shot.video_assets?.[0])) {
+          setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "skipped", recordId: completedRecord?.id } }));
+          continue;
+        }
         setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "creating" } }));
         try {
-          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, tasks, currentRecords, videoGenerationModel, { locale, mediaSelection: selection });
-          updateShot(shot.id, { video_prompt: input.prompt, video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
+          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_alias, { locale, mediaSelection: selection });
+          updateShot(shot.id, { video_prompt: shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, shotReferenceAssets(shot, canonical, currentImageTasks), locale), video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
           const record = await createShotVideoGeneration(input);
           setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "created", recordId: record.id } }));
           const latest = await generationRecords.refetch();
@@ -2819,45 +3403,50 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     }
   }, [awaitingProjectVideoId, records]);
   const startComposition = () => { setShowProjectVideo(false); composeVideo.mutate(); };
-  const confirmBulkVideoGeneration = () => {
-    const initial: BulkVideoLaunchMap = {};
-    for (const shot of canonical.shots) {
-      const completedRecord = records.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && record.status === "COMPLETED" && record.result_relative_path);
-      const activeRecord = records.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && activeGeneration(record));
-      initial[shot.id] = completedRecord || shot.video_assets?.[0] ? { phase: "skipped", recordId: completedRecord?.id } : activeRecord ? { phase: "existing", recordId: activeRecord.id } : { phase: "pending" };
-    }
-    setBulkVideoLaunches(initial);
-    setShowBulkVideoConfirm(false);
-    setShowBulkVideoProgress(true);
-    bulkVideoGeneration.mutate();
-  };
   const bulkVideoSessionActive = canonical.shots.some((shot) => {
     const launch = bulkVideoLaunches[shot.id];
+    const record = shotVideoProgressRecord(records, shot.id, launch?.recordId);
+    if (activeGeneration(record)) return true;
     if (!launch) return false;
-    if (["pending", "creating", "created", "existing"].includes(launch.phase)) {
-      const record = launch.recordId ? records.find((item) => item.id === launch.recordId) : undefined;
-      return !record || activeGeneration(record);
-    }
+    if (["pending", "creating"].includes(launch.phase)) return bulkVideoGeneration.isPending;
+    if (["created", "existing"].includes(launch.phase)) return !record;
     return false;
   });
-  const openBulkVideoGeneration = () => bulkVideoGeneration.isPending || bulkVideoSessionActive ? setShowBulkVideoProgress(true) : setShowBulkVideoConfirm(true);
+  const startBulkVideoGeneration = (mode: BulkVideoGenerationMode) => {
+    setBulkVideoLaunches({});
+    bulkVideoGeneration.reset();
+    bulkVideoGeneration.mutate(mode);
+  };
+  const confirmRegenerateAllVideos = () => {
+    setShowRegenerateAllVideosConfirm(false);
+    startBulkVideoGeneration("regenerate");
+  };
+  const bulkVideoBusy = bulkVideoGeneration.isPending || bulkVideoSessionActive;
+  const allShotVideosReady = canonical.shots.length > 0 && missingShotVideoIds.length === 0;
+  const hasShotVideoTaskHistory = canonical.shots.some((shot) => Boolean(shot.video_assets?.[0]) || records.some((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id)) || Object.keys(bulkVideoLaunches).length > 0;
+  const bulkVideoError = bulkVideoGeneration.error && !readableError(bulkVideoGeneration.error).includes("已取消选择生成模型") ? readableError(bulkVideoGeneration.error) : "";
+  const visibleShotCount = useProgressiveRenderCount(canonical.shots.length, projectPath, 24, 24);
+  const visibleShots = canonical.shots.slice(0, visibleShotCount);
   return <div className="storyboard-layout">
     <section className="project-video-composer">
-      <header><div><span className="section-label">PROJECT VIDEO</span><h3>分镜视频合成</h3><p>按照左侧分镜顺序，将每个分镜最新生成成功的视频合成为一个完整视频。</p></div><div className="project-video-actions"><button className="secondary-button batch-video-button" type="button" onClick={openBulkVideoGeneration} disabled={canonical.shots.length === 0 || aiSettings.isLoading}>{bulkVideoGeneration.isPending || bulkVideoSessionActive ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{bulkVideoGeneration.isPending || bulkVideoSessionActive ? "查看批量生成进度" : "一键生成所有分镜视频"}</button>{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}<button className="primary-button" type="button" onClick={startComposition} disabled={composeVideo.isPending || activeGeneration(projectVideoRecord) || canonical.shots.length === 0 || missingShotVideoIds.length > 0}>{composeVideo.isPending || activeGeneration(projectVideoRecord) ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{activeGeneration(projectVideoRecord) ? `正在合成 ${Math.round((projectVideoRecord?.progress ?? 0) * 100)}%` : projectVideoPath ? "重新合成视频" : "一键合成视频"}</button></div></header>
+      <header><div><span className="section-label">PROJECT VIDEO</span><h3>分镜视频合成</h3><p>按照左侧分镜顺序，将每个分镜最新生成成功的视频合成为一个完整视频。</p></div><div className="project-video-actions">{(bulkVideoBusy || hasShotVideoTaskHistory) && <button className={bulkVideoBusy ? "secondary-button batch-video-button" : "secondary-button"} type="button" onClick={() => setShowBulkVideoProgress(true)}>{bulkVideoBusy ? <LoaderCircle className="spin" size={17} /> : <History size={17} />}查看分镜视频任务进度</button>}{!bulkVideoBusy && allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => setShowRegenerateAllVideosConfirm(true)} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={aiSettings.isLoading || !canGenerateShotVideos}><RotateCcw size={17} />重新一键生成所有分镜视频</button>}{!bulkVideoBusy && !allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => startBulkVideoGeneration("missing")} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={canonical.shots.length === 0 || aiSettings.isLoading || !canGenerateShotVideos}><Clapperboard size={17} />一键生成所有分镜视频</button>}{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}<button className="primary-button" type="button" onClick={startComposition} disabled={composeVideo.isPending || activeGeneration(projectVideoRecord) || canonical.shots.length === 0 || missingShotVideoIds.length > 0}>{composeVideo.isPending || activeGeneration(projectVideoRecord) ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{activeGeneration(projectVideoRecord) ? `正在合成 ${Math.round((projectVideoRecord?.progress ?? 0) * 100)}%` : projectVideoPath ? "重新合成视频" : "一键合成视频"}</button></div></header>
+      {!imageTasks.isLoading && !currentVideoAssetPrerequisite.ready && <div className="project-video-readiness missing"><AlertTriangle size={17} /><span>{videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite)}</span></div>}
       <div className={missingShotVideoIds.length > 0 ? "project-video-readiness missing" : "project-video-readiness ready"}>{missingShotVideoIds.length > 0 ? <><AlertTriangle size={17} /><span>还有 {missingShotVideoIds.length} 个分镜没有可用视频：{missingShotVideoIds.join("、")}</span></> : <><CheckCircle2 size={17} /><span>全部 {canonical.shots.length} 个分镜视频已就绪，将按当前分镜顺序合成。</span></>}</div>
+      {bulkVideoError && <div className="error-banner">批量分镜视频操作失败：{bulkVideoError}</div>}
       {(composeVideo.error || projectVideoRecord?.status === "FAILED") && <div className="error-banner">视频合成失败：{readableError(composeVideo.error ?? projectVideoRecord?.error?.message)}</div>}
     </section>
-    {showBulkVideoConfirm && <GenerateAllVideosConfirmModal total={canonical.shots.length} completed={completedShotVideoCount} active={activeShotVideoCount} onCancel={() => setShowBulkVideoConfirm(false)} onConfirm={confirmBulkVideoGeneration} />}
+    {showRegenerateAllVideosConfirm && <RegenerateAllVideosConfirmModal total={canonical.shots.length} onCancel={() => setShowRegenerateAllVideosConfirm(false)} onConfirm={confirmRegenerateAllVideos} />}
     {showBulkVideoProgress && <GenerateAllVideosProgressModal shots={canonical.shots} records={records} launches={bulkVideoLaunches} launching={bulkVideoGeneration.isPending} onClose={() => setShowBulkVideoProgress(false)} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
-    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span></div>{canonical.shots.map((shot, index) => <button key={shot.id} className={selected?.id === shot.id ? "shot-row active" : "shot-row"} onClick={() => setSelectedShotId(shot.id)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{shot.id}</strong><small>{shot.action}</small></div><em>{shot.duration}s</em></button>)}</section>
+    {showVideoPromptEditor && selected && <VideoPromptFullscreenEditor shotId={selected.id} value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} onClose={() => setShowVideoPromptEditor(false)} />}
+    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><div className="shot-list-header-actions"><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span><button className="secondary-button shot-list-add-button" type="button" onClick={createManualShot} title={selected ? `在 ${selected.id} 后添加分镜` : "添加第一个分镜"}><Plus size={14} />添加分镜</button></div></div>{visibleShots.map((shot, index) => <button key={shot.id} className={selected?.id === shot.id ? "shot-row active" : "shot-row"} onClick={() => setSelectedShotId(shot.id)}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{shot.id}</strong><small>{shot.action || "待编辑"}</small></div><em>{shot.duration}s</em></button>)}<ProgressiveListLoading visible={visibleShotCount} total={canonical.shots.length} label="分镜" /></section>
     {selected && <section className="shot-preview">
       <div className="shot-summary"><div><span>SCENE</span><strong>{canonical.scenes.find((scene) => scene.id === selected.scene_id)?.name}</strong></div><div><span>SOURCE</span><strong>{sourceRange.start}–{sourceRange.end}s</strong></div><div><span>RATIO</span><strong>{canonical.story.aspect_ratio || selected.aspect_ratio || "—"}</strong></div></div>
       <div className="shot-content-editor"><div className="panel-title"><div><span className="section-label">SHOT CONTENT</span><h3>分镜内容</h3></div></div><div className="shot-editor-row"><label>画面<VisualMentionEditor value={selected.visual} onChange={(visual) => updateShot(selected.id, { visual })} items={mentionItems} projectPath={projectPath} /></label><label>动作<textarea rows={4} value={selected.action} onChange={(e) => updateShot(selected.id, { action: e.target.value })} /></label></div><div className="shot-editor-row"><label>台词<textarea rows={3} value={selected.dialogue} onChange={(e) => updateShot(selected.id, { dialogue: e.target.value })} /></label><label>声音<textarea rows={3} value={selected.sound} onChange={(e) => updateShot(selected.id, { sound: e.target.value })} /></label></div></div>
-      <section className="shot-generation-panel"><div className="shot-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD IMAGE</span><strong>分镜图生成提示词</strong></div></div><textarea rows={6} value={imagePrompt} onChange={(event) => updateShot(selected.id, { image_prompt: event.target.value, image_prompt_customized: true })} /><div className="shot-prompt-actions"><div className="shot-image-reference-options"><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，并要求模型从此画面开始运动。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsFirstFrame} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_first_frame: checked, use_image_as_video_reference: checked ? false : useShotImageAsReference, video_prompt: withShotImageInstruction(videoPrompt, checked ? "first_frame" : useShotImageAsReference ? "reference" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频首帧</span></label><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，整体参考其角色、场景、构图、光影和风格。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsReference} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_reference: checked, use_image_as_video_first_frame: checked ? false : useShotImageAsFirstFrame, video_prompt: withShotImageInstruction(videoPrompt, checked ? "reference" : useShotImageAsFirstFrame ? "first_frame" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频生成参考图</span></label></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateImage.mutate()} disabled={generateImage.isPending || activeGeneration(shotImageRecord)}>{generateImage.isPending || activeGeneration(shotImageRecord) ? <LoaderCircle className="spin" size={14} /> : <ImageIcon size={14} />}{activeGeneration(shotImageRecord) ? `生成中 ${Math.round((shotImageRecord?.progress ?? 0) * 100)}%` : shotImagePath ? "重新生成分镜图" : "生成分镜图"}</button></div></div><div className="shot-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD VIDEO</span><strong>视频生成提示词</strong></div></div><textarea rows={6} value={videoPrompt} onChange={(event) => updateShot(selected.id, { video_prompt: event.target.value, video_prompt_customized: true })} /><div className="shot-prompt-actions"><div className="shot-video-options"><small>先选视频清晰度，开始前会告诉你需要多少积分</small></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateVideo.mutate()} disabled={generateVideo.isPending || activeGeneration(shotVideoRecord)}>{generateVideo.isPending || activeGeneration(shotVideoRecord) ? <LoaderCircle className="spin" size={14} /> : <Clapperboard size={14} />}{activeGeneration(shotVideoRecord) ? `生成中 ${Math.round((shotVideoRecord?.progress ?? 0) * 100)}%` : shotVideoPath ? "重新生成视频" : "生成分镜视频"}</button></div></div>{(generateImage.error || shotImageRecord?.status === "FAILED") && <div className="error-banner">分镜图生成失败：{readableError(generateImage.error ?? shotImageRecord?.error?.message)}</div>}{(generateVideo.error || shotVideoRecord?.status === "FAILED") && <div className="error-banner">分镜视频生成失败：{readableError(generateVideo.error ?? shotVideoRecord?.error?.message)}</div>}</section>
+      <section className="shot-generation-panel"><div className="shot-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD IMAGE</span><strong>分镜图生成提示词</strong></div></div><textarea rows={6} value={imagePrompt} onChange={(event) => updateShot(selected.id, { image_prompt: event.target.value, image_prompt_customized: true })} /><div className="shot-prompt-actions"><div className="shot-image-reference-options"><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，并要求模型从此画面开始运动。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsFirstFrame} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_first_frame: checked, use_image_as_video_reference: checked ? false : useShotImageAsReference, video_prompt: withShotImageInstruction(videoPrompt, checked ? "first_frame" : useShotImageAsReference ? "reference" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频首帧</span></label><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，整体参考其角色、场景、构图、光影和风格。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsReference} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_reference: checked, use_image_as_video_first_frame: checked ? false : useShotImageAsFirstFrame, video_prompt: withShotImageInstruction(videoPrompt, checked ? "reference" : useShotImageAsFirstFrame ? "first_frame" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频生成参考图</span></label></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateImage.mutate()} disabled={generateImage.isPending || activeGeneration(shotImageRecord)}>{generateImage.isPending || activeGeneration(shotImageRecord) ? <LoaderCircle className="spin" size={14} /> : <ImageIcon size={14} />}{activeGeneration(shotImageRecord) ? `生成中 ${Math.round((shotImageRecord?.progress ?? 0) * 100)}%` : shotImagePath ? "重新生成分镜图" : "生成分镜图"}</button></div></div><div className="shot-prompt-card video-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD VIDEO</span><strong>视频生成提示词</strong></div></div><VisualMentionEditor value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} rich placeholder="输入视频生成提示词；输入 @ 引用关联图片" ariaLabel="视频生成提示词" /><div className="shot-prompt-actions"><div className="shot-video-options"><button className="secondary-button shot-prompt-action-button" type="button" onClick={() => setShowVideoPromptEditor(true)}><Maximize2 size={14} />全屏编辑</button></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateVideo.mutate()} disabled={generateVideo.isPending || activeGeneration(shotVideoRecord) || !canGenerateShotVideos}>{generateVideo.isPending || activeGeneration(shotVideoRecord) ? <LoaderCircle className="spin" size={14} /> : <Clapperboard size={14} />}{activeGeneration(shotVideoRecord) ? `生成中 ${Math.round((shotVideoRecord?.progress ?? 0) * 100)}%` : shotVideoPath ? "重新生成视频" : "生成分镜视频"}</button></div></div>{(generateImage.error || shotImageRecord?.status === "FAILED") && <div className="error-banner">分镜图生成失败：{readableError(generateImage.error ?? shotImageRecord?.error?.message)}</div>}{isPlatformSessionExpired(shotVideoRecord?.error) && <div className="error-banner">登录已过期，已提交的视频任务正在等待重新登录，登录后会继续查询且不会重新生成。</div>}{(generateVideo.error || (shotVideoRecord?.status === "FAILED" && !isPlatformSessionExpired(shotVideoRecord.error))) && <div className="error-banner">分镜视频生成失败：{readableError(generateVideo.error ?? shotVideoRecord?.error?.message)}</div>}</section>
       <div className="shot-media-grid"><article className="shot-media-card"><header><span>STORYBOARD IMAGE</span><strong>分镜图</strong></header><div className="shot-media-stage"><ShotGeneratedMedia projectPath={projectPath} relativePath={shotImagePath} mediaType="image" /></div></article><article className="shot-media-card"><header><span>STORYBOARD VIDEO</span><strong>分镜视频</strong></header><div className="shot-media-stage"><ShotGeneratedMedia projectPath={projectPath} relativePath={shotVideoPath} mediaType="video" /></div></article></div>
     </section>}
-    {selected && <section className="inspector"><span className="section-label">SHOT INSPECTOR</span><div className="inspector-heading"><h3>{selected.id}</h3><button className={selected.locked ? "lock active" : "lock"} onClick={() => updateShot(selected.id, { locked: !selected.locked })}>{selected.locked ? <Lock size={17} /> : <LockOpen size={17} />}</button></div><div className="inspector-core-grid"><label>时长<input type="number" step="0.5" value={selected.duration} onChange={(e) => updateShot(selected.id, { duration: Number(e.target.value) })} /></label><label>屏幕比例<input readOnly value={canonical.story.aspect_ratio ?? selected.aspect_ratio ?? "9:16"} /></label><label>景别<input value={localizedShotParameter(selected.shot_size, locale)} onChange={(e) => updateShot(selected.id, { shot_size: e.target.value })} /></label><label>机位<input value={localizedShotParameter(selected.camera_angle, locale)} onChange={(e) => updateShot(selected.id, { camera_angle: e.target.value })} /></label></div><label>运镜<input value={localizedShotParameter(selected.camera_movement, locale)} onChange={(e) => updateShot(selected.id, { camera_movement: e.target.value })} /></label><label>画风设定<textarea rows={4} value={selected.visual_style ?? canonical.story.visual_style ?? ""} onChange={(e) => updateShot(selected.id, { visual_style: e.target.value })} /></label><label>场景锁定<select value={selected.scene_id} onChange={(e) => selectScene(e.target.value)}>{canonical.scenes.map((scene) => <option key={scene.id} value={scene.id}>{scene.id} · {scene.name}</option>)}</select></label><label>人物锁定<select value="" onChange={(e) => { const id = e.target.value; if (id && !selectedCharacterIds.includes(id)) selectCharacters([...selectedCharacterIds, id]); }}><option value="">添加项目角色…</option>{canonical.characters.filter((character) => !selectedCharacterIds.includes(character.id)).map((character) => <option key={character.id} value={character.id}>{character.id} · {character.name}</option>)}</select></label><div className="selected-character-locks">{selectedCharacterIds.map((id) => { const character = canonical.characters.find((item) => item.id === id); const characterState = character ? selectedCharacterState(selected, character) : undefined; const imagePath = character && characterState ? characterStateImage(character, characterState, tasks) : undefined; return character && characterState ? <CharacterLockChip key={id} projectPath={projectPath} characterId={character.id} characterName={character.name + " · " + characterState.name} relativePath={imagePath} onRemove={() => selectCharacters(selectedCharacterIds.filter((item) => item !== id))} /> : null; })}{selectedCharacterIds.length === 0 && <small>该分镜没有锁定人物</small>}</div><div className="shot-character-state-selectors">{selectedCharacterIds.map((characterId) => { const character = canonical.characters.find((item) => item.id === characterId); if (!character) return null; const states = characterStates(character); const currentState = states.find((state) => state.id === selected.character_state_ids?.[characterId]) ?? states[0]!; return <label key={characterId}>{character.name}的状态<select value={currentState.id} onChange={(event) => selectCharacterState(characterId, event.target.value)}>{states.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>; })}</div><label>生成约束<textarea rows={3} value={selected.constraints ?? selected.negative_prompt} onChange={(e) => updateShot(selected.id, { constraints: e.target.value, negative_prompt: e.target.value })} /></label></section>}
+    {selected && <section className="inspector"><span className="section-label">SHOT INSPECTOR</span><div className="inspector-heading"><h3>{selected.id}</h3><button className={selected.locked ? "lock active" : "lock"} onClick={() => updateShot(selected.id, { locked: !selected.locked })}>{selected.locked ? <Lock size={17} /> : <LockOpen size={17} />}</button></div><div className="inspector-core-grid"><label>时长<input type="number" step="0.5" value={selected.duration} onChange={(e) => updateShot(selected.id, { duration: Number(e.target.value) })} /></label><label>屏幕比例<input readOnly value={canonical.story.aspect_ratio ?? selected.aspect_ratio ?? "9:16"} /></label><label>景别<input value={localizedShotParameter(selected.shot_size, locale)} onChange={(e) => updateShot(selected.id, { shot_size: e.target.value })} /></label><label>机位<input value={localizedShotParameter(selected.camera_angle, locale)} onChange={(e) => updateShot(selected.id, { camera_angle: e.target.value })} /></label></div><label>运镜<input value={localizedShotParameter(selected.camera_movement, locale)} onChange={(e) => updateShot(selected.id, { camera_movement: e.target.value })} /></label><label>画风设定<textarea rows={4} value={selected.visual_style ?? canonical.story.visual_style ?? ""} onChange={(e) => updateShot(selected.id, { visual_style: e.target.value })} /></label><label>场景锁定<select value={selected.scene_id} onChange={(e) => selectScene(e.target.value)}>{canonical.scenes.map((scene) => <option key={scene.id} value={scene.id}>{scene.id} · {scene.name}</option>)}</select></label><label>人物锁定<select value="" onChange={(e) => { const id = e.target.value; if (id && !selectedCharacterIds.includes(id)) selectCharacters([...selectedCharacterIds, id]); }}><option value="">添加项目角色…</option>{canonical.characters.filter((character) => !selectedCharacterIds.includes(character.id)).map((character) => <option key={character.id} value={character.id}>{character.id} · {character.name}</option>)}</select></label><div className="selected-character-locks">{selectedCharacterIds.map((id) => { const character = canonical.characters.find((item) => item.id === id); const characterState = character ? selectedCharacterState(selected, character) : undefined; const imagePath = character && characterState ? characterStateImage(character, characterState, tasks) : undefined; return character && characterState ? <CharacterLockChip key={id} projectPath={projectPath} characterId={character.id} characterName={character.name + " · " + characterState.name} relativePath={imagePath} onRemove={() => selectCharacters(selectedCharacterIds.filter((item) => item !== id))} /> : null; })}{selectedCharacterIds.length === 0 && <small>该分镜没有锁定人物</small>}</div><div className="shot-character-state-selectors">{selectedCharacterIds.map((characterId) => { const character = canonical.characters.find((item) => item.id === characterId); if (!character) return null; const states = characterStates(character); const currentState = states.find((state) => state.id === selected.character_state_ids?.[characterId]) ?? states[0]!; return <label key={characterId}>{character.name}的状态<select value={currentState.id} onChange={(event) => selectCharacterState(characterId, event.target.value)}>{states.map((state) => <option key={state.id} value={state.id}>{state.name}</option>)}</select></label>; })}</div><label>道具图<select value="" onChange={(event) => { const id = event.target.value; if (id && !selectedPropIds.includes(id)) selectProps([...selectedPropIds, id]); }}><option value="">添加项目道具…</option>{projectProps(canonical).filter((prop) => !selectedPropIds.includes(prop.id)).map((prop) => <option key={prop.id} value={prop.id}>{prop.id} · {prop.name}</option>)}</select></label><div className="selected-character-locks selected-prop-locks">{selectedPropIds.map((id) => { const prop = projectProps(canonical).find((item) => item.id === id); const imagePath = prop ? preferredProjectAsset(prop.reference_assets, latestTargetImage(tasks, "prop", prop.id)) : undefined; return prop ? <CharacterLockChip key={id} projectPath={projectPath} characterId={prop.id} characterName={prop.name} relativePath={imagePath} onRemove={() => selectProps(selectedPropIds.filter((item) => item !== id))} /> : null; })}{selectedPropIds.length === 0 && <small>该分镜没有添加道具图</small>}</div><label>生成约束<textarea rows={3} value={selected.constraints ?? selected.negative_prompt} onChange={(e) => updateShot(selected.id, { constraints: e.target.value, negative_prompt: e.target.value })} /></label></section>}
   </div>;
 }
 
@@ -2865,5 +3454,6 @@ function JobsPage({ bundle }: { bundle: ProjectBundle }) {
   const { t } = useI18n();
   const douyinTasks = useQuery({ queryKey: ["douyin-understanding-tasks"], queryFn: listDouyinUnderstandingTasks, refetchInterval: 1_200 });
   const retryTask = useMutation({ mutationFn: retryDouyinUnderstandingTask, onSuccess: () => douyinTasks.refetch() });
-  return <div className="jobs-page-stack"><section className="panel jobs-panel"><div className="panel-title"><div><span className="section-label">PROJECT WORKFLOW</span><h3>{t("taskCenter")}</h3></div><span className="count-badge">{bundle.jobs.length}</span></div>{bundle.jobs.length === 0 ? <div className="empty-state">{t("noTasks")}</div> : bundle.jobs.map((job) => <div className="job-row" key={job.id}><div className="job-icon"><Check size={18} /></div><div><strong>{job.job_type}</strong><span>{job.stage ?? "—"} · {job.id.slice(0, 18)}</span></div><div className="progress"><i style={{ width: `${job.progress * 100}%` }} /></div><em>{job.status}</em></div>)}</section><DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryTask.variables} onRetry={(taskId) => retryTask.mutate(taskId)} /></div>;
+  const reparseTask = useMutation({ mutationFn: reparseDouyinUnderstandingTask, onSuccess: () => douyinTasks.refetch() });
+  return <div className="jobs-page-stack"><section className="panel jobs-panel"><div className="panel-title"><div><span className="section-label">PROJECT WORKFLOW</span><h3>{t("taskCenter")}</h3></div><span className="count-badge">{bundle.jobs.length}</span></div>{bundle.jobs.length === 0 ? <div className="empty-state">{t("noTasks")}</div> : bundle.jobs.map((job) => <div className="job-row" key={job.id}><div className="job-icon"><Check size={18} /></div><div><strong>{job.job_type}</strong><span>{job.stage ?? "—"} · {job.id.slice(0, 18)}</span></div><div className="progress"><i style={{ width: `${job.progress * 100}%` }} /></div><em>{job.status}</em></div>)}</section><DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryTask.isPending ? retryTask.variables : undefined} onRetry={(taskId) => retryTask.mutate(taskId)} reparsingTaskId={reparseTask.isPending ? reparseTask.variables : undefined} onReparse={(taskId) => { if (!window.confirm("确定重新解析这个视频吗？重新解析会再次调用视频理解模型并消耗相应积分，成功后将用新结果替换当前结果。")) return false; reparseTask.mutate(taskId); return true; }} reparseError={reparseTask.error} /></div>;
 }

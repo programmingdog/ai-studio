@@ -1,8 +1,10 @@
-import { Controller, Get, Header, Inject, Query } from "@nestjs/common";
+import { Controller, Get, Header, Headers, Inject, Param, Query, Res } from "@nestjs/common";
+import type { Response } from "express";
 import { CatalogService } from "../catalog/catalog.service";
 import { ClientConfigService } from "./client-config.service";
 import { AuthMethodConfigService } from "../common/auth-method-config.service";
 import { ProductBrandConfigService } from "../common/product-brand-config.service";
+import { DesktopReleaseService } from "../common/desktop-release.service";
 
 @Controller("client-config")
 export class ClientConfigController {
@@ -11,6 +13,7 @@ export class ClientConfigController {
     @Inject(CatalogService) private readonly catalogs: CatalogService,
     @Inject(AuthMethodConfigService) private readonly authMethodsConfig: AuthMethodConfigService,
     @Inject(ProductBrandConfigService) private readonly productBrandConfig: ProductBrandConfigService,
+    @Inject(DesktopReleaseService) private readonly desktopReleases: DesktopReleaseService,
   ) {}
 
   @Get("bootstrap")
@@ -38,6 +41,27 @@ export class ClientConfigController {
   @Get("releases/current")
   current(@Query("channel") channel?: string) {
     return this.configs.current(channel || "stable");
+  }
+
+  @Get("desktop-updates/:target/:arch/:currentVersion")
+  @Header("Cache-Control", "no-store")
+  async desktopUpdate(
+    @Param("target") target: string,
+    @Param("arch") arch: string,
+    @Param("currentVersion") currentVersion: string,
+    @Query("channel") channel: string | undefined,
+    @Headers("x-update-cohort") cohort: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const update = await this.desktopReleases.selectUpdate({
+      currentVersion,
+      channel: channel || "stable",
+      target,
+      arch,
+      cohort: typeof cohort === "string" ? cohort.slice(0, 128) : "",
+    });
+    if (!update) response.status(204);
+    return update || undefined;
   }
 
   @Get("models")

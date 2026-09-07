@@ -9,8 +9,9 @@ SCENE_HEADING = re.compile(
     re.IGNORECASE,
 )
 DIALOGUE = re.compile(r"^([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9·_ ]{0,15})[：:]\s*(.+)$")
+STORYBOARD_TIME = r"\d+(?:[：:]\d+(?:[：:]\d+)?)?(?:\.\d+)?"
 STORYBOARD_SEGMENT = re.compile(
-    r"(?m)^\s*(?:\*\*)?第\s*(\d+)\s*段\s*[（(]\s*(\d+(?:\.\d+)?)\s*(?:～|~|-|—|至)\s*(\d+(?:\.\d+)?)\s*秒?\s*[）)](?:\*\*)?\s*$"
+    rf"(?m)^\s*(?:\*\*)?第\s*(\d+)\s*段\s*[（(]\s*({STORYBOARD_TIME})\s*(?:～|~|-|—|至)\s*({STORYBOARD_TIME})\s*秒?\s*[）)](?:\*\*)?\s*$"
 )
 STRUCTURED_FIELDS = {
     "屏幕比例", "景别", "机位", "运镜", "画风设定", "场景引用", "场景锁定",
@@ -215,6 +216,19 @@ def _bounded_shot_ranges(start_time: float, end_time: float) -> List[Tuple[float
     return ranges
 
 
+def _storyboard_seconds(value: str) -> float:
+    """Parse seconds as well as MM:SS / HH:MM:SS storyboard positions."""
+    parts = value.replace("：", ":").split(":")
+    if len(parts) == 1:
+        return float(parts[0])
+    if len(parts) not in (2, 3):
+        raise ValueError("invalid storyboard time position: {0}".format(value))
+    seconds = 0.0
+    for part in parts:
+        seconds = seconds * 60 + float(part)
+    return seconds
+
+
 VISUAL_TIME_RANGE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(～|~|-|—|至)\s*(\d+(?:\.\d+)?)\s*秒"
 )
@@ -337,8 +351,8 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
 
     shots: List[Dict[str, Any]] = []
     for match, fields in parsed_blocks:
-        start_time = float(match.group(2))
-        end_time = float(match.group(3))
+        start_time = _storyboard_seconds(match.group(2))
+        end_time = _storyboard_seconds(match.group(3))
         scene_ref_id, scene_ref_name = _split_reference(fields.get("场景引用", ""))
         if not re.match(r"^SCENE_[A-Z0-9_]+$", scene_ref_id, re.IGNORECASE):
             scene_ref_id = ""
@@ -415,6 +429,8 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
             ))),
             "negative_prompt": constraint,
             "constraints": constraint,
+            "reference_assets": [],
+            "video_assets": [],
             "status": "DRAFT",
             "locked": False,
         }
@@ -474,7 +490,9 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
             "tone": project_fields.get("基调") or "依据原视频",
             "aspect_ratio": project_aspect_ratio,
             "visual_style": project_visual_style,
+            "beats": _beats(beat_lines),
         },
+        "episodes": [],
         "characters": characters,
         "scenes": scenes,
         "sequences": sequences,

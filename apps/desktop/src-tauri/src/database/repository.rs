@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn load_bundle(connection: &Connection) -> Result<Value, String> {
     let project: Value = connection
@@ -51,25 +51,29 @@ pub fn load_bundle(connection: &Connection) -> Result<Value, String> {
             "SELECT data_json FROM characters WHERE project_id = ?1 ORDER BY id",
             project_id,
         )?;
-        hydrate_character_states(connection, project_id, &mut characters)?;
+        let faithful_script = source.0 == "SCRIPT_FILE";
+        hydrate_character_states(connection, project_id, &mut characters, faithful_script)?;
         let mut shots = read_json_list(
             connection,
             "SELECT data_json FROM shots WHERE project_id = ?1 ORDER BY shot_order",
             project_id,
         )?;
-        hydrate_shot_character_states(connection, project_id, &characters, &mut shots)?;
+        hydrate_shot_character_states(connection, project_id, &characters, &mut shots, faithful_script)?;
         let mut canonical = json!({
             "story": story,
             "episodes": super::episodes::list(connection, project_id)?,
             "characters": characters,
             "scenes": read_json_list(connection, "SELECT data_json FROM scenes WHERE project_id = ?1 ORDER BY id", project_id)?,
+            "props": read_json_list(connection, "SELECT data_json FROM props WHERE project_id = ?1 ORDER BY created_at, id", project_id)?,
             "sequences": read_json_list(connection, "SELECT data_json FROM sequences WHERE project_id = ?1 ORDER BY sequence_order", project_id)?,
             "shots": shots,
         });
         // 旧项目也按当前规则展示；保存时会由 save_canonical 正式写回。
-        crate::story_policy::normalize(&mut canonical);
-        crate::character_state_policy::normalize(&mut canonical);
-        crate::shot_policy::normalize(&mut canonical);
+        if !faithful_script {
+            crate::story_policy::normalize(&mut canonical);
+            crate::character_state_policy::normalize(&mut canonical);
+            crate::shot_policy::normalize(&mut canonical);
+        }
         Some(canonical)
     } else {
         None
@@ -92,6 +96,7 @@ fn hydrate_character_states(
     connection: &Connection,
     project_id: &str,
     characters: &mut [Value],
+    faithful_script: bool,
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
@@ -117,7 +122,7 @@ fn hydrate_character_states(
             .filter(|(owner_id, _)| owner_id == &character_id)
             .map(|(_, state)| state.clone())
             .collect::<Vec<_>>();
-        if matching.is_empty() {
+        if matching.is_empty() && !faithful_script {
             matching = character_states(character);
         }
         character["states"] = Value::Array(matching);
@@ -130,6 +135,7 @@ fn hydrate_shot_character_states(
     project_id: &str,
     characters: &[Value],
     shots: &mut [Value],
+    faithful_script: bool,
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
@@ -157,7 +163,7 @@ fn hydrate_shot_character_states(
                 (character_id.clone(), Value::String(state_id.clone()))
             })
             .collect::<serde_json::Map<_, _>>();
-        if mappings.is_empty() {
+        if mappings.is_empty() && !faithful_script {
             let context = format!(
                 "{} {}",
                 shot.get("visual")
@@ -268,10 +274,17 @@ pub fn save_canonical(
 ) -> Result<(), String> {
     // 所有项目入口最终都会经过这里。保存前统一收敛角色状态，避免某条生成链路
     // 因情绪、动作或场景变化创建无意义的重复状态。
+    let faithful_script = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM project_sources WHERE project_id = ?1 AND source_type = 'SCRIPT_FILE')",
+        [project_id], |row| row.get::<_, bool>(0),
+    ).map_err(|error| error.to_string())?;
     let mut normalized_canonical = canonical.clone();
-    crate::story_policy::normalize(&mut normalized_canonical);
-    crate::character_state_policy::normalize(&mut normalized_canonical);
-    crate::shot_policy::normalize(&mut normalized_canonical);
+    if !faithful_script {
+        crate::story_policy::normalize(&mut normalized_canonical);
+        crate::character_state_policy::normalize(&mut normalized_canonical);
+        crate::shot_policy::normalize(&mut normalized_canonical);
+    }
+    ensure_unique_character_state_ids(&mut normalized_canonical)?;
     let canonical = &normalized_canonical;
     let now = Utc::now().to_rfc3339();
     let transaction = connection
@@ -303,6 +316,7 @@ pub fn save_canonical(
         "story_beats",
         "shots",
         "sequences",
+        "props",
         "scenes",
         "characters",
     ] {
@@ -336,7 +350,9 @@ pub fn save_canonical(
     for character in array(canonical, "characters")? {
         let mut character = character.clone();
         let character_id = text(&character, "id");
-        let states = character_states(&character)
+        let states = if faithful_script {
+            character.get("states").and_then(Value::as_array).cloned().unwrap_or_default()
+        } else { character_states(&character) }
             .into_iter()
             .map(|state| {
                 merge_completed_image_assets(&transaction, project_id, "character_state", &state)
@@ -364,6 +380,13 @@ pub fn save_canonical(
         transaction.execute(
             "INSERT INTO scenes(id, project_id, name, data_json, locked, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![text(&scene, "id"), project_id, text(&scene, "name"), scene.to_string(), boolean(&scene, "locked"), now],
+        ).map_err(|error| error.to_string())?;
+    }
+    for prop in optional_array(canonical, "props") {
+        let prop = merge_completed_image_assets(&transaction, project_id, "prop", prop)?;
+        transaction.execute(
+            "INSERT INTO props(id, project_id, name, style, data_json, locked, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![text(&prop, "id"), project_id, text(&prop, "name"), text(&prop, "style"), prop.to_string(), boolean(&prop, "locked"), now],
         ).map_err(|error| error.to_string())?;
     }
     for (index, sequence) in array(canonical, "sequences")?.iter().enumerate() {
@@ -402,6 +425,137 @@ pub fn save_canonical(
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())
+}
+
+/// Character state IDs are stored as a database-wide primary key. Repair malformed
+/// state containers, preserve scalar model text, make structural IDs unique, and
+/// update the corresponding shot references without changing story events.
+fn ensure_unique_character_state_ids(canonical: &mut Value) -> Result<(), String> {
+    let mut used_ids = HashSet::new();
+    let mut redirects: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+    {
+        let characters = canonical
+            .get_mut("characters")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "canonical.characters must be an array".to_owned())?;
+        for character in characters {
+            let character_id = text(character, "id");
+            if character
+                .get("states")
+                .is_some_and(|states| !states.is_array())
+            {
+                let state = character
+                    .get_mut("states")
+                    .map(Value::take)
+                    .unwrap_or(Value::Null);
+                character["states"] = Value::Array(vec![state]);
+            }
+            let Some(states) = character.get_mut("states").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for (index, state) in states.iter_mut().enumerate() {
+                if !state.is_object() {
+                    let description = state
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            if state.is_null() {
+                                String::new()
+                            } else {
+                                state.to_string()
+                            }
+                        });
+                    let name = if description.is_empty() {
+                        "未说明".to_owned()
+                    } else {
+                        description.clone()
+                    };
+                    *state = json!({
+                        "id": format!("{character_id}_STATE_{:03}", index + 1),
+                        "name": name,
+                        "trigger": "",
+                        "description": description,
+                        "appearance_lock": "",
+                        "clothing_lock": "",
+                        "reference_assets": [],
+                        "locked": false
+                    });
+                }
+                let old_id = text(state, "id");
+                let state_object = state
+                    .as_object_mut()
+                    .ok_or_else(|| format!("角色 {character_id} 的状态数据无法修复"))?;
+                let new_id = if !old_id.is_empty() && !used_ids.contains(&old_id) {
+                    old_id.clone()
+                } else {
+                    let base = format!("{character_id}_STATE_{:03}", index + 1);
+                    unique_id(&base, &used_ids)
+                };
+                used_ids.insert(new_id.clone());
+                state_object.insert("id".to_owned(), Value::String(new_id.clone()));
+
+                let character_redirects = redirects.entry(character_id.clone()).or_default();
+                if !old_id.is_empty() {
+                    character_redirects
+                        .entry(reference_key(&old_id))
+                        .or_insert_with(|| new_id.clone());
+                }
+                if let Some(name) = state_object.get("name").and_then(Value::as_str) {
+                    if !name.trim().is_empty() {
+                        character_redirects
+                            .entry(reference_key(name))
+                            .or_insert_with(|| new_id.clone());
+                    }
+                }
+                character_redirects.insert(reference_key(&new_id), new_id);
+            }
+        }
+    }
+
+    if let Some(shots) = canonical.get_mut("shots").and_then(Value::as_array_mut) {
+        for shot in shots {
+            let Some(mappings) = shot
+                .get_mut("character_state_ids")
+                .and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            for (character_id, state_id) in mappings {
+                let Some(old_state_id) = state_id.as_str() else {
+                    continue;
+                };
+                let replacement = redirects
+                    .get(character_id)
+                    .and_then(|states| states.get(&reference_key(old_state_id)))
+                    .cloned();
+                if let Some(replacement) = replacement {
+                    *state_id = Value::String(replacement);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unique_id(base: &str, used_ids: &HashSet<String>) -> String {
+    if !used_ids.contains(base) {
+        return base.to_owned();
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base}_{suffix}");
+        if !used_ids.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn reference_key(value: &str) -> String {
+    value.trim().to_lowercase()
 }
 
 fn character_states(character: &Value) -> Vec<Value> {
@@ -516,6 +670,9 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
         .and_then(Value::as_array)
         .ok_or_else(|| format!("canonical.{key} must be an array"))
 }
+fn optional_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    value.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+}
 fn text(value: &Value, key: &str) -> String {
     value
         .get(key)
@@ -576,5 +733,196 @@ mod tests {
             serde_json::from_str::<Value>(&rows[0].1).unwrap()["id"],
             "BEAT_001"
         );
+    }
+
+    #[test]
+    fn makes_duplicate_character_state_ids_unique_and_repairs_shot_references() {
+        let mut canonical = json!({
+            "characters": [
+                {
+                    "id": "CHAR_001",
+                    "states": [{"id": "STATE_001", "name": "常态", "description": "原文一"}]
+                },
+                {
+                    "id": "CHAR_002",
+                    "states": [{"id": "STATE_001", "name": "常态", "description": "原文二"}]
+                }
+            ],
+            "shots": [{
+                "id": "SHOT_001",
+                "character_state_ids": {
+                    "CHAR_001": "STATE_001",
+                    "CHAR_002": "STATE_001"
+                }
+            }]
+        });
+
+        ensure_unique_character_state_ids(&mut canonical).unwrap();
+        assert_eq!(canonical["characters"][0]["states"][0]["id"], "STATE_001");
+        assert_eq!(
+            canonical["characters"][1]["states"][0]["id"],
+            "CHAR_002_STATE_001"
+        );
+        assert_eq!(
+            canonical["shots"][0]["character_state_ids"]["CHAR_001"],
+            "STATE_001"
+        );
+        assert_eq!(
+            canonical["shots"][0]["character_state_ids"]["CHAR_002"],
+            "CHAR_002_STATE_001"
+        );
+        assert_eq!(canonical["characters"][0]["states"][0]["description"], "原文一");
+        assert_eq!(canonical["characters"][1]["states"][0]["description"], "原文二");
+
+        let normalized_once = canonical.clone();
+        ensure_unique_character_state_ids(&mut canonical).unwrap();
+        assert_eq!(canonical, normalized_once);
+    }
+
+    #[test]
+    fn repairs_non_object_character_states_without_discarding_model_text() {
+        let mut canonical = json!({
+            "characters": [{
+                "id": "CHAR_001",
+                "states": ["雨中状态", null]
+            }],
+            "shots": [{
+                "id": "SHOT_001",
+                "character_state_ids": {"CHAR_001": "雨中状态"}
+            }]
+        });
+
+        ensure_unique_character_state_ids(&mut canonical).unwrap();
+
+        assert_eq!(canonical["characters"][0]["states"][0]["name"], "雨中状态");
+        assert_eq!(canonical["characters"][0]["states"][0]["description"], "雨中状态");
+        assert_eq!(
+            canonical["characters"][0]["states"][0]["id"],
+            "CHAR_001_STATE_001"
+        );
+        assert_eq!(canonical["characters"][0]["states"][1]["name"], "未说明");
+        assert_eq!(
+            canonical["shots"][0]["character_state_ids"]["CHAR_001"],
+            "CHAR_001_STATE_001"
+        );
+    }
+
+    #[test]
+    fn wraps_a_scalar_character_states_field() {
+        let mut canonical = json!({
+            "characters": [{"id": "CHAR_001", "states": "常态"}],
+            "shots": []
+        });
+
+        ensure_unique_character_state_ids(&mut canonical).unwrap();
+
+        assert!(canonical["characters"][0]["states"].is_array());
+        assert_eq!(canonical["characters"][0]["states"][0]["name"], "常态");
+    }
+
+    #[test]
+    fn saves_faithful_script_with_duplicate_character_state_ids() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::database::migrations::migrate(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO projects(id, name, project_path, input_type, status, created_at, updated_at)
+                 VALUES ('P_SCRIPT', '剧本保存测试', 'test', 'SCRIPT', 'DRAFT', 'now', 'now')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO project_sources(id, project_id, source_type, source_text, created_at)
+                 VALUES ('SOURCE_SCRIPT', 'P_SCRIPT', 'SCRIPT_FILE', '原始剧本', 'now')",
+                [],
+            )
+            .unwrap();
+        let canonical = json!({
+            "story": {"title": "原始标题", "beats": []},
+            "episodes": [],
+            "characters": [
+                {"id": "CHAR_001", "name": "甲", "role": "主角", "states": [{"id": "STATE_001", "name": "常态"}]},
+                {"id": "CHAR_002", "name": "乙", "role": "配角", "states": [{"id": "STATE_001", "name": "常态"}]}
+            ],
+            "scenes": [],
+            "sequences": [],
+            "shots": [{
+                "id": "SHOT_001",
+                "sequence_id": "",
+                "scene_id": "",
+                "duration": 0,
+                "status": "DRAFT",
+                "character_state_ids": {"CHAR_001": "STATE_001", "CHAR_002": "STATE_001"}
+            }]
+        });
+
+        save_canonical(&mut connection, "P_SCRIPT", &canonical).unwrap();
+        let state_ids = connection
+            .prepare("SELECT id FROM character_states ORDER BY character_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(state_ids, vec!["STATE_001", "CHAR_002_STATE_001"]);
+        let shot_state_ids = connection
+            .prepare("SELECT state_id FROM shot_character_states ORDER BY character_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            shot_state_ids,
+            vec!["STATE_001", "CHAR_002_STATE_001"]
+        );
+    }
+
+    #[test]
+    fn persists_user_managed_props_and_explicit_shot_references() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        crate::database::migrations::migrate(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO projects(id, name, project_path, input_type, status, created_at, updated_at)
+             VALUES ('P_PROP', '道具测试', 'test', 'IDEA', 'DRAFT', 'now', 'now')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO creation_specs(project_id, data_json, updated_at) VALUES ('P_PROP', '{}', 'now')",
+            [],
+        ).unwrap();
+        let canonical = json!({
+            "story": {"title": "道具测试", "beats": []},
+            "episodes": [],
+            "characters": [],
+            "scenes": [],
+            "props": [{
+                "id": "PROP_001",
+                "name": "青铜钥匙",
+                "style": "蒸汽朋克",
+                "description": "带齿轮纹样的做旧青铜钥匙",
+                "reference_assets": [],
+                "locked": false
+            }],
+            "sequences": [],
+            "shots": [{
+                "id": "SHOT_001",
+                "sequence_id": "",
+                "scene_id": "",
+                "character_ids": [],
+                "prop_ids": ["PROP_001"],
+                "duration": 5,
+                "status": "DRAFT",
+                "locked": false
+            }]
+        });
+
+        save_canonical(&mut connection, "P_PROP", &canonical).unwrap();
+        let bundle = load_bundle(&connection).unwrap();
+
+        assert_eq!(bundle["canonical"]["props"][0]["name"], "青铜钥匙");
+        assert_eq!(bundle["canonical"]["props"][0]["style"], "蒸汽朋克");
+        assert_eq!(bundle["canonical"]["shots"][0]["prop_ids"], json!(["PROP_001"]));
     }
 }

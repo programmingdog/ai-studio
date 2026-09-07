@@ -139,6 +139,15 @@ export interface Scene extends Lockable {
   reference_assets: string[];
 }
 
+/** A user-managed prop concept. Props are never extracted or assigned automatically. */
+export interface Prop extends Lockable {
+  id: string;
+  name: string;
+  style: string;
+  description: string;
+  reference_assets: string[];
+}
+
 export interface Sequence {
   id: string;
   scene_id: string;
@@ -155,6 +164,8 @@ export interface Shot extends Lockable {
   character_ids: string[];
   /** Selected visual state for each character in this shot: character id -> state id. */
   character_state_ids?: Record<string, string>;
+  /** Project props explicitly attached to this shot by the user. */
+  prop_ids?: string[];
   /** Original video segment represented by this shot, in seconds. */
   source_time_range?: {
     start: number;
@@ -195,6 +206,8 @@ export interface CanonicalProject {
   episodes: Episode[];
   characters: Character[];
   scenes: Scene[];
+  /** Optional for compatibility with projects created before prop support. */
+  props?: Prop[];
   sequences: Sequence[];
   shots: Shot[];
 }
@@ -273,6 +286,8 @@ export interface DouyinDownloadResult {
 }
 
 export interface AiSettings {
+  generation_assets_directory: string;
+  default_generation_assets_directory: string;
   base_url: string;
   agent_model: string;
   video_model: string;
@@ -324,6 +339,7 @@ export interface AiModelCatalogItem {
 }
 
 export interface SaveAiSettingsInput {
+  generation_assets_directory: string;
   base_url: string;
   agent_model: string;
   video_model: string;
@@ -401,7 +417,7 @@ export type VideoGenerationApiProtocol = "media";
 
 export interface GenerateProjectImageInput {
   project_path: string;
-  target_type: "character" | "scene";
+  target_type: "character" | "scene" | "prop";
   target_id: string;
   prompt: string;
   aspect_ratio: string;
@@ -427,7 +443,7 @@ export type ImageGenerationTaskStatus =
 export interface ImageGenerationTask {
   id: string;
   project_id: string;
-  target_type: "character" | "character_state" | "scene" | "shot";
+  target_type: "character" | "character_state" | "scene" | "prop" | "shot";
   target_id: string;
   base_url: string;
   model: string;
@@ -450,7 +466,7 @@ export interface ImageGenerationTask {
 }
 
 export interface CreateImageGenerationTaskItem {
-  target_type: "character" | "character_state" | "scene" | "shot";
+  target_type: "character" | "character_state" | "scene" | "prop" | "shot";
   target_id: string;
   prompt: string;
   aspect_ratio: string;
@@ -460,7 +476,7 @@ export interface CreateImageGenerationTaskItem {
 export interface GenerationReferenceAssetInput {
   relative_path: string;
   label: string;
-  kind: "scene" | "character" | "shot_first_frame" | "shot_reference";
+  kind: "scene" | "character" | "prop" | "shot_first_frame" | "shot_reference";
 }
 
 export type GenerationMediaType = "image" | "video";
@@ -469,7 +485,7 @@ export interface GenerationRecord {
   id: string;
   project_id: string;
   media_type: GenerationMediaType;
-  target_type: "character" | "character_state" | "scene" | "shot" | "project";
+  target_type: "character" | "character_state" | "scene" | "prop" | "shot" | "project";
   target_id: string;
   base_url: string;
   model: string;
@@ -784,4 +800,36 @@ export interface CreateProjectInput {
   source_text?: string;
   source_path?: string;
   creation_spec: CreationSpec;
+}
+
+export type ScriptAnalysisTaskStatus = "PENDING" | "UPLOADING" | "RUNNING" | "POST_PROCESSING" | "COMPLETED" | "FAILED";
+
+export interface ScriptAnalysisTask {
+  id: string;
+  source_path: string;
+  source_name: string;
+  root_path: string;
+  creation_spec: CreationSpec;
+  requested_project_name: string;
+  status: ScriptAnalysisTaskStatus;
+  progress: number;
+  stage: string;
+  message: string;
+  expected_credits: number;
+  project_id?: string;
+  project_path?: string;
+  project_name?: string;
+  error?: string;
+  attempt: number;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string;
+}
+
+export interface CreateScriptAnalysisTaskInput {
+  source_path: string;
+  root_path: string;
+  creation_spec: CreationSpec;
+  expected_credits: number;
+  platform_api_base_url?: string;
 }

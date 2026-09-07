@@ -4,12 +4,14 @@ import { asRecord, optionalString, requiredString } from "../common/input";
 import { UserAuthGuard, UserRequest } from "./user-auth.guard";
 import { UserAuthService } from "./user-auth.service";
 import { RegistrationVerificationService } from "./registration-verification.service";
+import { AuthMethodConfigService } from "../common/auth-method-config.service";
 
 @Controller()
 export class UserAuthController {
   constructor(
     @Inject(UserAuthService) private readonly auth: UserAuthService,
     @Inject(RegistrationVerificationService) private readonly registration: RegistrationVerificationService,
+    @Inject(AuthMethodConfigService) private readonly authMethods: AuthMethodConfigService,
   ) {}
 
   @Post("auth/email/status")
@@ -22,14 +24,16 @@ export class UserAuthController {
   @Post("auth/register/email/captcha")
   @HttpCode(200)
   @Header("Cache-Control", "no-store")
-  createEmailCaptcha(@Body() input: unknown, @Req() request: Request) {
+  async createEmailCaptcha(@Body() input: unknown, @Req() request: Request) {
+    await this.authMethods.assertRegistrationEnabled();
     return this.registration.createCaptcha(requiredString(asRecord(input), "email", 191), request.ip || request.socket.remoteAddress || "unknown");
   }
 
   @Post("auth/register/email/captcha/verify")
   @HttpCode(200)
   @Header("Cache-Control", "no-store")
-  verifyEmailCaptcha(@Body() input: unknown, @Req() request: Request) {
+  async verifyEmailCaptcha(@Body() input: unknown, @Req() request: Request) {
+    await this.authMethods.assertRegistrationEnabled();
     const body = asRecord(input);
     return this.registration.verifyCaptcha(requiredString(body, "email", 191), requiredString(body, "captcha_id", 36), requiredString(body, "answer", 10), request.ip || request.socket.remoteAddress || "unknown");
   }
@@ -37,7 +41,8 @@ export class UserAuthController {
   @Post("auth/register/email/code")
   @HttpCode(200)
   @Header("Cache-Control", "no-store")
-  sendEmailCode(@Body() input: unknown, @Req() request: Request) {
+  async sendEmailCode(@Body() input: unknown, @Req() request: Request) {
+    await this.authMethods.assertRegistrationEnabled();
     const body = asRecord(input);
     return this.registration.sendEmailCode(requiredString(body, "email", 191), requiredString(body, "captcha_token", 100), request.ip || request.socket.remoteAddress || "unknown");
   }
@@ -46,7 +51,7 @@ export class UserAuthController {
   registerEmail(@Body() input: unknown, @Req() request: Request) { const body = asRecord(input); return this.auth.registerEmail(requiredString(body, "email", 191), requiredString(body, "password", 128), requiredString(body, "email_code", 6), optionalString(body, "display_name", 100), request.ip || request.socket.remoteAddress || "unknown", optionalString(body, "invite_code", 8)); }
 
   @Post("auth/register/phone")
-  registerPhone(@Body() input: unknown) { const body = asRecord(input); return this.auth.registerPhone(requiredString(body, "phone", 32), requiredString(body, "password", 128), optionalString(body, "display_name", 100)); }
+  registerPhone(@Body() input: unknown) { const body = asRecord(input); return this.auth.registerPhone(requiredString(body, "phone", 32), requiredString(body, "password", 128), optionalString(body, "display_name", 100), optionalString(body, "invite_code", 8)); }
 
   @Post("auth/login")
   login(@Body() input: unknown) { const body = asRecord(input); return this.auth.login(requiredString(body, "identifier", 191), requiredString(body, "password", 128), optionalString(body, "device_name", 100)); }

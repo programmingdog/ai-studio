@@ -346,4 +346,17 @@ export class CreditAdminService {
     await this.audit.record({ adminUserId, action: "credit_consumption.delete", entityType: "credit_consumption_record", entityId: consumptionId });
     return { deleted: true };
   }
+
+  async clearConsumptions(adminUserId: string): Promise<{ deleted: true; deleted_count: number }> {
+    const result = await this.database.execute("DELETE FROM credit_consumption_records");
+    const deletedCount = Number(result.affectedRows || 0);
+    await this.audit.record({
+      adminUserId,
+      action: "credit_consumption.clear_all",
+      entityType: "credit_consumption_record",
+      entityId: "ALL",
+      details: { deleted_count: deletedCount },
+    });
+    return { deleted: true, deleted_count: deletedCount };
+  }
 }

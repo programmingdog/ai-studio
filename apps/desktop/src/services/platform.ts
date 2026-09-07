@@ -13,6 +13,11 @@ export interface PlatformSession {
   user_id?: string;
 }
 
+export interface RememberedCredential {
+  account: string;
+  password: string;
+}
+
 export interface PlatformUser {
   balance_fen: number;
   id: string;
@@ -55,6 +60,7 @@ export interface PlatformConsumption {
 }
 export interface WechatQrSession { state: string; login_url: string; expires_at: string; status?: string; requires_follow?: boolean }
 export interface ClientAuthMethods {
+  registration_enabled: boolean;
   email_enabled: boolean;
   phone_otp_enabled: boolean;
   phone_otp_available: boolean;
@@ -117,6 +123,18 @@ export async function bindPlatformSessionUser(userId: string): Promise<void> {
 
 export async function activatePlatformUserContext(): Promise<void> {
   if (isTauri()) await invoke("activate_user_context");
+}
+
+export async function getRememberedCredentials(): Promise<RememberedCredential[]> {
+  return isTauri() ? invoke<RememberedCredential[]>("get_remembered_credentials") : [];
+}
+
+export async function saveRememberedCredential(account: string, password: string): Promise<RememberedCredential[]> {
+  return isTauri() ? invoke<RememberedCredential[]>("save_remembered_credential", { account, password }) : [];
+}
+
+export async function deleteRememberedCredential(account: string): Promise<RememberedCredential[]> {
+  return isTauri() ? invoke<RememberedCredential[]>("delete_remembered_credential", { account }) : [];
 }
 
 async function responseValue<T>(response: Response): Promise<T> {
@@ -195,7 +213,7 @@ export const sendRegistrationEmailCode = (input: { email: string; captcha_token:
 export async function registerPlatformEmail(input: { email: string; password: string; email_code: string; display_name?: string; invite_code?: string }) {
   return acceptToken(await publicRequest<PlatformTokenResult>("/auth/register/email", { method: "POST", body: JSON.stringify(input) }));
 }
-export async function registerPlatformPhone(input: { phone: string; password: string; display_name?: string }) {
+export async function registerPlatformPhone(input: { phone: string; password: string; display_name?: string; invite_code?: string }) {
   return acceptToken(await publicRequest<PlatformTokenResult>("/auth/register/phone", { method: "POST", body: JSON.stringify(input) }));
 }
 export async function loginPlatform(input: { identifier: string; password: string }) {
@@ -215,6 +233,8 @@ export interface ModelCreditQuote {
 }
 export const getModelCreditQuote = (capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING") =>
   authenticatedRequest<ModelCreditQuote>("/tasks/quote", { method: "POST", body: JSON.stringify({ capability, payload: {} }) });
+export const getScriptAnalysisQuote = () =>
+  authenticatedRequest<ModelCreditQuote>("/tasks/script-analysis/quote", { method: "POST", body: "{}" });
 export const getMediaCreditQuote = (providerModelId: string, resolution: string, seconds?: number) =>
   authenticatedRequest<ModelCreditQuote>("/tasks/quote", { method: "POST", body: JSON.stringify({ provider_model_id: providerModelId, payload: { resolution, seconds } }) });
 export const listCreditPurchases = () => authenticatedRequest<PlatformPurchase[]>("/credits/purchases");
@@ -232,8 +252,11 @@ export interface ReferralSummary {
 }
 export interface ReferralRecord { id: string; amount_fen?: number | string; base_amount_fen?: number | string; rate_bps?: number; level?: number; status?: string; status_note?: string; review_note?: string; created_at: string; paid_at?: string; credits?: number; payer_id?: string; invited_user_id?: string; alipay_trade_no?: string }
 export interface ReferralPage { items: ReferralRecord[]; page: number; has_more: boolean }
+export interface ReferralSubordinate { id: string; display_name: string; account: string; status: string; parent_display_name: string | null; consumption_fen: number; paid_order_count: number; last_paid_at: string | null; created_at: string }
+export interface ReferralSubordinatePage { items: ReferralSubordinate[]; level: 1 | 2; page: number; page_size: number; total: number; total_consumption_fen: number; has_more: boolean }
 export const getReferralSummary = () => authenticatedRequest<ReferralSummary>("/referrals/me");
 export const getReferralRecords = (kind: string, page = 1) => authenticatedRequest<ReferralPage>(`/referrals/me/${encodeURIComponent(kind)}?page=${page}`);
+export const getReferralSubordinates = (level: 1 | 2, page = 1) => authenticatedRequest<ReferralSubordinatePage>(`/referrals/me/subordinates?level=${level}&page=${page}`);
 export const applyReferralWithdrawal = (input: { amount_fen: number; idempotency_key: string; alipay_real_name: string; alipay_account: string; alipay_qr_code: string }) => authenticatedRequest<{ id: string; status: string }>("/referrals/withdrawals", { method: "POST", body: JSON.stringify(input) });
 export const listVisualStyleCategories = () => publicRequest<CatalogCategory[]>("/client-config/visual-style-categories");
 export const listVisualStyles = () => publicRequest<VisualStylePreset[]>("/client-config/visual-styles");

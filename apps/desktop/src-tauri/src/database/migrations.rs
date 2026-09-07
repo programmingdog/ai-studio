@@ -1,6 +1,6 @@
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-const CURRENT_VERSION: i64 = 8;
+const CURRENT_VERSION: i64 = 9;
 
 fn is_current(connection: &Connection) -> Result<bool, String> {
     let exists: bool = connection.query_row(
@@ -112,6 +112,19 @@ fn migrate_schema(connection: &Connection) -> Result<(), String> {
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS props (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                style TEXT NOT NULL DEFAULT '',
+                data_json TEXT NOT NULL,
+                locked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_props_project
+                ON props(project_id, created_at);
             CREATE TABLE IF NOT EXISTS sequences (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -366,6 +379,7 @@ const USER_OWNED_TABLES: &[&str] = &[
     "characters",
     "character_states",
     "scenes",
+    "props",
     "sequences",
     "shots",
     "shot_character_states",
@@ -490,10 +504,10 @@ mod tests {
     }
 
     #[test]
-    fn creates_character_state_relationship_tables() {
+    fn creates_character_state_and_prop_tables() {
         let connection = Connection::open_in_memory().unwrap();
         migrate(&connection).unwrap();
-        for table in ["character_states", "shot_character_states"] {
+        for table in ["character_states", "shot_character_states", "props"] {
             let exists: bool = connection
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",

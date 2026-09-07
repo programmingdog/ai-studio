@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
 import { RowDataPacket } from "mysql2/promise";
 import { parseStoredJson } from "../common/input";
@@ -7,12 +7,14 @@ import { DatabaseService } from "../database/database.service";
 import { resolveMediaResolution, supportsMediaResolution } from "./media-resolution";
 import { wagaMediaParams, wagaProfiles, wagaTaskStatus } from "./waga-media";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
-import { ModelCreditMultiplierService, multiplierFor, multiplyCredits } from "../common/model-credit-multiplier.service";
+import { multiplyCredits, storedModelCreditMultiplier } from "../common/model-credit";
+import mammoth from "mammoth";
+import pdfParse from "pdf-parse";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
   model_id: string; model_code: string; model_alias: string; capability: string; api_protocol: string;
-  generation_endpoint: string; query_endpoint: string | null; credit_cost: number | string;
+  generation_endpoint: string; query_endpoint: string | null; credit_cost: number | string; credit_multiplier: number | string;
   supports_async_tasks: number; model_config_json: unknown; parameter_schema_json: unknown; credential_id: string; api_key_ciphertext: string;
 }
 interface TaskRow extends RowDataPacket {
@@ -23,6 +25,7 @@ interface TaskRow extends RowDataPacket {
   created_at: Date; updated_at: Date; finished_at: Date | null;
 }
 interface ResolutionPriceRow extends RowDataPacket { credit_cost: number | string; }
+interface ScriptAnalysisConfigRow extends RowDataPacket { prompt: string; credit_cost: number | string; revision: number; }
 
 // Synchronous image models return base64 image bytes in their JSON response.
 const responseLimit = 64 * 1024 * 1024;
@@ -30,6 +33,9 @@ const geminiVideoMimeTypes = new Set([
   "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/x-flv",
   "video/mpg", "video/webm", "video/wmv", "video/3gpp",
 ]);
+const scriptMimeTypes: Record<string, string> = {
+  txt: "text/plain", md: "text/markdown", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pdf: "application/pdf",
+};
 function transactionNumber(prefix: string): string { return `${prefix}${Date.now()}${randomUUID().replaceAll("-", "").slice(0, 10)}`; }
 
 function asObject(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
@@ -59,6 +65,115 @@ function applicationError(value: unknown): string | null {
   if (typeof source.code === "number" && source.code !== 0 && source.code !== 200) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
   if (typeof source.code === "string" && source.code.trim() && !["0", "200", "OK", "SUCCESS"].includes(source.code.trim().toUpperCase())) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
   return null;
+}
+function assertVideoUnderstandingResponse(value: unknown): void {
+  let text: string;
+  try {
+    text = generatedText(value).trim();
+  } catch {
+    throw new BadGatewayException("供应商没有返回可用的视频解析结果");
+  }
+  const normalized = text.toLowerCase().replace(/\s+/g, "");
+  const missingVideoMarkers = [
+    "并没有上传视频", "没有上传视频", "未上传视频", "没有提供视频", "未提供视频",
+    "无法访问视频", "无法读取视频", "无法查看视频", "novideowasuploaded",
+    "videowasnotuploaded", "novideowasprovided", "cannotaccessthevideo",
+    "can'taccessthevideo", "unabletoaccessthevideo",
+  ];
+  if (text.length <= 1_200 && missingVideoMarkers.some((marker) => normalized.includes(marker))) {
+    throw new BadGatewayException("视频理解模型未收到或无法读取视频文件，请重新解析后重试");
+  }
+}
+
+function generatedText(value: unknown): string {
+  const source = asObject(value);
+  const choices = source.choices;
+  if (Array.isArray(choices)) {
+    const content = asObject(asObject(choices[0]).message).content;
+    if (typeof content === "string" && content.trim()) return content.trim();
+  }
+  const candidates = source.candidates;
+  if (Array.isArray(candidates)) {
+    const parts = asObject(asObject(candidates[0]).content).parts;
+    if (Array.isArray(parts)) {
+      const text = parts.map((part) => asObject(part).text).filter((part): part is string => typeof part === "string").join("\n").trim();
+      if (text) return text;
+    }
+  }
+  if (Array.isArray(source.content)) {
+    const text = source.content.map((part) => asObject(part).text).filter((part): part is string => typeof part === "string").join("\n").trim();
+    if (text) return text;
+  }
+  if (Array.isArray(source.output)) {
+    const text = source.output.flatMap((item) => Array.isArray(asObject(item).content) ? asObject(item).content as unknown[] : [])
+      .map((part) => asObject(part).text).filter((part): part is string => typeof part === "string").join("\n").trim();
+    if (text) return text;
+  }
+  for (const key of ["output_text", "text", "response", "raw"]) {
+    if (typeof source[key] === "string" && String(source[key]).trim()) return String(source[key]).trim();
+  }
+  throw new BadGatewayException("文本大模型没有返回可用的剧本提取结果");
+}
+
+export function parseScriptAnalysis(value: unknown): Record<string, unknown> {
+  const raw = generatedText(value).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new BadGatewayException("文本大模型返回的剧本提取结果不是合法 JSON"); }
+  const result = asObject(parsed);
+  const requiredArrays = ["episodes", "characters", "scenes", "sequences", "shots"];
+  if (!Object.keys(asObject(result.story)).length || requiredArrays.some((key) => !Array.isArray(result[key]))) {
+    throw new BadGatewayException("文本大模型返回的剧本提取结构不完整");
+  }
+  result.characters = (result.characters as unknown[]).map((character, characterIndex) => {
+    const source = asObject(character);
+    if (!Object.keys(source).length) return character;
+    const characterId = typeof source.id === "string" && source.id.trim()
+      ? source.id.trim()
+      : `CHAR_${String(characterIndex + 1).padStart(3, "0")}`;
+    const rawStates = Array.isArray(source.states)
+      ? source.states
+      : source.states === undefined
+        ? []
+        : [source.states];
+    return {
+      ...source,
+      states: rawStates.map((state, stateIndex) => {
+        const stateObject = asObject(state);
+        if (Object.keys(stateObject).length) return stateObject;
+        const description = typeof state === "string" ? state.trim() : state == null ? "" : String(state);
+        return {
+          id: `${characterId}_STATE_${String(stateIndex + 1).padStart(3, "0")}`,
+          name: description || "未说明",
+          trigger: "",
+          description,
+          appearance_lock: "",
+          clothing_lock: "",
+          reference_assets: [],
+          locked: false,
+        };
+      }),
+    };
+  });
+  return result;
+}
+
+export async function extractScriptText(file: { buffer: Buffer; originalname: string }): Promise<{ extension: string; mimeType: string; text: string }> {
+  const extension = file.originalname.split(".").pop()?.toLowerCase() || "";
+  const mimeType = scriptMimeTypes[extension];
+  if (!mimeType) throw new BadRequestException("仅支持 TXT、MD、DOCX 或 PDF 剧本文件");
+  let text = "";
+  if (extension === "txt" || extension === "md") {
+    try { text = new TextDecoder("utf-8", { fatal: true }).decode(file.buffer); }
+    catch { text = new TextDecoder("gb18030").decode(file.buffer); }
+  } else if (extension === "docx") {
+    text = (await mammoth.extractRawText({ buffer: file.buffer })).value;
+  } else {
+    text = (await pdfParse(file.buffer)).text;
+  }
+  text = text.replace(/\r\n?/g, "\n").trim();
+  if (text.length < 10) throw new BadRequestException("剧本文件没有可供分析的文字内容");
+  if (text.length > 1_500_000) throw new BadRequestException("剧本正文超过 150 万字符，当前文本模型无法一次完整读取");
+  return { extension, mimeType, text };
 }
 function validateGeminiVideoPayload(body: Record<string, unknown>): void {
   const contents = body.contents;
@@ -99,18 +214,68 @@ function parseResponse(text: string, contentType: string | null): unknown {
   return { content_type: contentType, raw: text };
 }
 
+function streamedContent(value: unknown): string {
+  const choices = asObject(value).choices;
+  if (!Array.isArray(choices)) return "";
+  return choices.map((choice) => {
+    const source = asObject(choice);
+    const content = asObject(source.delta).content ?? asObject(source.message).content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((part) => typeof part === "string" ? part : String(asObject(part).text || "")).join("");
+  }).join("");
+}
+
+export function parseOpenAiEventStream(text: string): Record<string, unknown> {
+  if (text.length > responseLimit) throw new BadGatewayException("文本大模型流式响应超过大小上限");
+  let content = "";
+  let usage: unknown;
+  let finishReason: unknown = null;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()).join("\n").trim();
+    if (!data || data === "[DONE]") continue;
+    let event: unknown;
+    try { event = JSON.parse(data); }
+    catch { throw new BadGatewayException("文本大模型返回了无效的流式数据"); }
+    const source = asObject(event);
+    if (source.error) throw new BadGatewayException(findString(source.error, ["message", "error", "msg"]) || "文本大模型流式请求失败");
+    content += streamedContent(event);
+    if (source.usage !== undefined) usage = source.usage;
+    const choices = source.choices;
+    if (Array.isArray(choices)) {
+      const completed = choices.map((choice) => asObject(choice).finish_reason).find((value) => value !== undefined && value !== null);
+      if (completed !== undefined) finishReason = completed;
+    }
+  }
+  if (!content.trim()) throw new BadGatewayException("文本大模型流式响应中没有可用文本");
+  return {
+    choices: [{ message: { role: "assistant", content }, finish_reason: finishReason }],
+    ...(usage === undefined ? {} : { usage }),
+  };
+}
+
+function providerFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return "供应商网络请求失败";
+  const cause = (error as Error & { cause?: unknown }).cause;
+  const detail = cause instanceof Error ? cause : undefined;
+  const code = detail && "code" in detail ? String((detail as Error & { code?: unknown }).code || "") : "";
+  if (error.name === "AbortError" || detail?.name === "AbortError") return "等待供应商响应超时";
+  const message = detail?.message || error.message || "网络连接失败";
+  return `供应商网络请求失败${code ? `（${code}）` : ""}：${message}`;
+}
+
 @Injectable()
 export class ModelGatewayService {
   private readonly logger = new Logger(ModelGatewayService.name);
   constructor(@Inject(DatabaseService) private readonly database: DatabaseService, @Inject(SecretCryptoService) private readonly secretCrypto: SecretCryptoService,
-    @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
     @Inject(WagaModelMetadataService) private readonly wagaMetadata?: WagaModelMetadataService) {}
 
   private async target(modelId: string): Promise<TargetRow> {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.supports_async_tasks,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
        INNER JOIN provider_credentials pc ON pc.provider_id = p.id
@@ -144,7 +309,7 @@ export class ModelGatewayService {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.supports_async_tasks,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM ai_default_model_config dc
        INNER JOIN provider_models pm ON pm.id = dc.video_understanding_model_id
@@ -169,6 +334,84 @@ export class ModelGatewayService {
     if (target.capability !== "TEXT_GENERATION") throw new ServiceUnavailableException("默认文本大模型类型不正确");
     if (Number(target.supports_async_tasks)) throw new ServiceUnavailableException("默认文本大模型必须使用同步调用模式");
     return target;
+  }
+
+  private async scriptAnalysisConfig(): Promise<ScriptAnalysisConfigRow> {
+    const rows = await this.database.query<ScriptAnalysisConfigRow[]>(
+      "SELECT prompt, credit_cost, revision FROM script_analysis_config WHERE id = 1 LIMIT 1",
+    );
+    const config = rows[0];
+    if (!config || !config.prompt?.trim()) throw new ServiceUnavailableException("尚未配置剧本提取提示词");
+    const creditCost = Number(config.credit_cost);
+    if (!Number.isFinite(creditCost) || creditCost < 0) throw new ServiceUnavailableException("剧本提取积分配置无效");
+    return config;
+  }
+
+  async scriptAnalysisQuote(): Promise<Record<string, unknown>> {
+    const [target, config] = await Promise.all([this.defaultTextTarget(), this.scriptAnalysisConfig()]);
+    return {
+      provider_model_id: target.model_id,
+      model_alias: target.model_alias || target.model_code,
+      model_code: target.model_code,
+      capability: "SCRIPT_ANALYSIS",
+      credits: Number(config.credit_cost),
+      config_revision: Number(config.revision),
+      billing_unit: "PER_SCRIPT",
+    };
+  }
+
+  async createScriptAnalysisUpload(userId: string, input: {
+    idempotencyKey: string;
+    expectedCredits?: number;
+    file?: { buffer: Buffer; mimetype: string; originalname: string; size: number };
+  }): Promise<Record<string, unknown>> {
+    const file = input.file;
+    if (!file?.buffer?.length) throw new BadRequestException("请选择要分析的剧本文件");
+    if (file.size > 20 * 1024 * 1024) throw new BadRequestException("剧本文件不能超过 20MB");
+    const originalName = file.originalname.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 255) || "script.txt";
+    const [target, config, extracted] = await Promise.all([
+      this.defaultTextTarget(), this.scriptAnalysisConfig(), extractScriptText(file),
+    ]);
+    const instructions = `${config.prompt.trim()}\n\n下面是需要忠实提取的完整剧本。文件名：${originalName}\n--- 剧本原文开始 ---\n${extracted.text}\n--- 剧本原文结束 ---`;
+    const payload = target.api_protocol.toLowerCase() === "gemini"
+      ? {
+          contents: [{ role: "user", parts: [
+            { inline_data: { mime_type: extracted.mimeType, data: file.buffer.toString("base64") } },
+            { text: `${config.prompt.trim()}\n\n请读取前面的完整剧本文件并严格按要求输出。文件名：${originalName}` },
+          ] }],
+          generationConfig: { temperature: 0, maxOutputTokens: 65_536, responseMimeType: "application/json" },
+        }
+      : target.generation_endpoint.toLowerCase().includes("/responses") ? {
+          input: [
+            { role: "system", content: [{ type: "input_text", text: config.prompt.trim() }] },
+            { role: "user", content: [
+              { type: "input_file", filename: originalName, file_data: `data:${extracted.mimeType};base64,${file.buffer.toString("base64")}` },
+              { type: "input_text", text: `请读取前面的完整剧本文件并严格按要求输出。文件名：${originalName}` },
+            ] },
+          ],
+          temperature: 0,
+          max_output_tokens: 65_536,
+          text: { format: { type: "json_object" } },
+        } : {
+          messages: [
+            { role: "system", content: config.prompt.trim() },
+            { role: "user", content: instructions.slice(config.prompt.trim().length + 2) },
+          ],
+          temperature: 0,
+          max_tokens: 65_536,
+          response_format: { type: "json_object" },
+          stream: true,
+        };
+    const result = await this.create(userId, {
+      idempotencyKey: input.idempotencyKey,
+      providerModelId: target.model_id,
+      expectedCredits: input.expectedCredits,
+      creditOverride: Number(config.credit_cost),
+      taskType: "SCRIPT_ANALYSIS",
+      payload,
+      validateResponse: parseScriptAnalysis,
+    });
+    return { ...result, analysis: parseScriptAnalysis(result.provider_response) };
   }
 
   /** Read-only price preview. Uses exactly the same calculator as task reservation. */
@@ -256,9 +499,8 @@ export class ModelGatewayService {
       base = Number(prices[0]!.credit_cost);
     }
     if (!Number.isFinite(base) || base < 0) throw new ServiceUnavailableException("模型积分价格配置无效");
-    const { multipliers } = await this.creditMultipliers.get();
-    // Persist only the final estimate on task creation. Settlement never reapplies a later multiplier.
-    base = multiplyCredits(base, multiplierFor(multipliers, target.capability));
+    // Persist only the final estimate on task creation. Settlement never reapplies a later model multiplier.
+    base = multiplyCredits(base, storedModelCreditMultiplier(target.credit_multiplier));
     if (target.capability !== "VIDEO_GENERATION") return base;
     const params = asObject(payload.params);
     const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
@@ -428,12 +670,21 @@ export class ModelGatewayService {
   }
 
   private async call(request: { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> | FormData }): Promise<{ ok: boolean; status: number; value: unknown }> {
-    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 10 * 60_000);
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 30 * 60_000);
     try {
       const body = request.body instanceof FormData ? request.body : JSON.stringify(request.body || {});
       const response = await fetch(request.url, { method: request.method, headers: request.headers, body: request.method === "GET" || request.method === "HEAD" ? undefined : body, signal: controller.signal });
-      const text = await response.text(); return { ok: response.ok, status: response.status, value: parseResponse(text, response.headers.get("content-type")) };
-    } catch (error) { throw new BadGatewayException(error instanceof Error ? error.message : "供应商请求失败"); }
+      const text = await response.text();
+      const contentType = response.headers.get("content-type");
+      const expectsStream = !(request.body instanceof FormData) && request.body?.stream === true;
+      const value = response.ok && expectsStream && (contentType?.includes("text/event-stream") || /^\s*data:/i.test(text))
+        ? parseOpenAiEventStream(text)
+        : parseResponse(text, contentType);
+      return { ok: response.ok, status: response.status, value };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new BadGatewayException(providerFetchError(error));
+    }
     finally { clearTimeout(timeout); }
   }
 
@@ -480,7 +731,10 @@ export class ModelGatewayService {
     });
   }
 
-  async create(userId: string, input: { localTaskId?: string; idempotencyKey: string; providerModelId: string; payload: unknown; expectedCredits?: number }): Promise<Record<string, unknown>> {
+  async create(userId: string, input: {
+    localTaskId?: string; idempotencyKey: string; providerModelId: string; payload: unknown; expectedCredits?: number;
+    creditOverride?: number; taskType?: string; validateResponse?: (value: unknown) => unknown;
+  }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
     const localTaskId = input.localTaskId || randomUUID(); if (!/^[0-9a-f-]{36}$/i.test(localTaskId)) throw new BadRequestException("local_task_id 必须是 UUID");
     const requestHash = createHash("sha256").update(JSON.stringify(canonical({ model: input.providerModelId, payload }))).digest("hex");
@@ -489,7 +743,9 @@ export class ModelGatewayService {
     let credits: number;
     let providerRequest: ReturnType<ModelGatewayService["request"]>;
     try {
-    target = await this.target(input.providerModelId); credits = await this.estimatedCredits(target, payload);
+    target = await this.target(input.providerModelId);
+    credits = input.creditOverride === undefined ? await this.estimatedCredits(target, payload) : Number(input.creditOverride);
+    if (!Number.isFinite(credits) || credits < 0) throw new ServiceUnavailableException("任务积分价格配置无效");
     if (input.expectedCredits !== undefined && (!Number.isFinite(input.expectedCredits) || input.expectedCredits < 0 || input.expectedCredits !== credits)) {
       throw new ConflictException("本次需要的积分有变化，请重新确认后再开始。现在没有扣分。");
     }
@@ -521,7 +777,7 @@ export class ModelGatewayService {
             (id, user_id, local_task_id, idempotency_key, request_hash, task_type, logical_model_code,
              provider_id, provider_model_id, status, estimated_credits)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?)`,
-          [taskId, userId, localTaskId, input.idempotencyKey, requestHash, target.capability, target.model_code, target.provider_id, target.model_id, credits],
+          [taskId, userId, localTaskId, input.idempotencyKey, requestHash, input.taskType || target.capability, target.model_code, target.provider_id, target.model_id, credits],
         );
         await connection.execute("INSERT INTO credit_holds (id, user_id, task_id, amount, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 MINUTE))", [randomUUID(), userId, taskId, credits]);
         await connection.execute("INSERT INTO task_attempts (id, task_id, attempt_number, provider_id, provider_model_id, status) VALUES (?, ?, 1, ?, ?, 'SUBMITTING')", [attemptId, taskId, target.provider_id, target.model_id]);
@@ -550,8 +806,12 @@ export class ModelGatewayService {
       if (!result.ok) throw new BadGatewayException(`供应商创建任务返回 HTTP ${result.status}`);
       const upstreamError = applicationError(result.value);
       if (upstreamError) throw new BadGatewayException(`供应商创建任务失败：${upstreamError}`);
+      if (!Number(target.supports_async_tasks) && input.validateResponse) input.validateResponse(result.value);
       const remoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
       let status = Number(target.supports_async_tasks) ? upstreamStatus(result.value, "PROVIDER_ACCEPTED") : "SUCCEEDED";
+      if (status === "SUCCEEDED" && target.capability === "VIDEO_UNDERSTANDING") {
+        assertVideoUnderstandingResponse(result.value);
+      }
       if (Number(target.supports_async_tasks) && !remoteTaskId && status !== "SUCCEEDED") throw new BadGatewayException("供应商响应中缺少任务 ID");
       await this.database.transaction(async (connection) => {
         await connection.execute("UPDATE ai_tasks SET remote_task_id = ?, status = ?, revision = revision + 1 WHERE id = ?", [remoteTaskId, status, taskId]);
@@ -601,6 +861,14 @@ export class ModelGatewayService {
       if (upstreamError) throw new BadGatewayException(`供应商查询任务失败：${upstreamError}`);
       const status = target.provider_code === "wagaai" && target.api_protocol === "lingkeai_media"
         ? wagaTaskStatus(result.value) : upstreamStatus(result.value, "PROCESSING");
+      if (status === "SUCCEEDED" && target.capability === "VIDEO_UNDERSTANDING") {
+        try {
+          assertVideoUnderstandingResponse(result.value);
+        } catch (error) {
+          await this.release(task.id, "FAILED", "PROVIDER_INVALID_VIDEO_UNDERSTANDING_RESULT");
+          throw error;
+        }
+      }
       if (status === "SUCCEEDED") await this.settle(task.id, asObject(result.value).usage);
       else if (status === "FAILED") await this.release(task.id, "FAILED", findString(result.value, ["error", "message", "msg"]) || "PROVIDER_TASK_FAILED");
       else await this.database.execute("UPDATE ai_tasks SET status = ?, revision = revision + 1 WHERE id = ?", [status, task.id]);

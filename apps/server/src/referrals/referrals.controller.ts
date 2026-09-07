@@ -9,10 +9,17 @@ export class ReferralsController {
   @Get("invitations/:code")
   @Header("Cache-Control", "no-store")
   invitation(@Param("code") code: string) { return this.referrals.publicInvitation(code); }
+  @Get("downloads")
+  @Header("Cache-Control", "no-store")
+  downloads() { return this.referrals.publicDownloads(); }
   @Get("me")
   @UseGuards(UserAuthGuard)
   @Header("Cache-Control", "no-store")
   me(@Req() req: UserRequest) { return this.referrals.summary(req.user.sub); }
+  @Get("me/subordinates")
+  @UseGuards(UserAuthGuard)
+  @Header("Cache-Control", "no-store")
+  subordinates(@Req() req: UserRequest, @Query("level") level?: string, @Query("page") page?: string) { return this.referrals.subordinates(req.user.sub, level, page); }
   @Get("me/:kind")
   @UseGuards(UserAuthGuard)
   @Header("Cache-Control", "no-store")

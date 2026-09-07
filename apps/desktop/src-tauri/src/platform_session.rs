@@ -5,6 +5,9 @@ use tauri::Manager;
 
 const SERVICE: &str = "AI Video Studio Platform Session";
 const USER: &str = "default";
+const REMEMBERED_CREDENTIALS_SERVICE: &str = "AI Video Studio Remembered Login Credentials";
+const REMEMBERED_CREDENTIALS_USER: &str = "accounts";
+const MAX_REMEMBERED_CREDENTIALS: usize = 10;
 static USER_CONTEXT_INITIALIZING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,8 +19,62 @@ pub struct PlatformSession {
     pub(crate) user_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RememberedCredential {
+    account: String,
+    password: String,
+}
+
 fn credential() -> Result<Entry, String> {
     Entry::new(SERVICE, USER).map_err(|error| format!("无法访问系统凭据管理器：{error}"))
+}
+
+fn remembered_credentials_entry() -> Result<Entry, String> {
+    Entry::new(REMEMBERED_CREDENTIALS_SERVICE, REMEMBERED_CREDENTIALS_USER)
+        .map_err(|error| format!("无法访问系统凭据管理器：{error}"))
+}
+
+fn validate_remembered_credential(account: &str, password: &str) -> Result<(), String> {
+    if account.is_empty()
+        || account.len() > 191
+        || !account.contains('@')
+        || account.chars().any(char::is_whitespace)
+    {
+        return Err("记住的登录账号无效".to_owned());
+    }
+    if password.len() < 8 || password.len() > 128 {
+        return Err("记住的登录密码无效".to_owned());
+    }
+    Ok(())
+}
+
+fn read_remembered_credentials() -> Result<Vec<RememberedCredential>, String> {
+    match remembered_credentials_entry()?.get_password() {
+        Ok(value) => {
+            let credentials = serde_json::from_str::<Vec<RememberedCredential>>(&value)
+                .map_err(|_| "系统凭据中的已保存账号已损坏".to_owned())?;
+            for credential in &credentials {
+                validate_remembered_credential(&credential.account, &credential.password)?;
+            }
+            Ok(credentials)
+        }
+        Err(keyring::Error::NoEntry) => Ok(Vec::new()),
+        Err(error) => Err(format!("读取已保存账号失败：{error}")),
+    }
+}
+
+fn write_remembered_credentials(credentials: &[RememberedCredential]) -> Result<(), String> {
+    if credentials.is_empty() {
+        return match remembered_credentials_entry()?.delete_credential() {
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("清除已保存账号失败：{error}")),
+        };
+    }
+    let value = serde_json::to_string(credentials)
+        .map_err(|error| format!("序列化已保存账号失败：{error}"))?;
+    remembered_credentials_entry()?
+        .set_password(&value)
+        .map_err(|error| format!("保存登录账号失败：{error}"))
 }
 
 fn validate(session: &PlatformSession) -> Result<(), String> {
@@ -223,11 +280,12 @@ pub async fn activate_user_context(app: tauri::AppHandle) -> Result<(), String> 
                     if let Err(error) = crate::ai::resume_project_image_tasks(&app, &project_root) {
                         eprintln!("恢复项目图片任务失败（{}）：{error}", project.id);
                     }
-                    if let Err(error) = crate::ai::resume_project_video_tasks(&project_root) {
+                    if let Err(error) = crate::ai::resume_project_video_tasks(&app, &project_root) {
                         eprintln!("恢复项目视频任务失败（{}）：{error}", project.id);
                     }
                 }
                 crate::douyin_tasks::initialize(&app)?;
+                crate::script_tasks::initialize(&app)?;
                 crate::video_remix::initialize(&app)?;
                 Ok(())
             })();
@@ -291,4 +349,45 @@ pub async fn clear_platform_session() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(delete_platform_session)
         .await
         .map_err(|error| format!("清除登录会话线程失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn get_remembered_credentials() -> Result<Vec<RememberedCredential>, String> {
+    tauri::async_runtime::spawn_blocking(read_remembered_credentials)
+        .await
+        .map_err(|error| format!("读取已保存账号线程失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn save_remembered_credential(
+    account: String,
+    password: String,
+) -> Result<Vec<RememberedCredential>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let account = account.trim().to_lowercase();
+        validate_remembered_credential(&account, &password)?;
+        let mut credentials = read_remembered_credentials()?;
+        credentials.retain(|credential| !credential.account.eq_ignore_ascii_case(&account));
+        credentials.insert(0, RememberedCredential { account, password });
+        credentials.truncate(MAX_REMEMBERED_CREDENTIALS);
+        write_remembered_credentials(&credentials)?;
+        Ok(credentials)
+    })
+    .await
+    .map_err(|error| format!("保存登录账号线程失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn delete_remembered_credential(
+    account: String,
+) -> Result<Vec<RememberedCredential>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let account = account.trim();
+        let mut credentials = read_remembered_credentials()?;
+        credentials.retain(|credential| !credential.account.eq_ignore_ascii_case(account));
+        write_remembered_credentials(&credentials)?;
+        Ok(credentials)
+    })
+    .await
+    .map_err(|error| format!("删除已保存账号线程失败：{error}"))?
 }

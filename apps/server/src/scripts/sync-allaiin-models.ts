@@ -273,8 +273,9 @@ async function main(): Promise<void> {
         if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(selected.capability)) {
           await db.execute(
             `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
-             SELECT id, ?, credit_cost, 0 FROM provider_models WHERE provider_id = ? AND model_code = ?`,
-            [selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.modelCode],
+             SELECT id, ?, credit_cost, 0 FROM provider_models
+             WHERE provider_id = ? AND model_code = ? AND capability = ?`,
+            [selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.modelCode, selected.capability],
           );
         }
       }

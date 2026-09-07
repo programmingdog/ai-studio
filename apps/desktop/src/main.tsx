@@ -1,15 +1,21 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { I18nProvider } from "./i18n";
 import "./styles.css";
 import { CreditConfirmationHost } from "./components/CreditConfirmationHost";
+import { CreditPurchaseHost } from "./components/CreditPurchaseHost";
+import { requestSessionReauthentication, SessionReauthenticationHost } from "./components/SessionReauthenticationHost";
 import { LowCreditReminderHost } from "./components/LowCreditReminderHost";
 import { DesktopWindowLifecycle } from "./components/DesktopWindowLifecycle";
 import { ProductBrandProvider } from "./brand";
+import { DesktopUpdateHost } from "./components/DesktopUpdateHost";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: requestSessionReauthentication }),
+  mutationCache: new MutationCache({ onError: requestSessionReauthentication }),
+});
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
   state: { error?: Error } = {};
@@ -41,7 +47,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Erro
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <I18nProvider><ProductBrandProvider><AppErrorBoundary><DesktopWindowLifecycle /><CreditConfirmationHost /><App /><LowCreditReminderHost /></AppErrorBoundary></ProductBrandProvider></I18nProvider>
+      <I18nProvider><ProductBrandProvider><AppErrorBoundary><DesktopWindowLifecycle /><DesktopUpdateHost /><CreditPurchaseHost /><SessionReauthenticationHost /><CreditConfirmationHost /><App /><LowCreditReminderHost /></AppErrorBoundary></ProductBrandProvider></I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

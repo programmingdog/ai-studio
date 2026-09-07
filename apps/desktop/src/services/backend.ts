@@ -45,6 +45,8 @@ import type {
   CreateVideoRemixTaskInput,
   CreateVideoRemixProjectInput,
   VideoRemixTask,
+  ScriptAnalysisTask,
+  CreateScriptAnalysisTaskInput,
 } from "@aivs/schemas";
 import { VIDEO_STORYBOARD_DETAILED_PROMPT, VIDEO_STORYBOARD_PROMPT } from "../prompts/videoStoryboard";
 import { CHARACTER_IMAGE_PROMPT } from "../prompts/characterImage";
@@ -196,6 +198,26 @@ export async function analyzeScript(bundle: ProjectBundle): Promise<ProjectBundl
   });
 }
 
+export async function createScriptAnalysisTask(input: CreateScriptAnalysisTaskInput): Promise<ScriptAnalysisTask> {
+  if (!isTauri()) throw new Error("剧本文件大模型分析仅支持桌面应用");
+  return invoke<ScriptAnalysisTask>("create_script_analysis_task", { input });
+}
+
+export async function listScriptAnalysisTasks(): Promise<ScriptAnalysisTask[]> {
+  if (!isTauri()) return [];
+  return invoke<ScriptAnalysisTask[]>("list_script_analysis_tasks");
+}
+
+export async function reanalyzeScriptTask(taskId: string, expectedCredits: number): Promise<ScriptAnalysisTask> {
+  if (!isTauri()) throw new Error("剧本文件大模型分析仅支持桌面应用");
+  return invoke<ScriptAnalysisTask>("reanalyze_script_task", { taskId, expectedCredits, platformApiBaseUrl });
+}
+
+export async function deleteScriptAnalysisTask(taskId: string): Promise<void> {
+  if (!isTauri()) throw new Error("剧本分析记录删除仅支持桌面应用");
+  return invoke<void>("delete_script_analysis_task", { taskId });
+}
+
 export async function loadProject(projectPath: string): Promise<ProjectBundle> {
   if (isTauri()) return invoke<ProjectBundle>("load_project", { projectPath });
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -291,6 +313,12 @@ export async function chooseProjectDirectory(): Promise<string | undefined> {
   return typeof selected === "string" ? selected : undefined;
 }
 
+export async function chooseGenerationAssetsDirectory(currentDirectory?: string): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  const selected = await openDialog({ directory: true, multiple: false, title: "选择生成素材保存目录", defaultPath: currentDirectory || undefined });
+  return typeof selected === "string" ? selected : undefined;
+}
+
 export async function chooseScriptFile(): Promise<string | undefined> {
   if (!isTauri()) return undefined;
   const selected = await openDialog({
@@ -314,7 +342,7 @@ export async function chooseProjectImage(): Promise<string | undefined> {
 export async function importProjectReferenceImage(
   projectPath: string,
   sourcePath: string,
-  ownerType: "character_state" | "scene",
+  ownerType: "character_state" | "scene" | "prop",
   ownerId: string,
 ): Promise<string> {
   if (!isTauri()) throw new Error("导入本地参考图仅支持桌面应用");
@@ -343,6 +371,7 @@ export async function chooseVideoFile(): Promise<string | undefined> {
 
 export async function getAiSettings(): Promise<AiSettings> {
   const local: LocalAiSettings = !isTauri() ? {
+    generation_assets_directory: "Browser Demo/assets", default_generation_assets_directory: "Browser Demo/assets",
     base_url: "https://api.lk888.ai", agent_model: "gpt-5.6-sol", video_model: "gemini-3.7-flash", video_storyboard_prompt: VIDEO_STORYBOARD_PROMPT, video_storyboard_detailed_prompt: VIDEO_STORYBOARD_DETAILED_PROMPT, character_image_prompt: CHARACTER_IMAGE_PROMPT, has_api_key: false,
     prompt_overrides: { video_storyboard_prompt: false, video_storyboard_detailed_prompt: false, character_image_prompt: false },
     image_model: "gpt-image-2", image_protocol: "openai",
@@ -441,6 +470,11 @@ export async function listLocalVideoUnderstandingTasks(): Promise<DouyinUndersta
 export async function retryDouyinUnderstandingTask(taskId: string): Promise<DouyinUnderstandingTask> {
   if (!isTauri()) throw new Error("链接视频并发任务仅支持桌面应用");
   return invoke<DouyinUnderstandingTask>("retry_douyin_understanding_task", { taskId });
+}
+
+export async function reparseDouyinUnderstandingTask(taskId: string): Promise<DouyinUnderstandingTask> {
+  if (!isTauri()) throw new Error("视频链接重新解析仅支持桌面应用");
+  return invoke<DouyinUnderstandingTask>("reparse_douyin_understanding_task", { taskId });
 }
 
 export async function createVideoRemixTask(input: CreateVideoRemixTaskInput): Promise<VideoRemixTask> {

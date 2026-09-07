@@ -27,7 +27,7 @@ type ProviderModel = {
   generation_endpoint: string;
   query_endpoint: string | null;
   credit_cost: number;
-  credit_multiplier?: number;
+  credit_multiplier: number;
   final_credit_cost?: number;
   max_reference_images: number;
   supports_reference_video: boolean;
@@ -123,7 +123,6 @@ export function ProvidersPanel({ token }: { token: string }) {
   const [testModel, setTestModel] = useState<ProviderModel | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [defaultModelsRevision, setDefaultModelsRevision] = useState(0);
 
   const selected = providers.find((provider) => provider.id === selectedId) || null;
 
@@ -178,7 +177,6 @@ export function ProvidersPanel({ token }: { token: string }) {
     setError("");
     await loadProviders();
     if (selectedId) await Promise.all([loadModels(selectedId), loadCredentials(selectedId)]);
-    setDefaultModelsRevision((revision) => revision + 1);
   };
 
   const toggleProvider = async (provider: Provider) => {
@@ -215,7 +213,6 @@ export function ProvidersPanel({ token }: { token: string }) {
 
   return <div className="provider-console">
     {pricing.modal}
-    <DefaultModelConfigPanel token={token} revision={defaultModelsRevision} />
     <section className="list-card provider-directory">
       <header><div><span className="kicker">AI GATEWAY</span><h2>AI 供应商</h2><p>管理 Adapter、网关地址与模型目录。</p></div><button className="primary" onClick={() => setProviderModal("new")}>新增</button></header>
       {providers.length ? <div className="provider-list">{providers.map((provider) => <article key={provider.id} className={selectedId === provider.id ? "selected" : ""}>
@@ -246,7 +243,7 @@ export function ProvidersPanel({ token }: { token: string }) {
             <div className="model-main"><span className={`status ${statusTone(model.status)}`}>{model.status}</span><h3>{model.model_alias}</h3><p>{model.display_name} · <code>{model.model_code}</code></p><small>{model.api_protocol} · {model.generation_endpoint}</small>
               {selected.code.toLowerCase() === "wagaai" && <ModelSupplierPrice model={pricing.modelPrice(selected.id, model.model_code)} onDetails={() => pricing.open(selected, model.model_code)} />}
             </div>
-            <div className="model-pricing"><small>用户最终积分</small>{model.resolution_prices?.length ? model.resolution_prices.map((price) => <span className="resolution-price" key={price.resolution}><strong>{price.resolution}</strong><em>{price.final_credit_cost ?? price.credit_cost} 积分{model.capability === "VIDEO_GENERATION" ? " / 秒" : " / 次"}</em><small>基础 {price.credit_cost} × {model.credit_multiplier ?? 1}</small></span>) : <><strong>{model.final_credit_cost ?? model.credit_cost}</strong><span>{model.capability === "VIDEO_GENERATION" ? "积分 / 秒" : "积分 / 次"}</span><small>基础 {model.credit_cost} × {model.credit_multiplier ?? 1}</small></>}</div>
+            <div className="model-pricing"><small>用户最终积分</small>{model.resolution_prices?.length ? model.resolution_prices.map((price) => <span className="resolution-price" key={price.resolution}><strong>{price.resolution}</strong><em>{price.final_credit_cost ?? price.credit_cost} 积分{model.capability === "VIDEO_GENERATION" ? " / 秒" : " / 次"}</em><small>消耗 {price.credit_cost} × 模型系数 {model.credit_multiplier}</small></span>) : <><strong>{model.final_credit_cost ?? model.credit_cost}</strong><span>{model.capability === "VIDEO_GENERATION" ? "积分 / 秒" : "积分 / 次"}</span><small>消耗 {model.credit_cost} × 模型系数 {model.credit_multiplier}</small></>}</div>
             <div className="model-flags"><span>参考图 {model.max_reference_images}</span><span>参考视频 {model.supports_reference_video ? "支持" : "不支持"}</span>{model.capability === "VIDEO_GENERATION" && <span>真人 {model.supports_real_person ? "支持" : "不支持"}</span>}<span>{model.supports_async_tasks ? "异步查询" : "同步返回"}</span></div>
             <div className="model-actions"><button className="primary" onClick={() => setTestModel(model)}>测试</button><button className="secondary" onClick={() => setModelModal(model)}>编辑</button><button className="secondary" onClick={() => void toggleModel(model)}>{model.status === "ACTIVE" ? "停用" : "启用"}</button></div>
           </article>)}</div> : <div className="empty-model">暂未配置{capabilityLabels[capability]}模型</div>}
@@ -265,7 +262,7 @@ function defaultModelLabel(model: DefaultModelCandidate): string {
   return `${model.provider_name}-${model.model_alias}-${model.display_name}`;
 }
 
-function DefaultModelConfigPanel({ token, revision }: { token: string; revision: number }) {
+export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string; revision?: number }) {
   const [config, setConfig] = useState<DefaultModelConfig | null>(null);
   const [form, setForm] = useState({
     text_model_id: "",
@@ -492,7 +489,7 @@ function ProviderModal({ token, provider, onClose, onSaved }: { token: string; p
 type ModelForm = {
   model_code: string; display_name: string; model_alias: string; capability: ModelCapability;
   api_protocol: string; generation_endpoint: string; query_endpoint: string;
-  credit_cost: number; max_reference_images: number; supports_reference_video: boolean;
+  credit_cost: number; credit_multiplier: number; max_reference_images: number; supports_reference_video: boolean;
   supports_real_person: boolean;
   supports_async_tasks: boolean; sort_order: number; description: string; status: string;
   parameter_schema: string; config: string;
@@ -505,7 +502,7 @@ function modelPayload(model: ProviderModel | ModelForm) {
   return {
     model_code: model.model_code, display_name: model.display_name, model_alias: model.model_alias,
     capability: model.capability, api_protocol: model.api_protocol, generation_endpoint: model.generation_endpoint,
-    query_endpoint: model.query_endpoint || "", credit_cost: Number(model.credit_cost),
+    query_endpoint: model.query_endpoint || "", credit_cost: Number(model.credit_cost), credit_multiplier: Number(model.credit_multiplier),
     max_reference_images: Number(model.max_reference_images), supports_reference_video: model.supports_reference_video,
     supports_real_person: model.capability === "VIDEO_GENERATION" && model.supports_real_person,
     supports_async_tasks: model.supports_async_tasks, sort_order: Number(model.sort_order),
@@ -519,7 +516,7 @@ function ModelModal({ token, providerId, model, onClose, onSaved }: { token: str
     model_code: model?.model_code || "", display_name: model?.display_name || "", model_alias: model?.model_alias || "",
     capability: model?.capability || "TEXT_GENERATION", api_protocol: model?.api_protocol || "openai",
     generation_endpoint: model?.generation_endpoint || "/v1/chat/completions", query_endpoint: model?.query_endpoint || "",
-    credit_cost: model?.credit_cost || 1, max_reference_images: model?.max_reference_images || 0,
+    credit_cost: model?.credit_cost || 1, credit_multiplier: model?.credit_multiplier ?? 1, max_reference_images: model?.max_reference_images || 0,
     supports_reference_video: model?.supports_reference_video || false,
     supports_real_person: model?.supports_real_person || false,
     supports_async_tasks: model?.supports_async_tasks || false,
@@ -540,11 +537,12 @@ function ModelModal({ token, providerId, model, onClose, onSaved }: { token: str
     finally { setSaving(false); }
   };
   return <div className="modal-backdrop"><form className="modal model-modal" onSubmit={submit}><header><div><span className="kicker">{model ? "EDIT MODEL" : "NEW MODEL"}</span><h2>{model ? "编辑大模型" : "新增大模型"}</h2></div><button type="button" onClick={onClose}>×</button></header>
-    <p className="supplier-pricing-note">下方编辑的是未乘系数的基础积分。用户最终单价 = 基础积分 × 配置中心对应模型类型系数；分辨率价格同样适用。</p>
+    <p className="supplier-pricing-note">每个模型独立配置积分系数。用户最终单价 = 消耗积分数 × 模型系数；分辨率价格同样适用。</p>
     <div className="three-columns"><label>名称<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="模型官方名称" required /></label><label>模型值<input value={form.model_code} onChange={(event) => setForm({ ...form, model_code: event.target.value })} placeholder="gpt-5.6-sol" required /></label><label>模型别名<input value={form.model_alias} onChange={(event) => setForm({ ...form, model_alias: event.target.value })} placeholder="客户端展示名称" required /></label></div>
     <div className="three-columns"><label>模型类型<select value={form.capability} onChange={(event) => { const capability = event.target.value as ModelCapability; const isMedia = capability === "IMAGE_GENERATION" || capability === "VIDEO_GENERATION"; setForm({ ...form, capability, resolution_prices: isMedia && !form.resolution_prices.length ? [{ resolution: capability === "IMAGE_GENERATION" ? "1K" : "720p", credit_cost: form.credit_cost }] : (isMedia ? form.resolution_prices : []) }); }}>{capabilityOrder.map((capability) => <option key={capability} value={capability}>{capabilityLabels[capability]}</option>)}</select></label><label>接口协议<input value={form.api_protocol} onChange={(event) => setForm({ ...form, api_protocol: event.target.value })} placeholder="openai / gemini / media" required /></label><label>状态<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="ACTIVE">启用</option><option value="DISABLED">停用</option></select></label></div>
     <div className="two-columns"><label>生成接口地址<input value={form.generation_endpoint} onChange={(event) => setForm({ ...form, generation_endpoint: event.target.value })} placeholder="/v1/chat/completions 或 HTTPS 地址" required /></label><label>查询接口地址<input value={form.query_endpoint} onChange={(event) => setForm({ ...form, query_endpoint: event.target.value })} placeholder="异步模型填写" /></label></div>
-    <div className="three-columns"><label>{form.capability === "VIDEO_GENERATION" ? "每秒消耗积分数（整数）" : "每次消耗积分数（整数）"}<input type="number" min="1" max="100000" value={form.credit_cost} onChange={(event) => setForm({ ...form, credit_cost: Number(event.target.value) })} required /></label><label>支持参考图数量<input type="number" min="0" max="255" value={form.max_reference_images} onChange={(event) => setForm({ ...form, max_reference_images: Number(event.target.value) })} required /></label><label>排序值<input type="number" min="0" max="100000" value={form.sort_order} onChange={(event) => setForm({ ...form, sort_order: Number(event.target.value) })} required /></label></div>
+    <div className="three-columns"><label>{form.capability === "VIDEO_GENERATION" ? "每秒消耗积分数（整数）" : "每次消耗积分数（整数）"}<input type="number" min="1" max="100000" value={form.credit_cost} onChange={(event) => setForm({ ...form, credit_cost: Number(event.target.value) })} required /></label><label>模型积分系数<input type="number" min="0.000001" max="1000" step="0.000001" value={form.credit_multiplier} onChange={(event) => setForm({ ...form, credit_multiplier: Number(event.target.value) })} required /></label><label>支持参考图数量<input type="number" min="0" max="255" value={form.max_reference_images} onChange={(event) => setForm({ ...form, max_reference_images: Number(event.target.value) })} required /></label></div>
+    <label>排序值<input type="number" min="0" max="100000" value={form.sort_order} onChange={(event) => setForm({ ...form, sort_order: Number(event.target.value) })} required /></label>
     {(form.capability === "IMAGE_GENERATION" || form.capability === "VIDEO_GENERATION") && <section className="resolution-editor"><header><div><strong>分辨率积分定价</strong><small>{form.capability === "VIDEO_GENERATION" ? "每个价格按生成视频秒数计费" : "每个价格按生成图片张数计费"}</small></div><button type="button" className="secondary" onClick={() => setForm({ ...form, resolution_prices: [...form.resolution_prices, { resolution: "", credit_cost: form.credit_cost }] })}>增加分辨率</button></header>{form.resolution_prices.map((price, index) => <div className="resolution-row" key={index}><label>分辨率<input value={price.resolution} placeholder={form.capability === "VIDEO_GENERATION" ? "例如 720p" : "例如 1K"} onChange={(event) => setForm({ ...form, resolution_prices: form.resolution_prices.map((item, itemIndex) => itemIndex === index ? { ...item, resolution: event.target.value } : item) })} required /></label><label>{form.capability === "VIDEO_GENERATION" ? "每秒积分" : "每张积分"}<input type="number" min="1" max="100000" value={price.credit_cost} onChange={(event) => setForm({ ...form, resolution_prices: form.resolution_prices.map((item, itemIndex) => itemIndex === index ? { ...item, credit_cost: Number(event.target.value) } : item) })} required /></label><button type="button" className="secondary" onClick={() => setForm({ ...form, resolution_prices: form.resolution_prices.filter((_, itemIndex) => itemIndex !== index) })}>删除</button></div>)}</section>}
     <div className="checkbox-row"><label><input type="checkbox" checked={form.supports_reference_video} onChange={(event) => setForm({ ...form, supports_reference_video: event.target.checked })} />支持参考视频</label>{form.capability === "VIDEO_GENERATION" && <label><input type="checkbox" checked={form.supports_real_person} onChange={(event) => setForm({ ...form, supports_real_person: event.target.checked })} />支持真人</label>}<label><input type="checkbox" checked={form.supports_async_tasks} onChange={(event) => setForm({ ...form, supports_async_tasks: event.target.checked })} />异步任务（需要查询接口）</label></div>
     <label>模型说明<textarea className="compact-textarea" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>

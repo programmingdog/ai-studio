@@ -65,7 +65,7 @@ export function CreditPricingPanel({ token }: { token: string }) {
         <div className="credit-ratio-example">{Number(ratio) > 0 ? <>1 积分 = ¥{Number(ratio)}<small>1 元 ≈ {(1 / Number(ratio)).toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 积分</small></> : "请输入大于 0 的比例"}</div>
       </div>
       <label className="credit-auto-sync"><input type="checkbox" checked={enabled} disabled={busy} onChange={(event) => setEnabled(event.target.checked)} />启用按实时价格自动更新模型积分</label>
-      <p className="supplier-pricing-note">WagaAI：1 算力 = 1 元。选择运行中且当前 API Key 可用渠道的最低可换算价格；基础积分 = 人民币价格 ÷ 每积分金额，向上取整，最低 1 积分。图片按分辨率计每次基础积分，视频计每秒基础积分；用户最终单价还需乘以上方对应类型系数。</p>
+      <p className="supplier-pricing-note">WagaAI：1 算力 = 1 元。选择运行中且当前 API Key 可用渠道的最低可换算价格；模型消耗积分 = 人民币价格 ÷ 每积分金额，向上取整，最低 1 积分。图片按分辨率计每次积分，视频计每秒积分；用户最终单价还会乘以供应商与模型配置中的该模型系数。</p>
       <p className="supplier-pricing-note">开启后，保存比例会同步已接入的启用供应商；在 AI 供应商页面查询/刷新实时价格也会更新积分。不进行定时后台刷新，不影响已创建任务、用户现有余额或充值套餐。按 Token 计费且无用量换算规则、不可用或参数不匹配的档位保留原积分，见下方结果。</p>
       <div className="inline-actions credit-pricing-actions"><button className="primary" disabled={busy}>{busy ? "处理中…" : enabled ? "保存比例并更新模型积分" : "保存比例"}</button>
         <button type="button" className="secondary" disabled={busy || !config.auto_sync || dirty} onClick={() => void sync()}>刷新实时价并更新积分</button>
@@ -82,7 +82,7 @@ export function CreditSyncResults({ report }: { report: CreditSyncReport }) {
     <summary>{report.enabled ? `积分定价：更新 ${report.updated_count} 项，未变 ${report.unchanged_count} 项，跳过 ${report.skipped_count} 项` : "自动定价未启用，本次仅查询价格"}{report.errors.length > 0 && ` · ${report.errors.length} 条提示`}</summary>
     <p className="supplier-pricing-note">{new Date(report.at).toLocaleString("zh-CN", { hour12: false })} · 本次比例：1 积分 = ¥{report.cny_per_credit}。报价按最低参数组合计算，附加参考素材费用及更高档参数不计入此最低价。</p>
     {report.errors.map((error, index) => <div className="test-warning" key={index}>{error}</div>)}
-    {!!report.items.length && <div className="supplier-price-table"><table><thead><tr><th>模型 / 分辨率</th><th>最低人民币价</th><th>基础积分（原 → 新）</th><th>渠道 / 说明</th></tr></thead><tbody>
+    {!!report.items.length && <div className="supplier-price-table"><table><thead><tr><th>模型 / 分辨率</th><th>最低人民币价</th><th>模型消耗积分（原 → 新）</th><th>渠道 / 说明</th></tr></thead><tbody>
       {report.items.map((item) => <tr key={`${item.model_id}:${item.resolution}`}><td>{item.provider_name} · {item.model_alias}<br /><code>{item.model_code}</code>{item.resolution && <><br />{item.resolution}</>}</td>
         <td>{item.price_cny === null ? "—" : `¥${item.price_cny}`} / {item.billing_unit === "PER_SECOND" ? "秒" : "次"}</td>
         <td>{item.previous_credits} → {item.credits ?? "保留原值"}<br />{item.status === "UPDATED" ? "已更新" : item.status === "UNCHANGED" ? "未变化" : "已跳过"}</td>

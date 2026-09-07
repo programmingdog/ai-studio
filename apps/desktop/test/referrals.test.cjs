@@ -42,3 +42,11 @@ test('changing to invalid or oversized receipt clears previous valid image', asy
   h.inputs()[3].props.onChange({ target: { files: [{ type: 'image/png', size: 2 * 1024 * 1024 + 1 }] } }); h.render();
   assert.equal(h.nodes().some(x => x.type === 'img'), false);
 });
+test('referral center exposes subordinate tab with direct, indirect and paid-consumption details', () => {
+  const source = require('node:fs').readFileSync(file, 'utf8');
+  assert.match(source, /\["subordinates", "下级用户"\]/);
+  assert.match(source, /getReferralSubordinates\(level, page\)/);
+  assert.match(source, /直接下级/); assert.match(source, /间接下级/);
+  assert.match(source, /money\(user\.consumption_fen\)/);
+  assert.match(source, /user\.paid_order_count/);
+});

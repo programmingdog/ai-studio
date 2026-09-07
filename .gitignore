@@ -22,3 +22,4 @@ logs/
 .codex-tmp/
 binaries/
 release/
+tools/release.config.json

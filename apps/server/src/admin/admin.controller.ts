@@ -7,13 +7,13 @@ import { asRecord, jsonValue, optionalString, requiredBoolean, requiredString } 
 import { AuthMethodConfigService } from "../common/auth-method-config.service";
 import { IpAccessControlService } from "../common/ip-access-control.service";
 import { ProductBrandConfigService } from "../common/product-brand-config.service";
+import { DesktopReleaseService, type DesktopReleaseInput } from "../common/desktop-release.service";
 import { AdminService } from "./admin.service";
 import { CreditAdminService } from "./credit-admin.service";
 import { ModelTestService } from "./model-test.service";
 import { WechatPaymentConfigService } from "./wechat-payment-config.service";
 import { ProviderPricingService } from "./provider-pricing.service";
 import { CreditPricingService } from "./credit-pricing.service";
-import { ModelCreditMultiplierService } from "../common/model-credit-multiplier.service";
 import { MailConfigService } from "../mail/mail-config.service";
 
 @Controller("admin")
@@ -27,12 +27,55 @@ export class AdminController {
     @Inject(CatalogService) private readonly catalogs: CatalogService,
     @Inject(ProviderPricingService) private readonly providerPricing: ProviderPricingService,
     @Inject(CreditPricingService) private readonly creditPricing: CreditPricingService,
-    @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
     @Inject(MailConfigService) private readonly mailConfig: MailConfigService,
     @Inject(AuthMethodConfigService) private readonly authMethods: AuthMethodConfigService,
     @Inject(IpAccessControlService) private readonly ipAccess: IpAccessControlService,
     @Inject(ProductBrandConfigService) private readonly productBrand: ProductBrandConfigService,
+    @Inject(DesktopReleaseService) private readonly desktopReleases: DesktopReleaseService,
   ) {}
+
+  @Get("desktop-releases")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("releases.manage")
+  listDesktopReleases() {
+    return this.desktopReleases.list();
+  }
+
+  @Post("desktop-releases")
+  @RequirePermissions("releases.manage")
+  createDesktopRelease(@Req() request: AdminRequest, @Body() input: unknown) {
+    return this.desktopReleases.create(request.admin.sub, this.desktopReleaseInput(asRecord(input)));
+  }
+
+  @Patch("desktop-releases/:releaseId")
+  @RequirePermissions("releases.manage")
+  updateDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string, @Body() input: unknown) {
+    return this.desktopReleases.update(request.admin.sub, releaseId, this.desktopReleaseInput(asRecord(input)));
+  }
+
+  @Post("desktop-releases/:releaseId/publish")
+  @RequirePermissions("releases.manage")
+  publishDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {
+    return this.desktopReleases.publish(request.admin.sub, releaseId);
+  }
+
+  @Post("desktop-releases/:releaseId/archive")
+  @RequirePermissions("releases.manage")
+  archiveDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {
+    return this.desktopReleases.archive(request.admin.sub, releaseId);
+  }
+
+  @Patch("desktop-releases/:releaseId/rollout")
+  @RequirePermissions("releases.manage")
+  updateDesktopReleaseRollout(@Req() request: AdminRequest, @Param("releaseId") releaseId: string, @Body() input: unknown) {
+    return this.desktopReleases.updateRollout(request.admin.sub, releaseId, Number(asRecord(input).rollout_percent));
+  }
+
+  @Delete("desktop-releases/:releaseId")
+  @RequirePermissions("releases.manage")
+  deleteDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {
+    return this.desktopReleases.removeDraft(request.admin.sub, releaseId);
+  }
 
   @Get("catalogs/:kind/categories")
   @RequirePermissions("configs.manage")
@@ -156,6 +199,7 @@ export class AdminController {
   updateAuthMethods(@Req() request: AdminRequest, @Body() input: unknown) {
     const body = asRecord(input);
     return this.authMethods.update(request.admin.sub, {
+      registrationEnabled: requiredBoolean(body, "registration_enabled"),
       emailEnabled: requiredBoolean(body, "email_enabled"),
       phoneOtpEnabled: requiredBoolean(body, "phone_otp_enabled"),
       wechatEnabled: requiredBoolean(body, "wechat_enabled"),
@@ -271,17 +315,6 @@ export class AdminController {
     return this.mailConfig.save(request.admin.sub, { api_url: body.api_url, delivery_method: body.delivery_method, smtp_host: body.smtp_host, smtp_port: body.smtp_port, smtp_security: body.smtp_security, mail_from: body.mail_from, password: body.password, status: body.status, revision: body.revision });
   }
 
-  @Get("configs/credit-multipliers")
-  @RequirePermissions("configs.manage")
-  getCreditMultipliers() { return this.creditMultipliers.get(); }
-
-  @Patch("configs/credit-multipliers")
-  @RequirePermissions("configs.manage", "providers.manage")
-  saveCreditMultipliers(@Req() request: AdminRequest, @Body() input: unknown) {
-    const body = asRecord(input);
-    return this.creditMultipliers.save(request.admin.sub, { multipliers: body.multipliers, revision: body.revision });
-  }
-
   @Patch("configs/credit-pricing")
   @RequirePermissions("configs.manage", "providers.manage")
   saveCreditPricingConfig(@Req() request: AdminRequest, @Body() input: unknown) {
@@ -314,6 +347,23 @@ export class AdminController {
       videoUnderstandingModelId: requiredString(body, "video_understanding_model_id", 36),
       imageModelIds: this.modelIdArray(body, "image_model_ids"),
       videoModelIds: this.modelIdArray(body, "video_model_ids"),
+    });
+  }
+
+  @Get("configs/script-analysis")
+  @RequirePermissions("configs.manage")
+  getScriptAnalysisConfig() {
+    return this.admin.getScriptAnalysisConfig();
+  }
+
+  @Patch("configs/script-analysis")
+  @RequirePermissions("configs.manage")
+  updateScriptAnalysisConfig(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.admin.updateScriptAnalysisConfig(request.admin.sub, {
+      prompt: requiredString(body, "prompt", 100_000),
+      creditCost: Number(body.credit_cost),
+      revision: Number(body.revision),
     });
   }
 
@@ -501,6 +551,16 @@ export class AdminController {
     return this.credits.createConsumption(request.admin.sub, this.creditConsumptionInput(asRecord(input)));
   }
 
+  @Delete("credits/consumptions")
+  @RequirePermissions("credits.manage")
+  clearCreditConsumptions(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    if (body.confirmed !== true || body.confirmation !== "CLEAR_ALL_CREDIT_CONSUMPTIONS") {
+      throw new BadRequestException("必须明确确认清空全部积分消耗记录");
+    }
+    return this.credits.clearConsumptions(request.admin.sub);
+  }
+
   @Patch("credits/consumptions/:consumptionId")
   @RequirePermissions("credits.manage")
   updateCreditConsumption(@Req() request: AdminRequest, @Param("consumptionId") consumptionId: string, @Body() input: unknown) {
@@ -524,6 +584,27 @@ export class AdminController {
       currency: optionalString(body, "currency", 3) || "CNY",
       status: optionalString(body, "status", 32) || "ACTIVE",
       sortOrder: Number(body.sort_order),
+    };
+  }
+
+  private desktopReleaseInput(body: Record<string, unknown>): DesktopReleaseInput {
+    const rawArtifacts = body.artifacts;
+    if (!Array.isArray(rawArtifacts)) throw new BadRequestException("artifacts 必须是数组");
+    return {
+      version: requiredString(body, "version", 32),
+      channel: optionalString(body, "channel", 32) || "stable",
+      notes: optionalString(body, "notes", 20000) || "",
+      minSupportedVersion: optionalString(body, "min_supported_version", 32) || "0.0.0",
+      rolloutPercent: Number(body.rollout_percent ?? 100),
+      artifacts: rawArtifacts.map((value) => {
+        const artifact = asRecord(value);
+        return {
+          target: requiredString(artifact, "target", 16),
+          arch: requiredString(artifact, "arch", 16),
+          url: requiredString(artifact, "url", 1000),
+          signature: requiredString(artifact, "signature", 2000),
+        };
+      }),
     };
   }
 
@@ -576,6 +657,7 @@ export class AdminController {
       generationEndpoint: requiredString(body, "generation_endpoint", 500),
       queryEndpoint: optionalString(body, "query_endpoint", 500) || null,
       creditCost: Number(body.credit_cost),
+      creditMultiplier: body.credit_multiplier === undefined ? undefined : Number(body.credit_multiplier),
       maxReferenceImages: Number(body.max_reference_images),
       supportsReferenceVideo: body.supports_reference_video === true,
       supportsRealPerson: body.supports_real_person === true,

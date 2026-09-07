@@ -295,6 +295,7 @@ fn attach_reference_asset(
         "character" => "characters",
         "character_state" => "character_states",
         "scene" => "scenes",
+        "prop" => "props",
         "shot" => "shots",
         _ => return Err(format!("不支持的生图目标类型：{target_type}")),
     };
@@ -407,6 +408,13 @@ mod tests {
                 "INSERT INTO character_states(id, project_id, character_id, state_order, name, data_json, locked, created_at, updated_at)
                  VALUES ('CHAR_001_STATE_001', 'P_TEST', 'CHAR_001', 0, '默认状态', ?1, 0, 'now', 'now')",
                 [json!({"id":"CHAR_001_STATE_001","name":"默认状态","reference_assets":[]}).to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO props(id, project_id, name, style, data_json, locked, created_at, updated_at)
+                 VALUES ('PROP_001', 'P_TEST', '测试道具', '复古', ?1, 0, 'now', 'now')",
+                [json!({"id":"PROP_001","name":"测试道具","style":"复古","description":"测试道具描述","reference_assets":[]}).to_string()],
             )
             .unwrap();
         connection
@@ -525,5 +533,37 @@ mod tests {
             state.pointer("/reference_assets/0").and_then(Value::as_str),
             Some("characters/states/default.png")
         );
+    }
+
+    #[test]
+    fn attaches_generated_image_to_a_prop() {
+        let mut connection = database();
+        let task = create(
+            &connection,
+            NewImageGenerationTask {
+                project_id: "P_TEST",
+                target_type: "prop",
+                target_id: "PROP_001",
+                base_url: "https://example.com",
+                model: "image-model",
+                protocol: "openai",
+                prompt: "生成一张完整清晰的独立测试道具概念参考图",
+                aspect_ratio: "9:16",
+            },
+        )
+        .unwrap();
+        complete(
+            &mut connection,
+            &task.id,
+            "props/PROP_001.png",
+            "C:/test/props/PROP_001.png",
+            "image/png",
+        )
+        .unwrap();
+        let raw: String = connection
+            .query_row("SELECT data_json FROM props WHERE id='PROP_001'", [], |row| row.get(0))
+            .unwrap();
+        let prop: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(prop.pointer("/reference_assets/0").and_then(Value::as_str), Some("props/PROP_001.png"));
     }
 }

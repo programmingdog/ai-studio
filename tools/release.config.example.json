@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "site_origin": "https://ai-studio.yuntianxing.net",
+  "api_base_url": "https://ai-studio.yuntianxing.net/api/v1",
+  "github_owner": "programmingdog",
+  "github_repository": "ai-studio",
+  "github_workflow": "platform.yml",
+  "github_branch": "main",
+  "github_deploy_timeout_minutes": 120,
+  "server_host": "REPLACE_WITH_SERVER_IP_OR_DEPLOY_HOST",
+  "server_port": 22,
+  "server_user": "aivs-deploy",
+  "ssh_key_path": "%USERPROFILE%\\.ssh\\aivs_github_deploy",
+  "remote_client_root": "/var/www/aivs-public/client",
+  "admin_email": "REPLACE_WITH_ADMIN_EMAIL",
+  "release_channel": "stable",
+  "initial_rollout_percent": 10,
+  "minimum_supported_version": "0.0.0",
+  "publish_update_automatically": true,
+  "run_npm_ci": true,
+  "run_python_tests": true,
+  "signing_private_key_path": "C:\\secure\\yingjiang-updater.key"
+}

@@ -73,7 +73,7 @@ for (const event of [{ name: '未关注用户 subscribe', type: 'subscribe', pre
       transaction: callback => callback(connection),
     };
     const referrals = { newUser: async () => undefined };
-    const service = new UserAuthService(database, { values: { jwtSecret: 'unused' } }, { decrypt: value => value }, {}, referrals);
+    const service = new UserAuthService(database, { values: { jwtSecret: 'unused' } }, { decrypt: value => value }, {}, referrals, { async get() { return { registration_enabled: true }; }, async assertRegistrationEnabled() {} });
     service.wechatAccessToken = async () => 'access-token';
     const originalFetch = global.fetch;
     global.fetch = async () => ({ json: async () => ({ subscribe: 1, openid: 'openid-1', unionid: 'union-1', nickname: '微信测试用户', headimgurl: 'https://example.invalid/avatar.png' }) });

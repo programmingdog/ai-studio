@@ -7,7 +7,7 @@ import type { AssetLibraryItem } from "@aivs/schemas";
 import { listAssetLibrary } from "../services/backend";
 
 export function AssetLibraryPickerModal({ assetType, onConfirm, onClose }: {
-  assetType: "scene" | "character";
+  assetType: "scene" | "character" | "prop";
   onConfirm: (asset: AssetLibraryItem) => Promise<void>;
   onClose: () => void;
 }) {
@@ -17,7 +17,7 @@ export function AssetLibraryPickerModal({ assetType, onConfirm, onClose }: {
   const [error, setError] = useState("");
   const busy = useRef(false);
   const dialog = useRef<HTMLElement>(null);
-  const label = assetType === "scene" ? "场景图" : "角色图";
+  const label = assetType === "scene" ? "场景图" : assetType === "character" ? "角色图" : "道具图";
   const assets = (library.data ?? []).filter((asset) => asset.asset_type === assetType);
   const selected = assets.find((asset) => asset.id === selectedId);
 

@@ -148,7 +148,13 @@ fn target_details(
                 |row| row.get(0),
             )
             .optional(),
-        "prop" => Ok(Some(target_id.to_owned())),
+        "prop" => connection
+            .query_row(
+                "SELECT name FROM props WHERE id = ?1",
+                [target_id],
+                |row| row.get(0),
+            )
+            .optional(),
         _ => return Err(format!("不支持写入资产库的类型：{target_type}")),
     }
     .map_err(|error| format!("读取资产名称失败：{error}"))?
@@ -166,6 +172,7 @@ fn target_prompt(
         "scene" => "SELECT data_json FROM scenes WHERE id = ?1",
         "character" => "SELECT data_json FROM characters WHERE id = ?1",
         "character_state" => "SELECT data_json FROM character_states WHERE id = ?1",
+        "prop" => "SELECT data_json FROM props WHERE id = ?1",
         _ => return Ok(String::new()),
     };
     let data = connection
@@ -180,6 +187,7 @@ fn target_prompt(
         "scene" => &["description", "lighting", "layout", "mood"],
         "character" => &["appearance_lock", "clothing_lock", "role"],
         "character_state" => &["description", "appearance_lock", "clothing_lock"],
+        "prop" => &["style", "description"],
         _ => &[],
     };
     let prompt = fields
@@ -466,7 +474,7 @@ pub fn sync_project_images(app: &AppHandle, project_root: &Path) -> Result<usize
     let mut statement = connection.prepare(
         "SELECT id, project_id, target_type, target_id, prompt, result_relative_path, result_absolute_path
          FROM image_generation_tasks
-         WHERE target_type IN ('scene', 'character', 'character_state')",
+         WHERE target_type IN ('scene', 'character', 'character_state', 'prop')",
     ).map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -521,6 +529,7 @@ pub fn sync_project_images(app: &AppHandle, project_root: &Path) -> Result<usize
     for (directory, target_type) in [
         (project_root.join("scenes"), "scene"),
         (project_root.join("characters"), "character"),
+        (project_root.join("props"), "prop"),
     ] {
         let mut images = Vec::new();
         collect_image_files(&directory, &mut images)?;

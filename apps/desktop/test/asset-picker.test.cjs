@@ -39,7 +39,7 @@ function harness(type, onConfirm = async () => {}) {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 test('each picker shows only its requested category and confirmation needs a selection', () => {
-  for (const type of ['scene', 'character']) {
+  for (const type of ['scene', 'character', 'prop']) {
     const h = harness(type);
     const cards = h.nodes().filter(n => n.type === 'button' && n.props.className?.includes('asset-library-card'));
     assert.equal(cards.length, 1);
@@ -91,12 +91,13 @@ test('removed or unavailable assets cannot be confirmed after refresh', () => {
   assert.equal(h.nodes().filter(n => n.type === 'img').length, 0);
 });
 
-test('project entry points precede local imports and copy into the correct scene or character state', () => {
+test('project entry points precede local imports and copy into the correct entity', () => {
   const app = fs.readFileSync(path.join(__dirname, '../src/App.tsx'), 'utf8');
-  assert.match(app, /\["story", "story", BookOpen\], \["scenes", "scenes", Boxes\], \["characters", "characters", CircleUserRound\]/);
-  const characters = app.slice(app.indexOf('function CharactersPage'), app.indexOf('function sceneImageTask'));
+  assert.match(app, /\["story", "story", BookOpen\], \["scenes", "scenes", Boxes\], \["characters", "characters", CircleUserRound\],[\s\S]*\["props", "props", WandSparkles\],[\s\S]*\["storyboard", "storyboard", Clapperboard\]/);
+  const characters = app.slice(app.indexOf('function CharactersPage'), app.indexOf('function projectProps'));
+  const props = app.slice(app.indexOf('function PropsPage'), app.indexOf('function sceneImageTask'));
   const scenes = app.slice(app.indexOf('function ScenesPage'), app.indexOf('function LegacyStoryboardPage'));
-  for (const [part, category, owner, button] of [[characters, 'character', 'character_state', '从素材库选择'], [scenes, 'scene', 'scene', '从资产库选择']]) {
+  for (const [part, category, owner, button] of [[characters, 'character', 'character_state', '从素材库选择'], [scenes, 'scene', 'scene', '从资产库选择'], [props, 'prop', 'prop', '从资产库选择']]) {
     assert.match(part, new RegExp(`assetType="${category}"`));
     assert.ok(part.indexOf(button) < part.indexOf('"选择本地图片"'));
     assert.ok(part.includes(`importProjectReferenceImage(projectPath, sourcePath, "${owner}"`));

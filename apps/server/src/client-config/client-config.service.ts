@@ -2,7 +2,7 @@ import { Inject, Injectable, ServiceUnavailableException } from "@nestjs/common"
 import { RowDataPacket } from "mysql2";
 import { parseStoredJson } from "../common/input";
 import { DatabaseService } from "../database/database.service";
-import { ModelCreditMultiplierService, multiplierFor, multiplyCredits } from "../common/model-credit-multiplier.service";
+import { multiplyCredits, storedModelCreditMultiplier } from "../common/model-credit";
 import { supportsMediaResolution } from "../gateway/media-resolution";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
 import { wagaMediaParams, wagaProfiles } from "../gateway/waga-media";
@@ -30,6 +30,7 @@ interface ClientModelRow extends RowDataPacket {
   model_alias: string;
   capability: string;
   credit_cost: number;
+  credit_multiplier: number | string;
   max_reference_images: number;
   supports_reference_video: number;
   supports_real_person: number;
@@ -56,7 +57,6 @@ const promptConfigKeys = {
 @Injectable()
 export class ClientConfigService {
   constructor(@Inject(DatabaseService) private readonly database: DatabaseService,
-    @Inject(ModelCreditMultiplierService) private readonly creditMultipliers: ModelCreditMultiplierService,
     @Inject(WagaModelMetadataService) private readonly wagaMetadata?: WagaModelMetadataService) {}
 
   async current(channel = "stable"): Promise<Record<string, unknown>> {
@@ -85,10 +85,9 @@ export class ClientConfigService {
   }
 
   async models(): Promise<Record<string, unknown>[]> {
-    const { multipliers } = await this.creditMultipliers.get();
     const [rows, priceRows] = await Promise.all([this.database.query<ClientModelRow[]>(
       `SELECT pm.id, p.id AS provider_id, p.code AS provider_code, p.display_name AS provider_name,
-              pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.credit_cost,
+              pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.credit_cost, pm.credit_multiplier,
               pm.max_reference_images, pm.supports_reference_video, pm.supports_real_person,
               pm.supports_async_tasks,
               pm.sort_order, pm.description, pm.parameter_schema_json, pm.config_json, pm.api_protocol
@@ -111,38 +110,41 @@ export class ClientConfigService {
         row.parameter_schema_json = await this.wagaMetadata.schema(String(row.provider_id), row.model_code);
       }
     }));
-    return rows.map((row) => ({
-      ...row,
-      base_credit_cost: Number(row.credit_cost),
-      credit_multiplier: multiplierFor(multipliers, row.capability),
-      credit_cost: multiplyCredits(Number(row.credit_cost), multiplierFor(multipliers, row.capability)),
-      billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
-      max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
-      generation_notice: row.model_code === "viduq3" ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
-        : row.model_code === "omni_flash-10s" ? "此方案固定生成 10 秒视频。"
-        : wagaProfiles[row.model_code]?.resolution === false ? "此方案由供应商决定输出清晰度，不支持指定分辨率。" : undefined,
-      supports_reference_video: Boolean(row.supports_reference_video),
-      supports_real_person: Boolean(row.supports_real_person),
-      supports_async_tasks: Boolean(row.supports_async_tasks),
-      sort_order: Number(row.sort_order),
-      parameter_schema: parseStoredJson(row.parameter_schema_json),
-      parameter_schema_json: undefined,
-      config_json: undefined,
-      resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id && (() => {
-        if (!wagaProfiles[row.model_code]) return true;
-        if (wagaProfiles[row.model_code]?.resolution === false && price !== priceRows.find(p => p.provider_model_id === row.id)) return false;
-        try {
-          wagaMediaParams(row.model_code, parseStoredJson(row.parameter_schema_json), parseStoredJson(row.config_json),
-            { resolution: price.resolution, ...(wagaProfiles[row.model_code]?.video ? { seconds: wagaProfiles[row.model_code]?.fixed ?? wagaProfiles[row.model_code]?.duration?.find(n => n >= 10) } : {}) });
-          return true;
-        } catch { return false; }
-      })() && supportsMediaResolution({
-        resolution: String(price.resolution), schema: parseStoredJson(row.parameter_schema_json),
-        config: parseStoredJson<Record<string, unknown>>(row.config_json) || {}, protocol: row.api_protocol || "",
-        capability: row.capability, modelCode: row.model_code,
-      })).map((price) => ({ resolution: String(price.resolution), label: wagaProfiles[row.model_code]?.resolution === false ? "固定输出" : undefined,
-        base_credit_cost: Number(price.credit_cost), credit_cost: multiplyCredits(Number(price.credit_cost), multiplierFor(multipliers, row.capability)) })),
-    }));
+    return rows.map((row) => {
+      const creditMultiplier = storedModelCreditMultiplier(row.credit_multiplier);
+      return {
+        ...row,
+        base_credit_cost: Number(row.credit_cost),
+        credit_multiplier: creditMultiplier,
+        credit_cost: multiplyCredits(Number(row.credit_cost), creditMultiplier),
+        billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+        max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
+        generation_notice: row.model_code === "viduq3" ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
+          : row.model_code === "omni_flash-10s" ? "此方案固定生成 10 秒视频。"
+          : wagaProfiles[row.model_code]?.resolution === false ? "此方案由供应商决定输出清晰度，不支持指定分辨率。" : undefined,
+        supports_reference_video: Boolean(row.supports_reference_video),
+        supports_real_person: Boolean(row.supports_real_person),
+        supports_async_tasks: Boolean(row.supports_async_tasks),
+        sort_order: Number(row.sort_order),
+        parameter_schema: parseStoredJson(row.parameter_schema_json),
+        parameter_schema_json: undefined,
+        config_json: undefined,
+        resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id && (() => {
+          if (!wagaProfiles[row.model_code]) return true;
+          if (wagaProfiles[row.model_code]?.resolution === false && price !== priceRows.find(p => p.provider_model_id === row.id)) return false;
+          try {
+            wagaMediaParams(row.model_code, parseStoredJson(row.parameter_schema_json), parseStoredJson(row.config_json),
+              { resolution: price.resolution, ...(wagaProfiles[row.model_code]?.video ? { seconds: wagaProfiles[row.model_code]?.fixed ?? wagaProfiles[row.model_code]?.duration?.find(n => n >= 10) } : {}) });
+            return true;
+          } catch { return false; }
+        })() && supportsMediaResolution({
+          resolution: String(price.resolution), schema: parseStoredJson(row.parameter_schema_json),
+          config: parseStoredJson<Record<string, unknown>>(row.config_json) || {}, protocol: row.api_protocol || "",
+          capability: row.capability, modelCode: row.model_code,
+        })).map((price) => ({ resolution: String(price.resolution), label: wagaProfiles[row.model_code]?.resolution === false ? "固定输出" : undefined,
+          base_credit_cost: Number(price.credit_cost), credit_cost: multiplyCredits(Number(price.credit_cost), creditMultiplier) })),
+      };
+    });
   }
 
   async promptDefaults(channel = "stable"): Promise<Record<string, unknown>> {

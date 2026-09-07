@@ -20,7 +20,7 @@ function renderSettings(data, activeTab = 'general') {
     if (name === 'react') return {
       ...React,
       useEffect: () => {},
-      useState: (initial) => [initial === 'general' ? activeTab : initial, () => {}],
+      useState: (initial) => [initial === 'general' ? activeTab : initial === '' ? data?.generation_assets_directory || '' : initial, () => {}],
     };
     if (name === '@tanstack/react-query') return {
       useQuery: () => ({ data, isLoading: false }),
@@ -30,6 +30,7 @@ function renderSettings(data, activeTab = 'general') {
     if (name === '../services/backend') return {
       getAiSettings: () => data,
       saveAiSettings: (input) => { saved = input; return input; },
+      chooseGenerationAssetsDirectory: async () => 'C:\\Media',
     };
     if (name === '../prompts/videoStoryboard') return { VIDEO_STORYBOARD_PROMPT: prompt, VIDEO_STORYBOARD_DETAILED_PROMPT: prompt };
     if (name === '../prompts/characterImage') return { CHARACTER_IMAGE_PROMPT: prompt };
@@ -45,6 +46,8 @@ function renderSettings(data, activeTab = 'general') {
 }
 
 const settings = {
+  generation_assets_directory: 'C:\\Program Files\\Yingjiang\\assets',
+  default_generation_assets_directory: 'C:\\Program Files\\Yingjiang\\assets',
   base_url: 'https://example.test', agent_model: 'custom-agent', video_model: 'custom-understanding',
   image_model: 'custom-image', image_protocol: 'media', video_generation_model: 'custom-video',
   video_generation_protocol: 'media', credit_costs: { image_per_item: 17, video_per_second: { '2K': 31 } },
@@ -59,6 +62,7 @@ test('settings renders only general and prompt tabs, with both retained panels a
     assert.match(html, /promptSettings/);
     assert.doesNotMatch(html, /interfaceSettings|积分消耗|API Key|interface-settings-panel|credit-settings-panel/);
     assert.match(html, tab === 'general' ? /language-settings-panel/ : /prompt-settings-panel/);
+    if (tab === 'general') assert.match(html, /生成素材保存目录/);
   }
 });
 
@@ -66,7 +70,7 @@ test('saving remaining settings preserves hidden interface and credit configurat
   const rendered = renderSettings(settings);
   rendered.save();
   const saved = rendered.saved();
-  for (const key of Object.keys(settings).filter((key) => key !== 'prompt_defaults')) {
+  for (const key of Object.keys(settings).filter((key) => !['prompt_defaults', 'default_generation_assets_directory'].includes(key))) {
     assert.deepEqual(saved[key], settings[key], key);
   }
   assert.equal(Object.hasOwn(saved, 'api_key'), false);

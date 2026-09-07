@@ -1,6 +1,6 @@
 [package]
 name = "ai-video-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first AI video production workstation"
 authors = ["AI Video Studio"]
 edition = "2021"
@@ -22,8 +22,10 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 base64 = "0.22"
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
-tokio = { version = "1", features = ["fs", "time", "sync", "rt", "io-util"] }
+tokio = { version = "1", features = ["fs", "time", "sync", "rt", "io-util", "macros"] }
 tokio-util = { version = "0.7", features = ["io"] }

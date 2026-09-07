@@ -89,7 +89,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
     });
     await t.test('public invitation exposes no profile; disabled inviters reject new binding', async () => {
       const invitation = await service.publicInvitation(aCode.toLowerCase());
-      assert.deepEqual(Object.keys(invitation).sort(), ['invite_code', 'macos_download_url', 'windows_download_url']);
+      assert.deepEqual(Object.keys(invitation).sort(), ['invite_code', 'macos_download_enabled', 'macos_download_url', 'windows_download_enabled', 'windows_download_url']);
       assert.equal(invitation.invite_code, aCode);
       await c.execute("UPDATE users SET status = 'DISABLED' WHERE id = ?", [other]);
       const otherCode = await service.ensureInviteCode(other, c);
