@@ -18,8 +18,8 @@ test('release automation uses versioned immutable client paths and signed update
   assert.equal(config.remote_client_root, '/var/www/aivs-public/client');
   assert.equal(config.site_origin, 'https://ai-studio.yuntianxing.net');
   assert.match(script, /test ! -e \$remoteDirectory/);
-  assert.match(script, /\.nsis\.zip/);
-  assert.match(script, /\.nsis\.zip\.sig/);
+  assert.match(script, /\.exe\.sig/);
+  assert.doesNotMatch(script, /\.nsis\.zip/);
   assert.match(script, /Get-FileHash/);
 });
 

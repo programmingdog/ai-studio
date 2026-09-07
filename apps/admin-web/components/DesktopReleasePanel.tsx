@@ -19,7 +19,7 @@ type Release = {
 };
 
 const artifactOptions: Array<{ target: Artifact["target"]; arch: Artifact["arch"]; label: string; hint: string }> = [
-  { target: "windows", arch: "x86_64", label: "Windows x64", hint: "填写 NSIS 的 .nsis.zip 更新包，不是安装用的 .exe" },
+  { target: "windows", arch: "x86_64", label: "Windows x64", hint: "填写 Tauri 生成并签名的 .exe 安装包，签名使用同名 .exe.sig 文件内容" },
   { target: "darwin", arch: "x86_64", label: "macOS Intel", hint: "填写 .app.tar.gz 更新包，不是分发用的 .dmg" },
   { target: "darwin", arch: "aarch64", label: "macOS Apple Silicon", hint: "填写 arm64 的 .app.tar.gz 更新包" },
 ];

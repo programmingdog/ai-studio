@@ -447,28 +447,24 @@ function Invoke-BuildClient {
 
   $bundle = Join-Path $script:RepositoryRoot "apps/desktop/src-tauri/target/release/bundle/nsis"
   $exe = Get-ChildItem -LiteralPath $bundle -File -Filter "*.exe" | Where-Object Name -Match ([regex]::Escape($Version)) | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-  $zip = Get-ChildItem -LiteralPath $bundle -File -Filter "*.nsis.zip" | Where-Object Name -Match ([regex]::Escape($Version)) | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
   if (-not $exe) { Fail "没有找到版本 $Version 的 EXE 安装包" }
-  if (-not $zip) { Fail "没有找到版本 $Version 的 NSIS 在线升级包" }
-  $signaturePath = "$($zip.FullName).sig"
+  $signaturePath = "$($exe.FullName).sig"
   if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf)) { Fail "没有找到在线升级签名：$signaturePath" }
 
   $artifactDirectory = Join-Path (Split-Path -Parent $script:StatePath) "artifacts"
   New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
   $baseName = "yingjiang-$Version-x64-setup"
   $targetExe = Join-Path $artifactDirectory "$baseName.exe"
-  $targetZip = Join-Path $artifactDirectory "$baseName.nsis.zip"
-  $targetSignature = Join-Path $artifactDirectory "$baseName.nsis.zip.sig"
+  $targetSignature = Join-Path $artifactDirectory "$baseName.exe.sig"
   Copy-Item -LiteralPath $exe.FullName -Destination $targetExe -Force
-  Copy-Item -LiteralPath $zip.FullName -Destination $targetZip -Force
   Copy-Item -LiteralPath $signaturePath -Destination $targetSignature -Force
   $artifacts = [pscustomobject]@{
     directory = $artifactDirectory
     exe = $targetExe
-    updater = $targetZip
+    updater = $targetExe
     signature = $targetSignature
     exe_sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
-    updater_sha256 = (Get-FileHash -LiteralPath $targetZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    updater_sha256 = (Get-FileHash -LiteralPath $targetExe -Algorithm SHA256).Hash.ToLowerInvariant()
     signature_sha256 = (Get-FileHash -LiteralPath $targetSignature -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   Set-StateValue "artifacts" $artifacts
@@ -500,8 +496,7 @@ function Invoke-UploadClient {
   $baseName = "yingjiang-$Version-x64-setup"
   $files = @(
     @{ Local = [string]$script:State.artifacts.exe; Remote = "$baseName.exe"; Hash = [string]$script:State.artifacts.exe_sha256 },
-    @{ Local = [string]$script:State.artifacts.updater; Remote = "$baseName.nsis.zip"; Hash = [string]$script:State.artifacts.updater_sha256 },
-    @{ Local = [string]$script:State.artifacts.signature; Remote = "$baseName.nsis.zip.sig"; Hash = [string]$script:State.artifacts.signature_sha256 }
+    @{ Local = [string]$script:State.artifacts.signature; Remote = "$baseName.exe.sig"; Hash = [string]$script:State.artifacts.signature_sha256 }
   )
   $exists = Invoke-Server "if [ -d $remoteDirectory ]; then printf exists; else printf missing; fi" -Capture
   if ($exists -eq "exists") {
@@ -529,14 +524,14 @@ function Invoke-UploadClient {
   $site = ([string](Get-PropertyValue $script:Config "site_origin")).TrimEnd('/')
   $urls = [pscustomobject]@{
     exe = "$site/client/$Version/$baseName.exe"
-    updater = "$site/client/$Version/$baseName.nsis.zip"
-    signature = "$site/client/$Version/$baseName.nsis.zip.sig"
+    updater = "$site/client/$Version/$baseName.exe"
+    signature = "$site/client/$Version/$baseName.exe.sig"
   }
   Set-StateValue "urls" $urls
   if (-not $DryRun) {
     Invoke-WebRequest -Uri $urls.exe -Method Head -UseBasicParsing | Out-Null
-    Invoke-WebRequest -Uri $urls.updater -Method Head -UseBasicParsing | Out-Null
-    $temporary = Join-Path ([IO.Path]::GetTempPath()) "aivs-$Version-$PID.nsis.zip"
+    Invoke-WebRequest -Uri $urls.signature -Method Head -UseBasicParsing | Out-Null
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) "aivs-$Version-$PID.exe"
     try {
       Invoke-WebRequest -Uri $urls.updater -OutFile $temporary -UseBasicParsing
       $downloadedHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()

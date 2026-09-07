@@ -56,7 +56,7 @@ python --version
 
 ### 2. Tauri Updater 签名密钥
 
-客户端在线升级包必须使用固定的 Tauri Updater 私钥签名。私钥只保存在安全构建机或 CI 密钥存储中，禁止提交到 Git、上传到业务服务器或粘贴到管理后台。
+客户端在线升级安装程序必须使用固定的 Tauri Updater 私钥签名。私钥只保存在安全构建机或 CI 密钥存储中，禁止提交到 Git、上传到业务服务器或粘贴到管理后台。
 
 客户端中只保存对应的公钥：
 
@@ -104,14 +104,14 @@ GitHub `production` 环境需要配置：
 
 该目录用于保存：
 
-- 给新用户下载的 `.exe` 安装包。
-- 给旧客户端在线升级的 `.nsis.zip` 更新包。
+- 给新用户下载和旧客户端在线升级的已签名 `.exe` 安装包。
+- 与安装包同名的 `.exe.sig` Updater 签名文件。
 
 每个版本使用独立且不可变的子目录，例如：
 
 ```text
-https://ai-studio.yuntianxing.net/client/0.2.0/yingjiang-0.2.0-x64-setup.exe
-https://ai-studio.yuntianxing.net/client/0.2.0/yingjiang-0.2.0-x64-setup.nsis.zip
+https://ai-studio.yuntianxing.net/client/0.1.0/yingjiang-0.1.0-x64-setup.exe
+https://ai-studio.yuntianxing.net/client/0.1.0/yingjiang-0.1.0-x64-setup.exe.sig
 ```
 
 Nginx 直接提供 `/client/` 下的静态文件，现有 `/download` 仍作为公开下载页面使用。发布后禁止覆盖同一 URL 下的文件；修复问题时必须提升版本号并使用新路径。
@@ -479,9 +479,8 @@ Get-ChildItem -LiteralPath $bundleDirectory |
 
 应生成：
 
-- `*.exe`：新用户首次安装使用。
-- `*.nsis.zip`：已安装客户端在线升级使用。
-- 与 `.nsis.zip` 对应的 `.sig`：Updater 签名。
+- `*.exe`：新用户首次安装和已安装客户端在线升级使用。
+- 与 `.exe` 对应的 `.exe.sig`：Updater 签名。
 
 计算并保存 SHA-256：
 
@@ -502,15 +501,14 @@ Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 将以下文件上传到本次版本的独立 HTTPS 目录：
 
-- `.exe` 安装包。
-- `.nsis.zip` 在线升级包。
-- 可选上传 `.sig` 文件用于归档；管理后台实际需要粘贴其内容。
+- 已签名的 `.exe` 安装包，同时供首次安装与在线升级使用。
+- `.exe.sig` 文件用于归档；管理后台需要粘贴其完整内容。
 
 例如：
 
 ```text
-https://ai-studio.yuntianxing.net/client/0.2.1/yingjiang-0.2.1-x64-setup.exe
-https://ai-studio.yuntianxing.net/client/0.2.1/yingjiang-0.2.1-x64-setup.nsis.zip
+https://ai-studio.yuntianxing.net/client/0.1.1/yingjiang-0.1.1-x64-setup.exe
+https://ai-studio.yuntianxing.net/client/0.1.1/yingjiang-0.1.1-x64-setup.exe.sig
 ```
 
 使用部署账号上传时，先创建不可重复的版本目录，再上传文件：
@@ -539,7 +537,7 @@ ssh -i $keyPath -p $port "aivs-deploy@$server" `
 
 ```powershell
 Invoke-WebRequest -Method Head "替换为EXE的HTTPS地址"
-Invoke-WebRequest -Method Head "替换为NSIS-ZIP的HTTPS地址"
+Invoke-WebRequest -Method Head "替换为已签名EXE的HTTPS地址"
 ```
 
 要求：
@@ -548,7 +546,7 @@ Invoke-WebRequest -Method Head "替换为NSIS-ZIP的HTTPS地址"
 - 文件大小与本地产物一致。
 - URL 不需要登录、Cookie 或临时授权参数。
 - URL 不会在短时间内过期。
-- CDN 不会自动解压或修改 `.nsis.zip`。
+- CDN 不会自动压缩、转换或修改 `.exe`。
 
 ### 第 11 步：更新公开安装包地址
 
@@ -566,7 +564,7 @@ Invoke-WebRequest -Method Head "替换为NSIS-ZIP的HTTPS地址"
 4. 打开公开下载页面。
 5. 实际下载一次，确认下载的是本次版本。
 
-这里必须填写 `.exe`，不能填写 `.nsis.zip`。
+这里填写本次发布的 `.exe` 安装包地址。
 
 ### 第 12 步：创建客户端在线升级版本
 
@@ -586,13 +584,13 @@ Invoke-WebRequest -Method Head "替换为NSIS-ZIP的HTTPS地址"
 | 灰度比例 | 首次建议 `5` 或 `10` |
 | 最低可运行版本 | 普通可选更新填写 `0.0.0` |
 | 更新平台 | `Windows x64` |
-| HTTPS 更新包地址 | `.nsis.zip` 的地址，不是 `.exe` |
-| Updater 签名 | `.sig` 文件的完整内容 |
+| HTTPS 更新包地址 | 已签名 `.exe` 安装包的地址 |
+| Updater 签名 | 同名 `.exe.sig` 文件的完整内容 |
 
 读取签名内容：
 
 ```powershell
-Get-Content -Raw "$bundleDirectory\*.sig"
+Get-Content -Raw "$bundleDirectory\*.exe.sig"
 ```
 
 先点击“保存草稿”，不要立即全量发布。
@@ -655,12 +653,12 @@ Get-Content -Raw "$bundleDirectory\*.sig"
 - [ ] 生产 API 和后台容器均为 `healthy`。
 - [ ] 管理后台和本次 API 功能验收通过。
 - [ ] Windows `.exe` 安装包构建成功。
-- [ ] `.nsis.zip` 和 `.sig` 生成成功。
+- [ ] `.exe` 和同名 `.exe.sig` 生成成功。
 - [ ] 安装包及更新包 SHA-256 已记录。
-- [ ] `.exe` 和 `.nsis.zip` 的 HTTPS 地址可公开访问。
+- [ ] `.exe` 和 `.exe.sig` 的 HTTPS 地址可公开访问。
 - [ ] 下载页面已更新为新版 `.exe`。
-- [ ] 客户端版本草稿填写的是 `.nsis.zip` 地址。
-- [ ] 管理后台中的签名与本次 `.sig` 一致。
+- [ ] 客户端版本草稿填写的是已签名 `.exe` 地址。
+- [ ] 管理后台中的签名与本次 `.exe.sig` 一致。
 - [ ] 旧版本在线升级测试通过。
 - [ ] 灰度已经逐步提高到 `100%`。
 - [ ] 签名私钥环境变量已经清除。
@@ -722,11 +720,11 @@ bash /opt/aivs/releases/目标旧版本/deploy.sh \
 
 检查：
 
-- `.sig` 是否来自同一次构建。
+- `.exe.sig` 是否来自同一次构建。
 - 后台是否粘贴了完整签名内容。
-- `.nsis.zip` 上传后是否被修改。
+- `.exe` 上传后是否被修改。
 - 构建使用的私钥是否与客户端内置公钥配对。
-- 管理后台是否错误填写成 `.exe` 地址。
+- 管理后台是否填写了本次已签名 `.exe` 地址。
 
 修复后提升版本号，重新构建、签名并发布新版本。
 

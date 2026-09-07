@@ -1,6 +1,6 @@
 [package]
 name = "ai-video-studio"
-version = "0.2.0"
+version = "0.1.0"
 description = "Local-first AI video production workstation"
 authors = ["AI Video Studio"]
 edition = "2021"

@@ -68,7 +68,7 @@ if errorlevel 1 (
   goto :failed
 )
 
-powershell.exe -NoProfile -NonInteractive -Command "$tauri = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\tauri.conf.json' | ConvertFrom-Json; $cargo = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\Cargo.toml'; $package = Get-Content -Raw '%DESKTOP_DIR%\package.json' | ConvertFrom-Json; if ($cargo -notmatch '(?m)^version\s*=\s*\"([^\"]+)\"') { exit 1 }; if ($tauri.version -ne $package.version -or $tauri.version -ne $Matches[1]) { Write-Error ('Desktop versions differ: tauri=' + $tauri.version + ', package=' + $package.version + ', cargo=' + $Matches[1]); exit 1 }"
+powershell.exe -NoProfile -NonInteractive -Command "$tauri = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\tauri.conf.json' | ConvertFrom-Json; $cargo = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\Cargo.toml'; $package = Get-Content -Raw '%DESKTOP_DIR%\package.json' | ConvertFrom-Json; $cargoVersion = [regex]::Match($cargo, '(?m)^version\s*=\s*\x22([^\x22]+)\x22').Groups[1].Value; if (-not $cargoVersion) { exit 1 }; if ($tauri.version -ne $package.version -or $tauri.version -ne $cargoVersion) { Write-Error ('Desktop versions differ: tauri=' + $tauri.version + ', package=' + $package.version + ', cargo=' + $cargoVersion); exit 1 }"
 if errorlevel 1 (
   echo [ERROR] package.json, Cargo.toml and tauri.conf.json must use the same version.
   goto :failed
@@ -84,7 +84,7 @@ if errorlevel 1 goto :failed
 echo.
 echo [SUCCESS] Windows installer build completed.
 echo [OUTPUT] %OUTPUT_DIR%
-echo [INFO] Publish the generated .nsis.zip file and its .sig companion in Version Management.
+echo [INFO] Publish the generated .exe file and its .exe.sig companion in Version Management.
 goto :success
 
 :check_complete
