@@ -1,4 +1,4 @@
-use reqwest::{multipart, Client, StatusCode, Url};
+use reqwest::{multipart, Client, StatusCode};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 
@@ -22,14 +22,7 @@ fn api_base_url(task_url: Option<&str>) -> Result<String, String> {
             PRODUCTION_API_BASE_URL.to_owned()
         }
     });
-    let parsed = Url::parse(value.trim()).map_err(|_| "平台 API 地址无效".to_owned())?;
-    if parsed.scheme() != "https:"
-        && parsed.host_str() != Some("localhost")
-        && parsed.host_str() != Some("127.0.0.1")
-    {
-        return Err("平台 API 必须使用 HTTPS".to_owned());
-    }
-    Ok(value.trim_end_matches('/').to_owned())
+    crate::platform_media::api_base_url(&value)
 }
 
 fn client() -> Result<Client, String> {
@@ -148,4 +141,17 @@ pub async fn understand_uploaded_file(
         .await
         .map_err(|error| format!("上传压缩视频到服务端失败：{error}"))?;
     understanding_result(response_value(response).await?, original_name, original_size, "server-upload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_api_url_is_accepted_before_requesting_credit_confirmation() {
+        assert_eq!(
+            api_base_url(Some("https://ai-studio.yuntianxing.net/api/v1/")).unwrap(),
+            PRODUCTION_API_BASE_URL
+        );
+    }
 }

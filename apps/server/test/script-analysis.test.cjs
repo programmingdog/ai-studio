@@ -46,6 +46,36 @@ test("script extraction enables streaming for OpenAI-compatible text models", as
   assert.equal(result.analysis.story.title, "原文标题");
 });
 
+test("video URL and upload storyboard extraction use the configured feature price", async () => {
+  const gateway = new ModelGatewayService({}, {});
+  const target = {
+    model_id: "video-model-1", model_code: "gem-3.7-flash", model_alias: "GEM 视频理解",
+    capability: "VIDEO_UNDERSTANDING", credit_cost: 1,
+  };
+  gateway.defaultVideoUnderstandingTarget = async () => target;
+  gateway.target = async () => target;
+  gateway.scriptAnalysisConfig = async () => ({ prompt: "x".repeat(100), credit_cost: 10, revision: 2 });
+
+  const quote = await gateway.quote({ capability: "VIDEO_UNDERSTANDING", payload: {} });
+  assert.equal(quote.credits, 10);
+  assert.equal(quote.provider_model_id, target.model_id);
+
+  const submissions = [];
+  gateway.create = async (_userId, input) => { submissions.push(input); return { task: { id: `task-${submissions.length}` } }; };
+  await gateway.createVideoUnderstanding("user-1", {
+    idempotencyKey: "video-url", expectedCredits: 10, providerModelId: target.model_id,
+    prompt: "提取完整分镜脚本", videoUrl: "https://example.invalid/video.mp4",
+  });
+  await gateway.createVideoUnderstandingUpload("user-1", {
+    idempotencyKey: "video-upload", expectedCredits: 10, providerModelId: target.model_id,
+    prompt: "提取完整分镜脚本",
+    file: { buffer: Buffer.from("video"), mimetype: "video/mp4", originalname: "video.mp4", size: 5 },
+  });
+  assert.deepEqual(submissions.map(item => item.creditOverride), [10, 10]);
+  assert.deepEqual(submissions.map(item => item.expectedCredits), [10, 10]);
+  assert.deepEqual(submissions.map(item => item.taskType), ["VIDEO_UNDERSTANDING", "VIDEO_UNDERSTANDING"]);
+});
+
 test("provider network failures expose the underlying socket error", async () => {
   const gateway = new ModelGatewayService({}, {});
   const originalFetch = global.fetch;

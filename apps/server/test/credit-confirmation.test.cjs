@@ -8,10 +8,11 @@ function service() {
   const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 4 }] }, { decrypt: () => 'test-only' });
   gateway.defaultTextTarget = async () => target('TEXT_GENERATION');
   gateway.defaultVideoUnderstandingTarget = async () => target('VIDEO_UNDERSTANDING');
+  gateway.scriptAnalysisConfig = async () => ({ prompt: 'x'.repeat(100), credit_cost: 10, revision: 1 });
   return gateway;
 }
 
-test('read-only text and understanding quotes include their model multiplier', async () => {
+test('text quote includes its model multiplier while video understanding uses the extraction feature price', async () => {
   const gateway = service();
   gateway.call = () => assert.fail('A quote must not call a provider');
   const text = await gateway.quote({ capability: 'TEXT_GENERATION', payload: {} });
@@ -19,7 +20,9 @@ test('read-only text and understanding quotes include their model multiplier', a
   assert.equal(text.provider_model_id, 'model-1');
   assert.equal(text.model_alias, '模型别名');
   assert.equal(text.includes_multiplier, true);
-  assert.equal((await gateway.quote({ capability: 'VIDEO_UNDERSTANDING', payload: {} })).credits, 4);
+  const video = await gateway.quote({ capability: 'VIDEO_UNDERSTANDING', payload: {} });
+  assert.equal(video.credits, 10);
+  assert.equal(video.includes_multiplier, false);
 });
 
 test('media quote includes resolution price, seconds and model multiplier', async () => {
@@ -178,11 +181,13 @@ test('URL and upload calls preserve confirmed model and price', async () => {
   const gateway = service();
   gateway.target = async () => target('VIDEO_UNDERSTANDING');
   gateway.create = async (_, input) => input;
-  const url = await gateway.createVideoUnderstanding('user', { idempotencyKey: 'url', prompt: '分析', videoUrl: 'https://example.invalid/video.mp4', providerModelId: 'model-1', expectedCredits: 4 });
+  const url = await gateway.createVideoUnderstanding('user', { idempotencyKey: 'url', prompt: '分析', videoUrl: 'https://example.invalid/video.mp4', providerModelId: 'model-1', expectedCredits: 10 });
   assert.equal(url.providerModelId, 'model-1');
-  assert.equal(url.expectedCredits, 4);
-  const upload = await gateway.createVideoUnderstandingUpload('user', { idempotencyKey: 'upload', prompt: '分析', providerModelId: 'model-1', expectedCredits: 4, file: { buffer: Buffer.from('test'), mimetype: 'video/mp4', originalname: 'test.mp4', size: 4 } });
-  assert.equal(upload.expectedCredits, 4);
+  assert.equal(url.expectedCredits, 10);
+  assert.equal(url.creditOverride, 10);
+  const upload = await gateway.createVideoUnderstandingUpload('user', { idempotencyKey: 'upload', prompt: '分析', providerModelId: 'model-1', expectedCredits: 10, file: { buffer: Buffer.from('test'), mimetype: 'video/mp4', originalname: 'test.mp4', size: 4 } });
+  assert.equal(upload.expectedCredits, 10);
+  assert.equal(upload.creditOverride, 10);
   assert.equal(upload.payload.contents[0].parts[0].inline_data.mime_type, 'video/mp4');
   assert.equal(Buffer.from(upload.payload.contents[0].parts[0].inline_data.data, 'base64').toString(), 'test');
   assert.equal(upload.payload.contents[0].parts[1].text, '分析');

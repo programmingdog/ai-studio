@@ -809,7 +809,7 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/tasks/quote": {
       post: operation({ id: "quoteModelTask", tag: "模型任务", summary: "读取模型调用的最终积分报价（不扣分）", security: true,
-        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本或视频理解模型。媒体 payload 必须包含分辨率，视频还需秒数。报价已含所选模型的独立系数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
+        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本或视频理解模型。视频理解使用后台剧本与视频提取功能固定价；其他模型报价已含所选模型的独立系数。媒体 payload 必须包含分辨率，视频生成还需秒数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
         body: { type: "object", required: ["payload"], properties: { provider_model_id: { type: "string" }, capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING"] }, payload: { type: "object", additionalProperties: true } } },
         success: { type: "object", properties: { provider_model_id: { type: "string" }, model_alias: { type: "string" }, capability: { type: "string" }, credits: { type: "number" }, resolution: { type: "string", nullable: true }, seconds: { type: "number", nullable: true }, includes_multiplier: { type: "boolean" } } },
       }),
@@ -912,8 +912,8 @@ export function createApiDocument(): OpenAPIObject {
         } } }),
     },
     "/admin/configs/script-analysis": {
-      get: operation({ id: "getScriptAnalysisConfig", tag: "管理配置", summary: "读取剧本提取提示词与积分配置", security: true }),
-      patch: operation({ id: "updateScriptAnalysisConfig", tag: "管理配置", summary: "保存剧本提取提示词与积分配置", description: "需要 configs.manage 权限；revision 必须为当前版本，避免并发覆盖。", security: true }),
+      get: operation({ id: "getScriptAnalysisConfig", tag: "管理配置", summary: "读取剧本提取提示词与剧本/视频提取积分配置", security: true }),
+      patch: operation({ id: "updateScriptAnalysisConfig", tag: "管理配置", summary: "保存剧本提取提示词与剧本/视频提取积分配置", description: "固定积分同时用于剧本文件分析和视频理解生成分镜脚本。需要 configs.manage 权限；revision 必须为当前版本，避免并发覆盖。", security: true }),
     },
     "/admin/configs/credit-pricing/sync": {
       post: operation({ id: "syncAllModelCredits", tag: "管理配置", summary: "按已保存比例刷新实时价并更新模型积分", security: true,

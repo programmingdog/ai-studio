@@ -1,4 +1,4 @@
-use reqwest::{multipart, Client, StatusCode, Url};
+use reqwest::{multipart, Client, StatusCode};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 
@@ -14,11 +14,7 @@ fn api_base_url(configured: Option<&str>) -> Result<String, String> {
         .or_else(|| std::env::var("AIVS_PLATFORM_API_URL").ok().filter(|value| !value.trim().is_empty()))
         .or_else(|| option_env!("AIVS_PLATFORM_API_URL").map(str::to_owned))
         .unwrap_or_else(|| if cfg!(debug_assertions) { DEVELOPMENT_API_BASE_URL.to_owned() } else { PRODUCTION_API_BASE_URL.to_owned() });
-    let parsed = Url::parse(value.trim()).map_err(|_| "平台 API 地址无效".to_owned())?;
-    if parsed.scheme() != "https:" && parsed.host_str() != Some("localhost") && parsed.host_str() != Some("127.0.0.1") {
-        return Err("平台 API 必须使用 HTTPS".to_owned());
-    }
-    Ok(value.trim_end_matches('/').to_owned())
+    crate::platform_media::api_base_url(&value)
 }
 
 fn access_token() -> Result<String, String> {
@@ -68,4 +64,17 @@ pub async fn analyze_file(
     let body = response.text().await.map_err(|error| format!("读取剧本分析响应失败：{error}"))?;
     if !status.is_success() { return Err(platform_error(status, &body)); }
     serde_json::from_str(&body).map_err(|error| format!("剧本分析响应格式无效：{error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_api_url_is_accepted_before_script_upload() {
+        assert_eq!(
+            api_base_url(Some("https://ai-studio.yuntianxing.net/api/v1/")).unwrap(),
+            PRODUCTION_API_BASE_URL
+        );
+    }
 }

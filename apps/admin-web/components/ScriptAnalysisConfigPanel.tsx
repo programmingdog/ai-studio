@@ -44,10 +44,10 @@ function ScriptAnalysisSetting({ token, mode }: { token: string; mode: "prompt" 
     finally { setSaving(false); }
   };
   return <section className="section-card default-model-config">
-    <header><div><span className="kicker">{mode === "prompt" ? "SCRIPT EXTRACTION" : "FEATURE PRICING"}</span><h2>{mode === "prompt" ? "剧本提取提示词" : "剧本提取定价"}</h2><p>{mode === "prompt" ? "设置剧本文件交给默认文本大模型时使用的忠实提取提示词。" : "设置每次剧本分析固定扣除的积分；价格修改只影响后续分析。"}</p></div></header>
+    <header><div><span className="kicker">{mode === "prompt" ? "SCRIPT EXTRACTION" : "FEATURE PRICING"}</span><h2>{mode === "prompt" ? "剧本提取提示词" : "剧本与视频提取定价"}</h2><p>{mode === "prompt" ? "设置剧本文件交给默认文本大模型时使用的忠实提取提示词。" : "设置每次剧本文件分析或视频理解生成分镜脚本固定扣除的积分；价格修改只影响后续任务。"}</p></div></header>
     {loading ? <div className="loading-card"><span className="spinner" />正在读取剧本提取配置…</div> : config ? <form onSubmit={save}>
       {mode === "prompt" ? <label>忠实提取提示词<textarea value={prompt} rows={16} minLength={100} maxLength={100000} onChange={(event) => setPrompt(event.target.value)} required /><small>应明确禁止发挥、补写和衍生，并要求输出完整结构化 JSON。</small></label>
-        : <label>每个剧本所需积分<input type="number" min="0" max="1000000" step="0.000001" value={creditCost} onChange={(event) => setCreditCost(Number(event.target.value))} required /><small>这是功能固定价格，不随剧本字数变化；模型自身计费不会再次向用户重复扣除。</small></label>}
+        : <label>每次提取所需积分<input type="number" min="0" max="1000000" step="0.000001" value={creditCost} onChange={(event) => setCreditCost(Number(event.target.value))} required /><small>剧本文件和视频生成分镜脚本共用此固定价格；模型自身计费不会再次向用户重复扣除。</small></label>}
       {error && <div className="form-error">{error}</div>}{message && <div className="form-success">{message}</div>}
       <footer><button className="primary" disabled={saving || (mode === "prompt" && prompt.trim().length < 100)}>{saving ? "保存中…" : mode === "prompt" ? "保存提取提示词" : "保存功能定价"}</button></footer>
     </form> : <div className="form-error">{error || "剧本提取配置不可用"}</div>}

@@ -422,24 +422,34 @@ export class ModelGatewayService {
       : undefined;
     if (!target) throw new BadRequestException("请选择大模型或指定文本/视频理解类型");
     const payload = asObject(input.payload);
-    const credits = await this.estimatedCredits(target, payload);
+    // Video understanding is the video-to-storyboard extraction feature. Its
+    // customer-facing price is configured together with script extraction,
+    // instead of exposing the selected provider model's internal base cost.
+    const credits = target.capability === "VIDEO_UNDERSTANDING"
+      ? Number((await this.scriptAnalysisConfig()).credit_cost)
+      : await this.estimatedCredits(target, payload);
     return {
       provider_model_id: target.model_id, model_alias: target.model_alias || target.model_code,
       model_code: target.model_code, capability: target.capability, credits,
       resolution: payload.resolution ?? asObject(payload.params).resolution ?? null,
       seconds: target.capability === "VIDEO_GENERATION" ? Number(payload.seconds ?? payload.duration ?? asObject(payload.params).seconds ?? asObject(payload.params).duration) : null,
       billing_unit: target.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
-      includes_multiplier: true,
+      includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING",
     };
   }
 
   async createVideoUnderstanding(userId: string, input: { idempotencyKey: string; prompt: string; videoUrl: string; mimeType?: string; providerModelId?: string; expectedCredits?: number }): Promise<Record<string, unknown>> {
-    const target = input.providerModelId ? await this.target(input.providerModelId) : await this.defaultVideoUnderstandingTarget();
+    const [target, config] = await Promise.all([
+      input.providerModelId ? this.target(input.providerModelId) : this.defaultVideoUnderstandingTarget(),
+      this.scriptAnalysisConfig(),
+    ]);
     if (target.capability !== "VIDEO_UNDERSTANDING") throw new BadRequestException("请选择视频理解模型");
     return this.create(userId, {
       idempotencyKey: input.idempotencyKey,
       providerModelId: target.model_id,
       expectedCredits: input.expectedCredits,
+      creditOverride: Number(config.credit_cost),
+      taskType: "VIDEO_UNDERSTANDING",
       payload: {
         prompt: input.prompt,
         video_uri: input.videoUrl,
@@ -461,12 +471,17 @@ export class ModelGatewayService {
     if (!file || !file.buffer?.length) throw new BadRequestException("请上传压缩后的视频文件");
     if (!geminiVideoMimeTypes.has(file.mimetype)) throw new BadRequestException("上传的视频 MIME 类型不受支持");
     if (file.size > 15 * 1024 * 1024) throw new BadRequestException("压缩后的视频不能超过 15MB");
-    const target = input.providerModelId ? await this.target(input.providerModelId) : await this.defaultVideoUnderstandingTarget();
+    const [target, config] = await Promise.all([
+      input.providerModelId ? this.target(input.providerModelId) : this.defaultVideoUnderstandingTarget(),
+      this.scriptAnalysisConfig(),
+    ]);
     if (target.capability !== "VIDEO_UNDERSTANDING") throw new BadRequestException("请选择视频理解模型");
     return this.create(userId, {
       idempotencyKey: input.idempotencyKey,
       providerModelId: target.model_id,
       expectedCredits: input.expectedCredits,
+      creditOverride: Number(config.credit_cost),
+      taskType: "VIDEO_UNDERSTANDING",
       payload: {
         contents: [{ role: "user", parts: [
           { inline_data: { mime_type: file.mimetype, data: file.buffer.toString("base64") } },
