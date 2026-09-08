@@ -49,6 +49,54 @@ function Get-PropertyValue($Object, [string]$Name, $Default = $null) {
   return $Default
 }
 
+function Get-ApiCollection($Response, [string]$Label, [string]$RequiredProperty) {
+  $value = $Response
+  for ($depth = 0; $depth -lt 4 -and $null -ne $value -and $value -isnot [System.Array]; $depth++) {
+    $wrapper = $null
+    foreach ($name in @("items", "releases", "records", "data", "result")) {
+      $property = $value.PSObject.Properties[$name]
+      if ($null -ne $property) {
+        $wrapper = $property
+        break
+      }
+    }
+    if ($null -eq $wrapper) { break }
+    $value = $wrapper.Value
+  }
+
+  $items = if ($null -eq $value) { @() } else { @($value) }
+  foreach ($item in $items) {
+    if ($null -eq $item -or $null -eq $item.PSObject.Properties[$RequiredProperty]) {
+      $properties = if ($null -eq $item) { "<null>" } else { @($item.PSObject.Properties.Name) -join ", " }
+      Fail "$Label 返回了无法识别的数据结构（需要属性 $RequiredProperty，实际属性：$properties）"
+    }
+  }
+  return [pscustomobject]@{ items = $items }
+}
+
+function Get-ApiObject($Response, [string]$Label) {
+  $value = $Response
+  for ($depth = 0; $depth -lt 4 -and $null -ne $value; $depth++) {
+    if ($value -is [System.Array]) {
+      if (@($value).Count -ne 1) { Fail "$Label 返回的对象数量不是 1" }
+      $value = @($value)[0]
+      continue
+    }
+    $wrapper = $null
+    foreach ($name in @("data", "result", "release")) {
+      $property = $value.PSObject.Properties[$name]
+      if ($null -ne $property) {
+        $wrapper = $property
+        break
+      }
+    }
+    if ($null -eq $wrapper) { break }
+    $value = $wrapper.Value
+  }
+  if ($null -eq $value -or $value -is [System.Array]) { Fail "$Label 没有返回有效对象" }
+  return [pscustomobject]@{ item = $value }
+}
+
 function Read-Utf8Text([string]$Path) {
   return [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false))
 }
@@ -577,6 +625,9 @@ function Invoke-PublishClient {
     Write-Host "[DryRun] 将更新安装包地址、创建在线升级版本并按配置决定是否发布。"
     return
   }
+  $notes = Get-ReleaseNotes
+  if (-not $notes) { Fail "更新说明不能为空" }
+  Set-StateValue "release_notes" $notes
   $token = Get-AdminToken
   $downloads = Invoke-AivsApi "/admin/distribution/downloads" "GET" $null $token
   $downloadBody = @{
@@ -595,7 +646,7 @@ function Invoke-PublishClient {
   $releaseBody = @{
     version = $Version
     channel = $channel
-    notes = Get-ReleaseNotes
+    notes = $notes
     min_supported_version = [string](Get-PropertyValue $script:Config "minimum_supported_version" "0.0.0")
     rollout_percent = $rollout
     artifacts = @(@{
@@ -605,12 +656,13 @@ function Invoke-PublishClient {
       signature = $signature
     })
   }
-  $releases = @(Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token)
+  $releaseResponse = Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token
+  $releases = @((Get-ApiCollection $releaseResponse "客户端版本列表接口" "version").items)
   $release = $releases | Where-Object { $_.version -eq $Version -and $_.channel -eq $channel } | Select-Object -First 1
   if (-not $release) {
-    $release = Invoke-AivsApi "/admin/desktop-releases" "POST" $releaseBody $token
+    $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases" "POST" $releaseBody $token) "创建客户端版本接口").item
   } elseif ($release.status -eq "DRAFT") {
-    $release = Invoke-AivsApi "/admin/desktop-releases/$($release.id)" "PATCH" $releaseBody $token
+    $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)" "PATCH" $releaseBody $token) "更新客户端版本接口").item
   } elseif ($release.status -eq "PUBLISHED") {
     $artifact = @($release.artifacts) | Where-Object { $_.target -eq "windows" -and $_.arch -eq "x86_64" } | Select-Object -First 1
     if (-not $artifact -or $artifact.url -ne $script:State.urls.updater -or $artifact.signature -ne $signature) {
@@ -623,7 +675,7 @@ function Invoke-PublishClient {
 
   $shouldPublish = $PublishUpdate -or [bool](Get-PropertyValue $script:Config "publish_update_automatically" $false)
   if ($release.status -eq "DRAFT" -and $shouldPublish) {
-    $release = Invoke-AivsApi "/admin/desktop-releases/$($release.id)/publish" "POST" @{} $token
+    $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)/publish" "POST" @{} $token) "发布客户端版本接口").item
   }
   Set-StateValue "desktop_release_id" ([string]$release.id)
   Set-StateValue "desktop_release_status" ([string]$release.status)
@@ -669,10 +721,11 @@ function Invoke-Promote {
   if ($DryRun) { Write-Host "[DryRun] 将把 v$Version 灰度调整为 $targetRollout%"; return }
   $token = Get-AdminToken
   $channel = [string](Get-PropertyValue $script:Config "release_channel" "stable")
-  $releases = @(Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token)
+  $releaseResponse = Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token
+  $releases = @((Get-ApiCollection $releaseResponse "客户端版本列表接口" "version").items)
   $release = $releases | Where-Object { $_.version -eq $Version -and $_.channel -eq $channel -and $_.status -eq "PUBLISHED" } | Select-Object -First 1
   if (-not $release) { Fail "没有找到已发布的 v$Version" }
-  $updated = Invoke-AivsApi "/admin/desktop-releases/$($release.id)/rollout" "PATCH" @{ rollout_percent = $targetRollout } $token
+  $updated = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)/rollout" "PATCH" @{ rollout_percent = $targetRollout } $token) "调整灰度接口").item
   Set-StateValue "rollout_percent" ([int]$updated.rollout_percent)
   Complete-StateStage "promote"
   Write-Host "v$Version 灰度已调整为 $($updated.rollout_percent)%"

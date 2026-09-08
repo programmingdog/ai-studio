@@ -23,6 +23,13 @@ test('release automation uses versioned immutable client paths and signed update
   assert.match(script, /Get-FileHash/);
 });
 
+test('release automation accepts wrapped API collection responses', () => {
+  assert.match(script, /function Get-ApiCollection/);
+  assert.match(script, /"items", "releases", "records", "data", "result"/);
+  assert.match(script, /Get-ApiCollection \$releaseResponse "客户端版本列表接口" "version"/);
+  assert.match(script, /function Get-ApiObject/);
+});
+
 test('release configuration does not contain secret values', () => {
   const serialized = JSON.stringify(config);
   assert.doesNotMatch(serialized, /password|token/i);
