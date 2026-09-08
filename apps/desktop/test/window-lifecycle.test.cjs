@@ -8,9 +8,12 @@ const tauriConfig = JSON.parse(fs.readFileSync(path.join(desktopRoot, 'src-tauri
 const capability = JSON.parse(fs.readFileSync(path.join(desktopRoot, 'src-tauri/capabilities/default.json'), 'utf8'));
 const appSource = fs.readFileSync(path.join(desktopRoot, 'src/App.tsx'), 'utf8');
 const rustSource = fs.readFileSync(path.join(desktopRoot, 'src-tauri/src/lib.rs'), 'utf8');
+const mainSource = fs.readFileSync(path.join(desktopRoot, 'src-tauri/src/main.rs'), 'utf8');
 const cargo = fs.readFileSync(path.join(desktopRoot, 'src-tauri/Cargo.toml'), 'utf8');
 const lifecycleSource = fs.readFileSync(path.join(desktopRoot, 'src/components/DesktopWindowLifecycle.tsx'), 'utf8');
 const traySource = fs.readFileSync(path.join(desktopRoot, 'src-tauri/src/tray.rs'), 'utf8');
+const mediaToolsSource = fs.readFileSync(path.join(desktopRoot, 'src-tauri/src/media_tools.rs'), 'utf8');
+const workerSource = fs.readFileSync(path.join(desktopRoot, 'src-tauri/src/worker/python.rs'), 'utf8');
 
 test('desktop starts with a compact centered login window', () => {
   const window = tauriConfig.app.windows[0];
@@ -37,6 +40,19 @@ test('official Windows installer is per-machine and the runtime is single-instan
   assert.match(cargo, /tauri-plugin-single-instance\s*=\s*"2"/);
   assert.match(rustSource, /tauri_plugin_single_instance::init/);
   assert.match(rustSource, /get_webview_window\("main"\)/);
+});
+
+test('packaged Windows app and bundled command-line tools do not open console windows', () => {
+  assert.match(mainSource, /cfg_attr\(not\(debug_assertions\), windows_subsystem = "windows"\)/);
+  assert.match(mediaToolsSource, /CREATE_NO_WINDOW/);
+  assert.match(workerSource, /media_tools::background_command/);
+});
+
+test('client version comes from Tauri and is shown at the bottom left only', () => {
+  assert.match(appSource, /getVersion\(\)/);
+  assert.match(appSource, /当前客户端版本/);
+  assert.equal(appSource.includes('Local-first'), false);
+  assert.equal(appSource.includes('V0.3'), false);
 });
 
 test('close asks whether to exit or hide, and tray double click restores the window', () => {

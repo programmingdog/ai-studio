@@ -5,6 +5,19 @@ use std::{
     process::Command,
 };
 
+/// Starts bundled command-line tools without creating a visible console window
+/// in the packaged Windows application. Standard input/output remain available.
+pub fn background_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 fn executable_name(tool: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{tool}.exe")
@@ -76,7 +89,7 @@ pub fn probe_video_metadata(path: &Path) -> Result<LocalVideoMetadata, String> {
     }
     let ffprobe = resolve("ffprobe", "AIVS_FFPROBE_PATH")
         .map_err(|message| metadata_error("FFPROBE_NOT_AVAILABLE", message))?;
-    let output = Command::new(ffprobe)
+    let output = background_command(ffprobe)
         .args([
             "-v",
             "error",
@@ -179,7 +192,7 @@ pub fn compress_video_for_inline_analysis(
     let attempts = [("720", "30", "12"), ("540", "34", "10"), ("360", "38", "8")];
     let mut last_error = String::new();
     for (width, crf, fps) in attempts {
-        let output = Command::new(&ffmpeg)
+        let output = background_command(&ffmpeg)
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(source)
             .args([

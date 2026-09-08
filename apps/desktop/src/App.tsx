@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
@@ -351,6 +352,7 @@ function AccountEntry() {
 export function App() {
   const { t } = useI18n();
   const { bundle, page, dirty, revision, setBundle, setPage, markSaved, setPendingAgentProduction } = useStudioStore();
+  const [appVersion, setAppVersion] = useState("");
   const [showAiSettings, setShowAiSettings] = useState(false);
   const [showGenerationRecords, setShowGenerationRecords] = useState(false);
   const [showAgentChat, setShowAgentChat] = useState(false);
@@ -372,6 +374,15 @@ export function App() {
   const autoSaveRetryTimer = useRef<number | undefined>(undefined);
   const [autoSaveError, setAutoSaveError] = useState("");
   const [autoSaveAttempt, setAutoSaveAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    void getVersion().then((version) => {
+      if (!cancelled) setAppVersion(version);
+    }).catch(() => {
+      // A version is unavailable only when the UI is opened outside Tauri.
+    });
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => () => {
     if (navigationFrame.current !== undefined) window.cancelAnimationFrame(navigationFrame.current);
   }, []);
@@ -545,7 +556,7 @@ export function App() {
 
   if (authenticationChecking || (authenticated && !mainWindowReady)) return <div className="account-auth-gate" role="status" aria-live="polite">{windowPreparationError ? <><span>{windowPreparationError}</span><button className="primary-button" onClick={() => setWindowPreparationAttempt((attempt) => attempt + 1)}>重试</button></> : <><LoaderCircle className="spin" size={28} aria-hidden="true" /><span>{authenticationChecking ? "正在验证登录状态…" : "正在打开主界面…"}</span></>}</div>;
   if (!authenticated) return <AccountCenterModal required onClose={() => undefined} />;
-  if (!bundle?.canonical) return <><CreateProjectScreen initialBundle={bundle} onReady={setBundle} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}</>;
+  if (!bundle?.canonical) return <><CreateProjectScreen appVersion={appVersion} initialBundle={bundle} onReady={setBundle} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}</>;
 
   return (
     <div className="studio-shell">
@@ -560,7 +571,7 @@ export function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-footer"><span className="status-dot" /> Local-first · V0.1</div>
+        <div className="sidebar-footer">当前客户端版本 {appVersion ? `v${appVersion}` : "—"}</div>
       </aside>
       <main className="workspace">
         <header className="topbar">
@@ -592,7 +603,7 @@ export function App() {
   );
 }
 
-function CreateProjectScreen({ initialBundle, onReady, onOpenSettings }: { initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onOpenAgent: () => void; onOpenSettings: () => void }) {
+function CreateProjectScreen({ appVersion, initialBundle, onReady, onOpenSettings }: { appVersion: string; initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onOpenAgent: () => void; onOpenSettings: () => void }) {
   const { t } = useI18n();
   const [spec, setSpec] = useState(defaultSpec);
   const [sourceType, setSourceType] = useState<CreateMode>(() => initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? "IDEA" : "DOUYIN_URL");
@@ -1018,7 +1029,7 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings }: { initi
   return (
     <div className="welcome-shell">
       <div className="welcome-glow" />
-      <header className="welcome-header"><AccountEntry /><div className="welcome-actions"><button className="secondary-button toolbar-button" onClick={onOpenSettings}><Settings size={15} /> {t("systemSettings")}</button><span>V0.3 · Local-first</span></div></header>
+      <header className="welcome-header"><AccountEntry /><div className="welcome-actions"><button className="secondary-button toolbar-button" onClick={onOpenSettings}><Settings size={15} /> {t("systemSettings")}</button></div></header>
       <main className="create-layout">
         <aside className="create-navigation" aria-label="创建方式">
           <nav className="source-options">
@@ -1029,7 +1040,7 @@ function CreateProjectScreen({ initialBundle, onReady, onOpenSettings }: { initi
             <button className={showProjectCenter ? "active" : ""} onClick={openProjectCenter}><FolderOpen size={18} /><span>项目中心<small>查看并打开本地项目</small></span></button>
             <button className={showAssetLibrary ? "active" : ""} onClick={openAssetLibrary}><Images size={18} /><span>资产库<small>场景、角色与道具图片</small></span></button>
           </nav>
-          <div className="create-navigation-footer"><span className="status-dot" /> 服务端接口已连接</div>
+          <div className="create-navigation-footer">当前客户端版本 {appVersion ? `v${appVersion}` : "—"}</div>
         </aside>
         <section className="create-card create-workspace-panel">
           {showAssetLibrary ? <AssetLibraryPanel assets={assetLibrary.data ?? []} loading={assetLibrary.isLoading || assetLibrary.isFetching} error={assetLibrary.error} onRefresh={() => assetLibrary.refetch()} /> : showProjectCenter ? <ProjectCenterPanel projects={projectList.data ?? []} loading={projectCenterPreparing || projectList.isPending} loadingProjectId={openProject.variables?.id} onRefresh={() => projectList.mutate()} onOpen={(project) => openProject.mutate(project)} onDelete={setProjectPendingDelete} /> : sourceType === "VIDEO_UNDERSTANDING" ? <VideoUnderstandingPanel

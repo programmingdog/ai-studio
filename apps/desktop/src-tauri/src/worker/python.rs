@@ -195,7 +195,7 @@ fn worker_command() -> Result<(Command, PathBuf), String> {
         return command_for_worker_path(PathBuf::from(path));
     }
     if let Ok(path) = crate::media_tools::resolve("aivs-worker", "AIVS_WORKER_PATH") {
-        return Ok((Command::new(&path), path));
+        return Ok((crate::media_tools::background_command(&path), path));
     }
     command_for_worker_path(worker_script_path())
 }
@@ -212,11 +212,11 @@ fn command_for_worker_path(path: PathBuf) -> Result<(Command, PathBuf), String> 
                 "python3".to_owned()
             }
         });
-        let mut command = Command::new(python);
+        let mut command = crate::media_tools::background_command(python);
         command.arg(&path);
         Ok((command, path))
     } else {
-        Ok((Command::new(&path), path))
+        Ok((crate::media_tools::background_command(&path), path))
     }
 }
 

@@ -3956,7 +3956,7 @@ fn media_probe_from_value(value: &Value) -> Result<MediaProbe, String> {
 }
 
 fn probe_media(ffprobe: &Path, path: &Path) -> Result<MediaProbe, String> {
-    let output = Command::new(ffprobe)
+    let output = crate::media_tools::background_command(ffprobe)
         .args([
             "-v",
             "error",
@@ -4075,7 +4075,7 @@ fn execute_project_video_composition(
             let audio_filter = format!(
                 "aresample=async=1:first_pts=0,apad=whole_dur={duration},atrim=duration={duration},asetpts=PTS-STARTPTS"
             );
-            let mut command = Command::new(&ffmpeg);
+            let mut command = crate::media_tools::background_command(&ffmpeg);
             command.args([
                 "-hide_banner",
                 "-loglevel",
@@ -4147,7 +4147,7 @@ fn execute_project_video_composition(
                 true,
             )
         })?;
-        let mut concat_command = Command::new(&ffmpeg);
+        let mut concat_command = crate::media_tools::background_command(&ffmpeg);
         concat_command
             .current_dir(&work_dir)
             .args([
