@@ -14,7 +14,7 @@ test('desktop reads product branding and localizes Chinese versus other interfac
   assert.doesNotMatch(account, /登录 AI Video Studio/);
 });
 
-test('native client and published installer consistently use the 逐梦帧 name', () => {
+test('native client uses 逐梦帧 while published artifacts use the ASCII Dreamotion name', () => {
   const tauri = JSON.parse(readFileSync(join(__dirname, '../src-tauri/tauri.conf.json'), 'utf8'));
   const html = readFileSync(join(__dirname, '../index.html'), 'utf8');
   const tray = readFileSync(join(__dirname, '../src-tauri/src/tray.rs'), 'utf8');
@@ -25,5 +25,6 @@ test('native client and published installer consistently use the 逐梦帧 name'
   assert.equal(tauri.identifier, 'studio.aivideo.desktop');
   assert.match(html, /<title>逐梦帧<\/title>/);
   assert.match(tray, /逐梦帧 · 当前没有运行中的任务/);
-  assert.equal((release.match(/\$baseName = "逐梦帧-\$Version-x64-setup"/g) || []).length, 2);
+  assert.equal((release.match(/\$baseName = "dreamotion-\$Version-x64-setup"/g) || []).length, 2);
+  assert.doesNotMatch(release, /\$baseName = "逐梦帧-/);
 });
