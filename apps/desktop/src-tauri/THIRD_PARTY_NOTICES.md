@@ -2,7 +2,7 @@
 
 ## FFmpeg and FFprobe
 
-AI Video Studio invokes separately bundled FFmpeg and FFprobe command-line programs for local video inspection, normalization, compression, and composition.
+逐梦帧 invokes separately bundled FFmpeg and FFprobe command-line programs for local video inspection, normalization, compression, and composition.
 
 FFmpeg is provided by the FFmpeg project: https://ffmpeg.org/
 

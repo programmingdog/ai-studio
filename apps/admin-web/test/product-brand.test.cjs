@@ -13,6 +13,7 @@ test('product brand configuration is editable and used by admin and invitation U
   assert.match(panel, /产品中文名/);
   assert.match(panel, /产品英文名/);
   assert.match(provider, /\/client-config\/product-brand/);
+  assert.match(provider, /chinese_name: "逐梦帧", english_name: "逐梦帧"/);
   assert.match(admin, /productBrand\.chinese_name/);
   assert.match(invitation, /productBrand\.chinese_name/);
   assert.doesNotMatch(admin, /<strong>Video Studio<\/strong>/);

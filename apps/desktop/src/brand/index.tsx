@@ -4,7 +4,7 @@ import { getClientProductBrand, type ClientProductBrand } from "../services/plat
 import { useI18n } from "../i18n";
 
 const STORAGE_KEY = "aivs.product-brand";
-const defaultBrand: ClientProductBrand = { chinese_name: "影匠", english_name: "Yingjiang", revision: 0 };
+const defaultBrand: ClientProductBrand = { chinese_name: "逐梦帧", english_name: "逐梦帧", revision: 0 };
 
 type ProductBrandContextValue = ClientProductBrand & { productName: string };
 const ProductBrandContext = createContext<ProductBrandContextValue | undefined>(undefined);

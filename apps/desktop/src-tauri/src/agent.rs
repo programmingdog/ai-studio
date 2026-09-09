@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{agent_store, ai, commands, project::manager::CreateProjectInput};
 
-const AGENT_SYSTEM_PROMPT: &str = r#"你是 AI Video Studio 的制作智能体。你的任务是通过对话帮助用户完成抖音、快手或哔哩哔哩视频链接解析、视频下载与理解、结构化分镜项目创建，以及后续图片和视频自动制作。
+const AGENT_SYSTEM_PROMPT: &str = r#"你是逐梦帧的制作智能体。你的任务是通过对话帮助用户完成抖音、快手或哔哩哔哩视频链接解析、视频下载与理解、结构化分镜项目创建，以及后续图片和视频自动制作。
 
 规则：
 1. 只有当用户明确要求开始执行时才调用工具；仅咨询方案时不要启动耗时或计费任务。

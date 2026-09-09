@@ -25,7 +25,7 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error?: Erro
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("AI Video Studio rendering failed", error, info.componentStack);
+    console.error("逐梦帧渲染失败", error, info.componentStack);
   }
 
   render() {

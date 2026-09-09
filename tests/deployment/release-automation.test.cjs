@@ -59,3 +59,11 @@ test('release script remains compatible with built-in Windows PowerShell', () =>
   assert.doesNotMatch(script, /-SkipHttpErrorCheck/);
   assert.match(script, /Tls12/);
 });
+
+test('Windows installer check reads the renamed UTF-8 configuration without mojibake', () => {
+  const installer = fs.readFileSync(path.join(root, 'build-windows-installer.bat'), 'utf8');
+  assert.match(installer, /chcp 65001/);
+  assert.match(installer, /逐梦帧 Windows production installer build/);
+  assert.equal((installer.match(/-Encoding UTF8/g) || []).length, 3);
+  assert.match(installer, /tauri\.conf\.json[^\r\n]*-Encoding UTF8 \| ConvertFrom-Json/);
+});

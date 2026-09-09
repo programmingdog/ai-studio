@@ -104,8 +104,8 @@ const schemas: Record<string, JsonSchema> = {
     type: "object",
     required: ["chinese_name", "english_name", "revision"],
     properties: {
-      chinese_name: { type: "string", maxLength: 32, example: "影匠" },
-      english_name: { type: "string", maxLength: 64, example: "Yingjiang" },
+      chinese_name: { type: "string", maxLength: 32, example: "逐梦帧" },
+      english_name: { type: "string", maxLength: 64, example: "逐梦帧" },
       revision: { type: "integer", minimum: 0 },
       updated_at: { type: "string", format: "date-time" },
     },
@@ -114,8 +114,8 @@ const schemas: Record<string, JsonSchema> = {
     type: "object",
     required: ["chinese_name", "english_name"],
     properties: {
-      chinese_name: { type: "string", minLength: 1, maxLength: 32, example: "影匠" },
-      english_name: { type: "string", minLength: 1, maxLength: 64, example: "Yingjiang" },
+      chinese_name: { type: "string", minLength: 1, maxLength: 32, example: "逐梦帧" },
+      english_name: { type: "string", minLength: 1, maxLength: 64, example: "逐梦帧" },
     },
   },
   DashboardOverview: {
@@ -989,15 +989,15 @@ export function createApiDocument(): OpenAPIObject {
   return {
     openapi: "3.0.3",
     info: {
-      title: "影匠 API",
+      title: "逐梦帧 API",
       version: "1.0.0",
       description: [
-        "影匠客户端、积分支付、模型转发与运营后台接口。",
+        "逐梦帧客户端、积分支付、模型转发与运营后台接口。",
         "",
         "用户和管理员均使用 Bearer JWT；在右上角 Authorize 中填入登录接口返回的 access_token。",
         "服务端不会在任务表中保存提示词、图片、音频、视频或完整模型结果。",
       ].join("\n"),
-      contact: { name: "影匠" },
+      contact: { name: "逐梦帧" },
     },
     servers: [
       { url: "/api/v1", description: "当前服务" },

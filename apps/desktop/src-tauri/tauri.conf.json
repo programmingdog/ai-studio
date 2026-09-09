@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "影匠",
-  "version": "0.1.0",
+  "productName": "逐梦帧",
+  "mainBinaryName": "逐梦帧",
+  "version": "0.1.1",
   "identifier": "studio.aivideo.desktop",
   "build": {
     "beforeDevCommand": "npm run prepare:media && npm run prepare:worker && npm run dev",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "影匠",
+        "title": "逐梦帧",
         "theme": "Light",
         "backgroundColor": "#f5f6fa",
         "width": 560,

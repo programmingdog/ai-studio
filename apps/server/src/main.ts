@@ -31,7 +31,7 @@ async function bootstrap(): Promise<void> {
   }));
   app.enableShutdownHooks();
   await app.listen(environment.port, environment.bindHost);
-  process.stdout.write(`AI Video Studio server listening on port ${environment.port}\n`);
+  process.stdout.write(`逐梦帧 server listening on port ${environment.port}\n`);
 }
 
 bootstrap().catch((error: unknown) => {

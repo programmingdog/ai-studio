@@ -105,7 +105,7 @@ pub async fn load_project(app: tauri::AppHandle, project_path: String) -> Result
         let path = PathBuf::from(project_path);
         if !path.join("project.json").is_file() || !path.join("project.db").is_file() {
             return Err(
-                "所选目录不是有效的 AI Video Studio 项目（缺少 project.json 或 project.db）".into(),
+                "所选目录不是有效的逐梦帧项目（缺少 project.json 或 project.db）".into(),
             );
         }
         let connection = database::open(&path)?;

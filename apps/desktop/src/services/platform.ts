@@ -173,7 +173,7 @@ async function refreshSession(session: PlatformSession): Promise<PlatformSession
     refreshPromise = (isTauri()
       ? invoke<PlatformSession>("refresh_platform_session", { platformApiBaseUrl, rejectedAccessToken: session.access_token })
       : publicRequest<PlatformTokenResult>("/auth/refresh", {
-          method: "POST", body: JSON.stringify({ refresh_token: session.refresh_token, device_name: "AI Video Studio Desktop" }),
+          method: "POST", body: JSON.stringify({ refresh_token: session.refresh_token, device_name: "逐梦帧客户端" }),
         }).then(async (result) => { const next = sessionFrom(result); await persistPlatformSession(next); return next; }))
       .then(async (next) => { sessionCache = next; return next; })
       .catch(async (error) => { await persistPlatformSession(null); throw error; })
@@ -221,7 +221,7 @@ export async function registerPlatformPhone(input: { phone: string; password: st
   return acceptToken(await publicRequest<PlatformTokenResult>("/auth/register/phone", { method: "POST", body: JSON.stringify(input) }));
 }
 export async function loginPlatform(input: { identifier: string; password: string }) {
-  return acceptToken(await publicRequest<PlatformTokenResult>("/auth/login", { method: "POST", body: JSON.stringify({ ...input, device_name: "AI Video Studio Desktop" }) }));
+  return acceptToken(await publicRequest<PlatformTokenResult>("/auth/login", { method: "POST", body: JSON.stringify({ ...input, device_name: "逐梦帧客户端" }) }));
 }
 export async function logoutPlatform(): Promise<void> {
   try { if (await loadPlatformSession()) await authenticatedRequest("/auth/logout", { method: "POST" }, false); } finally { await persistPlatformSession(null); }
@@ -271,7 +271,7 @@ export async function listMediaModels(capability: PlatformMediaModel["capability
   return models.filter((model) => model.capability === capability && model.resolution_prices.length > 0);
 }
 export const pollWechatQrSession = async (state: string, shouldAccept: () => boolean = () => true) => {
-  const result = await publicRequest<Record<string, unknown>>(`/auth/wechat/qr-sessions/status?state=${encodeURIComponent(state)}&device_name=${encodeURIComponent("AI Video Studio Desktop")}`);
+  const result = await publicRequest<Record<string, unknown>>(`/auth/wechat/qr-sessions/status?state=${encodeURIComponent(state)}&device_name=${encodeURIComponent("逐梦帧客户端")}`);
   if (shouldAccept() && typeof result.access_token === "string" && typeof result.refresh_token === "string") await acceptToken(result as unknown as PlatformTokenResult);
   return result;
 };

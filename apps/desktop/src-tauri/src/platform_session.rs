@@ -136,7 +136,7 @@ async fn refresh_locked(api_base: &str, rejected_access_token: &str, force: bool
         .build()
         .map_err(|error| format!("无法创建平台登录刷新客户端：{error}"))?
         .post(format!("{api_base}/auth/refresh"))
-        .json(&json!({"refresh_token": current.refresh_token, "device_name": "AI Video Studio Desktop"}))
+        .json(&json!({"refresh_token": current.refresh_token, "device_name": "逐梦帧客户端"}))
         .send()
         .await
         .map_err(|error| format!("无法连接平台登录刷新接口：{error}"))?;

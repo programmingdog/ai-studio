@@ -1,6 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ProductBrandConfigService } = require('../dist/common/product-brand-config.service.js');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
 
 function fixture(row = { chinese_name: '影匠', english_name: 'Yingjiang', revision: 0, updated_at: 'now' }) {
   const executions = [], audits = [];
@@ -24,4 +26,10 @@ test('product brand update persists both names and records an audit event', asyn
   assert.equal(audits[0].action, 'product_brand.update');
   assert.equal(result.english_name, 'CineCraft');
   assert.equal(result.revision, 1);
+});
+
+test('brand migration renames only the historical default to 逐梦帧', () => {
+  const sql = readFileSync(join(__dirname, '../src/database/migrations/038_product_brand_zhuimengzhen.sql'), 'utf8');
+  assert.match(sql, /SET chinese_name = '逐梦帧',[\s\S]*english_name = '逐梦帧'/);
+  assert.match(sql, /chinese_name = '影匠'[\s\S]*english_name = 'Yingjiang'/);
 });

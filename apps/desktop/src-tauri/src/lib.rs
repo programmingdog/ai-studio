@@ -129,5 +129,5 @@ pub fn run() {
             tray::exit_application,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running AI Video Studio");
+        .expect("运行逐梦帧时发生错误");
 }

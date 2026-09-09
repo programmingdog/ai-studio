@@ -10,7 +10,7 @@ export type ProductBrand = {
   updated_at?: string;
 };
 
-const defaultBrand: ProductBrand = { chinese_name: "影匠", english_name: "Yingjiang", revision: 0 };
+const defaultBrand: ProductBrand = { chinese_name: "逐梦帧", english_name: "逐梦帧", revision: 0 };
 
 type ProductBrandContextValue = ProductBrand & {
   setProductBrand: (brand: ProductBrand) => void;

@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
+chcp 65001 >nul
 
 pushd "%~dp0" >nul || (
   echo [ERROR] Cannot enter the project root directory.
@@ -10,7 +11,7 @@ set "DESKTOP_DIR=%CD%\apps\desktop"
 set "PRODUCTION_ENV=%DESKTOP_DIR%\.env.production"
 set "OUTPUT_DIR=%DESKTOP_DIR%\src-tauri\target\release\bundle\nsis"
 
-echo [INFO] Yingjiang Windows production installer build
+echo [INFO] 逐梦帧 Windows production installer build
 
 if not exist "%PRODUCTION_ENV%" (
   echo [ERROR] Missing production config: %PRODUCTION_ENV%
@@ -68,7 +69,7 @@ if errorlevel 1 (
   goto :failed
 )
 
-powershell.exe -NoProfile -NonInteractive -Command "$tauri = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\tauri.conf.json' | ConvertFrom-Json; $cargo = Get-Content -Raw '%DESKTOP_DIR%\src-tauri\Cargo.toml'; $package = Get-Content -Raw '%DESKTOP_DIR%\package.json' | ConvertFrom-Json; $cargoVersion = [regex]::Match($cargo, '(?m)^version\s*=\s*\x22([^\x22]+)\x22').Groups[1].Value; if (-not $cargoVersion) { exit 1 }; if ($tauri.version -ne $package.version -or $tauri.version -ne $cargoVersion) { Write-Error ('Desktop versions differ: tauri=' + $tauri.version + ', package=' + $package.version + ', cargo=' + $cargoVersion); exit 1 }"
+powershell.exe -NoProfile -NonInteractive -Command "$tauri = Get-Content -LiteralPath '%DESKTOP_DIR%\src-tauri\tauri.conf.json' -Raw -Encoding UTF8 | ConvertFrom-Json; $cargo = Get-Content -LiteralPath '%DESKTOP_DIR%\src-tauri\Cargo.toml' -Raw -Encoding UTF8; $package = Get-Content -LiteralPath '%DESKTOP_DIR%\package.json' -Raw -Encoding UTF8 | ConvertFrom-Json; $cargoVersion = [regex]::Match($cargo, '(?m)^version\s*=\s*\x22([^\x22]+)\x22').Groups[1].Value; if (-not $cargoVersion) { exit 1 }; if ($tauri.version -ne $package.version -or $tauri.version -ne $cargoVersion) { Write-Error ('Desktop versions differ: tauri=' + $tauri.version + ', package=' + $package.version + ', cargo=' + $cargoVersion); exit 1 }"
 if errorlevel 1 (
   echo [ERROR] package.json, Cargo.toml and tauri.conf.json must use the same version.
   goto :failed

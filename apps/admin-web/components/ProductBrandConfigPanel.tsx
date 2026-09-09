@@ -7,7 +7,7 @@ import { type ProductBrand, useProductBrand } from "@/components/ProductBrand";
 export function ProductBrandConfigPanel({ token }: { token: string }) {
   const { setProductBrand } = useProductBrand();
   const [config, setConfig] = useState<ProductBrand | null>(null);
-  const [form, setForm] = useState({ chinese_name: "影匠", english_name: "Yingjiang" });
+  const [form, setForm] = useState({ chinese_name: "逐梦帧", english_name: "逐梦帧" });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -48,8 +48,8 @@ export function ProductBrandConfigPanel({ token }: { token: string }) {
     {loading && <div className="loading-card"><span className="spinner" />正在读取产品名称…</div>}
     <form className="product-brand-form" onSubmit={save}>
       <fieldset disabled={!config || loading || saving}>
-        <label>产品中文名<input value={form.chinese_name} maxLength={32} onChange={event => setForm({ ...form, chinese_name: event.target.value })} placeholder="例如：影匠" required /><small>用于简体中文和繁体中文界面。</small></label>
-        <label>产品英文名<input value={form.english_name} maxLength={64} onChange={event => setForm({ ...form, english_name: event.target.value })} placeholder="例如：Yingjiang" required /><small>用于英语及其他非中文界面。</small></label>
+        <label>产品中文名<input value={form.chinese_name} maxLength={32} onChange={event => setForm({ ...form, chinese_name: event.target.value })} placeholder="例如：逐梦帧" required /><small>用于简体中文和繁体中文界面。</small></label>
+        <label>产品英文名<input value={form.english_name} maxLength={64} onChange={event => setForm({ ...form, english_name: event.target.value })} placeholder="例如：逐梦帧" required /><small>用于英语及其他非中文界面。</small></label>
       </fieldset>
       <div className="product-brand-actions"><button className="primary" disabled={!config || loading || saving}>{saving ? "保存中…" : "保存产品名称"}</button><button className="secondary" type="button" disabled={loading || saving} onClick={() => void load()}>重新读取</button>{config?.updated_at && <small>最近更新：{new Date(config.updated_at).toLocaleString("zh-CN", { hour12: false })}</small>}</div>
     </form>

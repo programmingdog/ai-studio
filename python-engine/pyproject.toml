@@ -1,7 +1,7 @@
 [project]
 name = "aivs-python-engine"
 version = "0.1.0"
-description = "AI Video Studio local JSONL worker"
+description = "逐梦帧 local JSONL worker"
 requires-python = ">=3.8"
 dependencies = ["PyMuPDF>=1.24,<2", "websocket-client>=1.8,<2"]
 

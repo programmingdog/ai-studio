@@ -501,7 +501,7 @@ function Invoke-BuildClient {
 
   $artifactDirectory = Join-Path (Split-Path -Parent $script:StatePath) "artifacts"
   New-Item -ItemType Directory -Force -Path $artifactDirectory | Out-Null
-  $baseName = "yingjiang-$Version-x64-setup"
+  $baseName = "逐梦帧-$Version-x64-setup"
   $targetExe = Join-Path $artifactDirectory "$baseName.exe"
   $targetSignature = Join-Path $artifactDirectory "$baseName.exe.sig"
   Copy-Item -LiteralPath $exe.FullName -Destination $targetExe -Force
@@ -541,7 +541,7 @@ function Invoke-UploadClient {
   Assert-ArtifactState
   $remoteRoot = ([string](Get-PropertyValue $script:Config "remote_client_root")).TrimEnd('/')
   $remoteDirectory = "$remoteRoot/$Version"
-  $baseName = "yingjiang-$Version-x64-setup"
+  $baseName = "逐梦帧-$Version-x64-setup"
   $files = @(
     @{ Local = [string]$script:State.artifacts.exe; Remote = "$baseName.exe"; Hash = [string]$script:State.artifacts.exe_sha256 },
     @{ Local = [string]$script:State.artifacts.signature; Remote = "$baseName.exe.sig"; Hash = [string]$script:State.artifacts.signature_sha256 }
