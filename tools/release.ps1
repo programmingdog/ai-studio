@@ -101,6 +101,11 @@ function Read-Utf8Text([string]$Path) {
   return [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false))
 }
 
+function ConvertTo-Utf8JsonBytes($Value, [int]$Depth = 10) {
+  $json = $Value | ConvertTo-Json -Depth $Depth
+  return [Text.UTF8Encoding]::new($false).GetBytes($json)
+}
+
 function Resolve-RepositoryPath([string]$Path) {
   $expanded = [Environment]::ExpandEnvironmentVariables($Path)
   if ([IO.Path]::IsPathRooted($expanded)) { return [IO.Path]::GetFullPath($expanded) }
@@ -389,8 +394,8 @@ function Get-GitHubHeaders([string]$Token) {
 function Invoke-GitHubJson([string]$Uri, [string]$Token, [string]$Method = "GET", $Body = $null) {
   $parameters = @{ Uri = $Uri; Method = $Method; Headers = Get-GitHubHeaders $Token }
   if ($null -ne $Body) {
-    $parameters.ContentType = "application/json"
-    $parameters.Body = $Body | ConvertTo-Json -Depth 8
+    $parameters.ContentType = "application/json; charset=utf-8"
+    $parameters.Body = ConvertTo-Utf8JsonBytes $Body 8
   }
   return Invoke-RestMethod @parameters
 }
@@ -597,8 +602,8 @@ function Invoke-AivsApi([string]$Path, [string]$Method = "GET", $Body = $null, [
   $parameters = @{ Uri = "$base$Path"; Method = $Method; Headers = @{ Accept = "application/json" } }
   if ($Token) { $parameters.Headers.Authorization = "Bearer $Token" }
   if ($null -ne $Body) {
-    $parameters.ContentType = "application/json"
-    $parameters.Body = $Body | ConvertTo-Json -Depth 10
+    $parameters.ContentType = "application/json; charset=utf-8"
+    $parameters.Body = ConvertTo-Utf8JsonBytes $Body 10
   }
   return Invoke-RestMethod @parameters
 }

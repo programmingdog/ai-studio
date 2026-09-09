@@ -60,6 +60,13 @@ test('release script remains compatible with built-in Windows PowerShell', () =>
   assert.match(script, /Tls12/);
 });
 
+test('release API requests encode Chinese JSON as explicit UTF-8 bytes', () => {
+  assert.match(script, /function ConvertTo-Utf8JsonBytes/);
+  assert.equal((script.match(/application\/json; charset=utf-8/g) || []).length, 2);
+  assert.match(script, /\.GetBytes\(\$json\)/);
+  assert.match(script, /\$parameters\.Body = ConvertTo-Utf8JsonBytes \$Body 10/);
+});
+
 test('Windows installer check reads the renamed UTF-8 configuration without mojibake', () => {
   const installer = fs.readFileSync(path.join(root, 'build-windows-installer.bat'), 'utf8');
   assert.match(installer, /chcp 65001/);
