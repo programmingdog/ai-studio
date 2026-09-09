@@ -23,6 +23,12 @@ function updateBody(update: Update): string {
   return typeof update.body === "string" && update.body.trim() ? update.body.trim() : "此版本包含稳定性与体验改进。";
 }
 
+function updateErrorMessage(cause: unknown): string {
+  if (cause instanceof Error && cause.message.trim()) return cause.message.trim();
+  if (typeof cause === "string" && cause.trim()) return cause.trim();
+  return "下载或安装更新失败，请检查网络后重试。";
+}
+
 export function DesktopUpdateHost() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [checking, setChecking] = useState(false);
@@ -48,10 +54,10 @@ export function DesktopUpdateHost() {
       await update.downloadAndInstall((event: DownloadEvent) => {
         if (event.event === "Started") setTotal(event.data.contentLength);
         if (event.event === "Progress") setDownloaded((current) => current + event.data.chunkLength);
-      }, { headers: { "X-Update-Cohort": cohortId() }, timeout: 120_000 });
+      }, { headers: { "X-Update-Cohort": cohortId() } });
       await relaunch();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "下载或安装更新失败");
+      setError(updateErrorMessage(cause));
       setInstalling(false);
     }
   }
