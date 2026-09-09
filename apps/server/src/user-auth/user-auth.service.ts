@@ -73,7 +73,7 @@ export class UserAuthService {
 
   private accessToken(userId: string, sessionId: string): string {
     const principal: UserPrincipal = { sub: userId, type: "user", sessionId };
-    const options: SignOptions = { expiresIn: "2h", issuer: "ai-video-studio", audience: "client" };
+    const options: SignOptions = { expiresIn: "7d", issuer: "ai-video-studio", audience: "client" };
     return jwt.sign(principal, this.environment.values.jwtSecret, options);
   }
 
@@ -87,7 +87,7 @@ export class UserAuthService {
     const parameters = [sessionId, userId, tokenHash(refreshToken), deviceName.slice(0, 100), expiresAt];
     if (connection) await connection.execute(sql, parameters);
     else await this.database.execute(sql, parameters);
-    return { access_token: this.accessToken(userId, sessionId), refresh_token: refreshToken, token_type: "Bearer", expires_in: 7200 };
+    return { access_token: this.accessToken(userId, sessionId), refresh_token: refreshToken, token_type: "Bearer", expires_in: 7 * 24 * 60 * 60 };
   }
 
   private async createUser(input: { email?: string; phone?: string; password: string; displayName?: string; emailCode?: string; ip?: string; inviteCode?: string }): Promise<Record<string, unknown>> {

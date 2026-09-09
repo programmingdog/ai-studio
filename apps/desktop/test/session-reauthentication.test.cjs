@@ -12,6 +12,8 @@ const auth = read('src/components/UnifiedAuthPanel.tsx');
 const media = read('src-tauri/src/platform_media.rs');
 const ai = read('src-tauri/src/ai.rs');
 const records = read('src-tauri/src/database/generation_records.rs');
+const platform = read('src/services/platform.ts');
+const platformSession = read('src-tauri/src/platform_session.rs');
 
 test('expired platform sessions open a global password reauthentication dialog', () => {
   assert.match(main, /queryCache: new QueryCache\(\{ onError: requestSessionReauthentication \}\)/);
@@ -37,4 +39,12 @@ test('submitted storyboard video resumes the same remote task after login', () =
   assert.match(records, /status = 'FAILED'[\s\S]*PLATFORM_LOGIN_REQUIRED/);
   assert.match(app, /expiredVideoRecord[\s\S]*requestSessionReauthentication/);
   assert.match(host, /activatePlatformUserContext\(\)[\s\S]*invalidateQueries/);
+});
+
+test('web and Rust requests refresh the shared session one day before expiry', () => {
+  assert.match(platform, /SESSION_REFRESH_EARLY_MS = 24 \* 60 \* 60 \* 1000/);
+  assert.match(platform, /invoke<PlatformSession>\("refresh_platform_session"/);
+  assert.match(platformSession, /SESSION_REFRESH_EARLY_SECONDS: i64 = 24 \* 60 \* 60/);
+  assert.match(media, /valid_access_token/);
+  assert.match(media, /refresh_after_unauthorized/);
 });

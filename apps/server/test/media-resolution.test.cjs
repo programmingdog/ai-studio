@@ -143,6 +143,14 @@ test('Hailuo quote rejects 720p before workflow starts and 2k submits as 2K', as
   assert.equal(request(model, { prompt: 'test', resolution: '2k', duration: 10, reference_images: ['https://example.com/ref.png'] }).body.params.resolution, '2K');
 });
 
+test('provider media request forwards duplicated client references only once', () => {
+  const model = target({ capability: 'VIDEO_GENERATION', model_code: 'hailuo-h3-quannengcankao', parameter_schema_json: definition('resolution', ['2K']) });
+  const reference = 'data:image/png;base64,unique-reference-data';
+  const payload = { prompt: 'test', resolution: '2K', duration: 10, reference_images: [reference], params: { resolution: '2K', duration: 10, reference_images: [reference] } };
+  const body = request(model, payload).body;
+  assert.equal(JSON.stringify(body).match(/unique-reference-data/g)?.length, 1);
+});
+
 test('catalog validation respects configured pixel mappings for non-default aspect ratios', () => {
   const { supportsMediaResolution } = require('../dist/gateway/media-resolution');
   assert.equal(supportsMediaResolution({ resolution: '2K', config: { resolution_parameter: 'size', resolution_mapping: { '2K': { '2:3': '1024x1536' } } }, schema: [], protocol: 'openai', capability: 'IMAGE_GENERATION', modelCode: 'image' }), true);

@@ -25,6 +25,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 tokio = { version = "1", features = ["fs", "time", "sync", "rt", "io-util", "macros"] }

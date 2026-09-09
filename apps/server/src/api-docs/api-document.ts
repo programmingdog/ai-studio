@@ -180,10 +180,10 @@ const schemas: Record<string, JsonSchema> = {
     type: "object",
     required: ["access_token", "refresh_token", "token_type", "expires_in", "user"],
     properties: {
-      access_token: { type: "string", description: "有效期 2 小时的 JWT" },
+      access_token: { type: "string", description: "有效期 7 天的 JWT" },
       refresh_token: { type: "string", description: "只返回一次的刷新令牌" },
       token_type: { type: "string", example: "Bearer" },
-      expires_in: { type: "integer", example: 7200 },
+      expires_in: { type: "integer", example: 604800 },
       user: ref("User"),
     },
   },

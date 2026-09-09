@@ -163,6 +163,7 @@ export class CreditsService {
     const config = await this.wechatRuntime();
     const paymentId = randomUUID(); const purchaseId = randomUUID(); const outTradeNo = orderNumber();
     const baseCredits = Number(creditPackage.base_credits); const bonusCredits = Number(creditPackage.bonus_credits);
+    // 赠送积分只增加到账数量；应付金额始终使用套餐独立配置的售价，不能用赠送积分抵扣。
     const credits = baseCredits + bonusCredits; const amountFen = Number(creditPackage.price_fen);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
     try {

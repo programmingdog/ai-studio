@@ -22,7 +22,10 @@ test('automatic execution carries its approval and never opens model selection',
  assert.match(runner,/setWorkflowQuiet\(queryClient,workflowId,true\)/);
  assert.match(runner,/setWorkflowQuiet\(queryClient,workflowId,false\)/);
  assert.match(app,/workflow_credit_id: selection.workflowCreditId/);
- assert.ok(app.indexOf('<footer className="story-auto-footer">')>app.indexOf('className="story-page-layout"'));
+ const storyPage=app.slice(app.indexOf('function StoryPage('),app.indexOf('function ProjectAssetPreview('));
+ assert.match(storyPage,/<header className="story-auto-header">[^]*className="story-auto-actions"/);
+ assert.ok(storyPage.indexOf('className="story-auto-header"')<storyPage.indexOf('className="title-input"'));
+ assert.doesNotMatch(storyPage,/story-auto-footer/);
 });
 test('both credit dialogs are suppressed while automatic production runs',()=>{
  assert.match(read('components/CreditConfirmationHost.tsx'),/if \(!items.length \|\| workflowQuiet\) return null/);

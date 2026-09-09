@@ -1815,6 +1815,7 @@ function ProjectVideoPlayerModal({ projectPath, record, aspectRatio, shotCount, 
 
 type AutoProjectMode = "fast" | "storyboard";
 type AutoProjectStage = AutomaticWorkflowStage;
+type AutoWorkflowRetryRegion = "scenes" | "characters" | "shot-images" | "shot-videos" | "composition";
 
 interface AutoProjectWorkflowState {
   id?: string;
@@ -1916,7 +1917,7 @@ function automaticWorkflowProgress(items: AutomaticWorkflowTaskSnapshot[]): numb
   return items.length ? items.reduce((sum, item) => sum + item.progress, 0) / items.length : 1;
 }
 
-function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, onStop, onRestart, onClose }: { canonical: CanonicalProject; projectPath: string; state: AutoProjectWorkflowState; stopping: boolean; onStop: () => void; onRestart: () => void; onClose: () => void }) {
+function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, retryingRegion, retryRegionMessage, onStop, onRestart, onRetryFailedRegion, onClose }: { canonical: CanonicalProject; projectPath: string; state: AutoProjectWorkflowState; stopping: boolean; retryingRegion?: AutoWorkflowRetryRegion; retryRegionMessage?: { kind: "success" | "error"; text: string }; onStop: () => void; onRestart: () => void; onRetryFailedRegion: (region: AutoWorkflowRetryRegion) => void; onClose: () => void }) {
   const [showComposedVideo, setShowComposedVideo] = useState(false);
   const purchaseRequired = state.cancelled && isInsufficientBalanceError(state.message);
   const sceneRows = canonical.scenes.map((scene) => { const task = latestTargetTask(state.imageTasks, "scene", scene.id); const path = preferredProjectAsset(scene.reference_assets, latestTargetImage(state.imageTasks, "scene", scene.id)); return { id: scene.id, name: scene.name, task, path, ...workflowTaskStatus(task, Boolean(path), "等待启动") }; });
@@ -1929,15 +1930,27 @@ function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, onS
   const compositionRow = { id: "PROJECT_VIDEO", name: "项目完整合成视频", record: compositionRecord, path: compositionPath, ...workflowTaskStatus(compositionRecord, Boolean(compositionPath), state.stage === "composition" ? "准备合成" : "等待全部分镜视频") };
   const allRows = [...sceneRows, ...characterRows, ...(state.mode === "storyboard" ? shotImageRows : []), ...videoRows, compositionRow];
   const overall = allRows.length ? allRows.reduce((sum, row) => sum + row.progress, 0) / allRows.length : 1;
-  const renderImageRow = (row: typeof sceneRows[number]) => <article className={`auto-workflow-task ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ProjectAssetPreview projectPath={projectPath} relativePath={row.path} fallback={<ImageIcon size={22} />} /> : <ImageIcon size={22} />}</div><div><strong>{row.id} · {row.name}</strong><span>{row.task?.error?.message || row.label}</span></div><i title="制作阶段，并非实际生成百分比"><b style={{ width: `${row.progress * 100}%` }} /></i><em>{row.path ? "100%" : row.task?.status === "FAILED" ? "失败" : activeImageTask(row.task) ? <LoaderCircle className="spin" size={15} aria-label="生成中" /> : "—"}</em></article>;
-  const renderVideoRow = (row: typeof videoRows[number]) => <article className={`auto-workflow-task video ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ShotGeneratedMedia projectPath={projectPath} relativePath={row.path} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{row.id}</strong><span>{row.record?.error?.message || row.label}</span></div><i><b style={{ width: `${row.progress * 100}%` }} /></i><em>{Math.round(row.progress * 100)}%</em></article>;
-  const renderCompositionRow = <article className={`auto-workflow-task video composition ${compositionRow.className}`}><div className="auto-workflow-preview">{compositionPath ? <ShotGeneratedMedia projectPath={projectPath} relativePath={compositionPath} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{compositionRow.name}</strong><span>{compositionRecord?.error?.message || compositionRow.label}</span>{compositionPath && <button className="auto-workflow-play-button" type="button" onClick={() => setShowComposedVideo(true)}><Play size={13} />播放合成视频</button>}</div><i><b style={{ width: `${compositionRow.progress * 100}%` }} /></i><em>{Math.round(compositionRow.progress * 100)}%</em></article>;
-  return createPortal(<><div className="modal-backdrop"><section className="auto-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="auto-workflow-title"><header><div><span className="eyebrow">AUTOMATIC PRODUCTION</span><h2 id="auto-workflow-title">项目自动制作工作流</h2><p>{state.mode === "fast" ? "快速模式" : "分镜图模式"} · {state.resolution === "default" ? "模型默认分辨率" : videoResolutionLabel(state.resolution)} · {state.message}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="隐藏工作流"><X size={18} /></button></header><div className="auto-workflow-overall"><div><span>{state.running ? "工作流执行中" : state.cancelled ? "工作流已停止" : "工作流已完成"}</span><strong>{Math.round(overall * 100)}%</strong></div><i><b style={{ width: `${overall * 100}%` }} /></i>{state.retryMessage && <p><LoaderCircle className={state.running ? "spin" : ""} size={14} />{state.retryMessage}</p>}{purchaseRequired && <div className="insufficient-credit-callout workflow-insufficient-credit"><div className="error-banner">积分不足，购买完成后可继续未完成的自动制作任务。</div><ImmediateCreditPurchaseButton label="立即购买积分并继续" onPurchased={onRestart} /></div>}</div><div className="auto-workflow-body"><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 01</span><div><strong>场景图生成</strong><small>与角色图并行启动</small></div></header><div className="auto-workflow-task-list">{sceneRows.map(renderImageRow)}</div></section><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 02</span><div><strong>角色图生成</strong><small>与场景图并行启动</small></div></header><div className="auto-workflow-task-list">{characterRows.map(renderImageRow)}</div></section><section className={state.mode === "fast" ? "skipped" : state.stage === "storyboard" ? "active" : ["video", "composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 03</span><div><strong>分镜图生成</strong><small>{state.mode === "fast" ? "快速模式自动跳过" : "等待场景图和角色图全部完成"}</small></div></header>{state.mode === "storyboard" && <div className="auto-workflow-task-list">{shotImageRows.map(renderImageRow)}</div>}</section><section className={state.stage === "video" ? "active" : ["composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 04</span><div><strong>分镜视频生成</strong><small>严格等待所有前置资产完成</small></div></header><div className="auto-workflow-task-list">{videoRows.map(renderVideoRow)}</div></section><section className={state.stage === "composition" ? "active" : state.stage === "completed" ? "completed" : "pending"}><header><span>STEP 05</span><div><strong>完整视频合成</strong><small>按照项目分镜顺序合成为一个完整视频</small></div></header><div className="auto-workflow-task-list">{renderCompositionRow}</div></section></div><footer><span>{state.running ? "任务失败时将停留在当前步骤并自动重新检查、重试，不能跳过；隐藏弹窗不会停止工作流。" : state.cancelled ? "工作流已停止；重启时只会为未完成内容重新选择模型并确认积分。" : "所有项目制作步骤及完整视频合成均已完成。"}</span><div className="auto-workflow-footer-actions">{state.running && <button className="secondary-button danger-button" type="button" onClick={onStop} disabled={stopping}><X size={16} />{stopping ? "正在停止…" : "停止工作流"}</button>}<button className={state.cancelled ? "secondary-button" : "primary-button"} type="button" onClick={onClose}>{state.running ? "隐藏工作流" : state.cancelled ? "关闭" : "完成"}</button>{state.cancelled && <button className="primary-button" type="button" onClick={onRestart}><RotateCcw size={16} />重启工作流</button>}</div></footer></section></div>{showComposedVideo && compositionPath && currentComposition && <ProjectVideoPlayerModal projectPath={projectPath} record={currentComposition} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowComposedVideo(false)} />}</>, document.body);
+  const sceneFailures = sceneRows.filter((row) => row.className === "failed").length;
+  const characterFailures = characterRows.filter((row) => row.className === "failed").length;
+  const shotImageFailures = state.mode === "storyboard" ? shotImageRows.filter((row) => row.className === "failed").length : 0;
+  const videoFailures = videoRows.filter((row) => row.className === "failed").length;
+  const compositionFailures = compositionRow.className === "failed" ? 1 : 0;
+  const retryButton = (region: AutoWorkflowRetryRegion, failedCount: number) => {
+    const retrying = retryingRegion === region;
+    const disabled = state.running || Boolean(retryingRegion) || failedCount === 0;
+    const title = state.running ? "工作流运行中会自动重试失败任务" : failedCount === 0 ? "本区域没有失败任务" : `重启本区域 ${failedCount} 个失败任务`;
+    return <button className="auto-workflow-region-retry" type="button" title={title} disabled={disabled} onClick={() => onRetryFailedRegion(region)}>{retrying ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />}{retrying ? "正在重启…" : "重启失败任务"}{failedCount > 0 && <b>{failedCount}</b>}</button>;
+  };
+  const renderImageRow = (row: typeof sceneRows[number]) => { const message = row.task?.error?.message || row.label; const failed = Boolean(row.task?.error?.message); return <article className={`auto-workflow-task ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ProjectAssetPreview projectPath={projectPath} relativePath={row.path} fallback={<ImageIcon size={22} />} /> : <ImageIcon size={22} />}</div><div><strong>{row.id} · {row.name}</strong><span className={failed ? "auto-workflow-task-error" : undefined} title={failed ? message : undefined}>{message}</span></div><i title="制作阶段，并非实际生成百分比"><b style={{ width: `${row.progress * 100}%` }} /></i><em>{row.path ? "100%" : row.task?.status === "FAILED" ? "失败" : activeImageTask(row.task) ? <LoaderCircle className="spin" size={15} aria-label="生成中" /> : "—"}</em></article>; };
+  const renderVideoRow = (row: typeof videoRows[number]) => { const message = row.record?.error?.message || row.label; const failed = Boolean(row.record?.error?.message); return <article className={`auto-workflow-task video ${row.className}`} key={row.id}><div className="auto-workflow-preview">{row.path ? <ShotGeneratedMedia projectPath={projectPath} relativePath={row.path} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{row.id}</strong><span className={failed ? "auto-workflow-task-error" : undefined} title={failed ? message : undefined}>{message}</span></div><i><b style={{ width: `${row.progress * 100}%` }} /></i><em>{Math.round(row.progress * 100)}%</em></article>; };
+  const compositionMessage = compositionRecord?.error?.message || compositionRow.label;
+  const renderCompositionRow = <article className={`auto-workflow-task video composition ${compositionRow.className}`}><div className="auto-workflow-preview">{compositionPath ? <ShotGeneratedMedia projectPath={projectPath} relativePath={compositionPath} mediaType="video" /> : <Clapperboard size={22} />}</div><div><strong>{compositionRow.name}</strong><span className={compositionRecord?.error?.message ? "auto-workflow-task-error" : undefined} title={compositionRecord?.error?.message ? compositionMessage : undefined}>{compositionMessage}</span>{compositionPath && <button className="auto-workflow-play-button" type="button" onClick={() => setShowComposedVideo(true)}><Play size={13} />播放合成视频</button>}</div><i><b style={{ width: `${compositionRow.progress * 100}%` }} /></i><em>{Math.round(compositionRow.progress * 100)}%</em></article>;
+  return createPortal(<><div className="modal-backdrop"><section className="auto-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="auto-workflow-title"><header><div><span className="eyebrow">AUTOMATIC PRODUCTION</span><h2 id="auto-workflow-title">项目自动制作工作流</h2><p>{state.mode === "fast" ? "快速模式" : "分镜图模式"} · {state.resolution === "default" ? "模型默认分辨率" : videoResolutionLabel(state.resolution)} · {state.message}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="隐藏工作流"><X size={18} /></button></header><div className="auto-workflow-overall"><div><span>{state.running ? "工作流执行中" : state.cancelled ? "工作流已停止" : "工作流已完成"}</span><strong>{Math.round(overall * 100)}%</strong></div><i><b style={{ width: `${overall * 100}%` }} /></i>{state.retryMessage && <p><LoaderCircle className={state.running ? "spin" : ""} size={14} />{state.retryMessage}</p>}{retryRegionMessage && <p className={`auto-workflow-region-message ${retryRegionMessage.kind}`}>{retryRegionMessage.kind === "error" ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}{retryRegionMessage.text}</p>}{purchaseRequired && <div className="insufficient-credit-callout workflow-insufficient-credit"><div className="error-banner">积分不足，购买完成后可继续未完成的自动制作任务。</div><ImmediateCreditPurchaseButton label="立即购买积分并继续" onPurchased={onRestart} /></div>}</div><div className="auto-workflow-body"><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 01</span><div><strong>场景图生成</strong><small>与角色图并行启动</small></div>{retryButton("scenes", sceneFailures)}</header><div className="auto-workflow-task-list">{sceneRows.map(renderImageRow)}</div></section><section className={state.stage === "assets" ? "active" : "completed"}><header><span>STEP 02</span><div><strong>角色图生成</strong><small>与场景图并行启动</small></div>{retryButton("characters", characterFailures)}</header><div className="auto-workflow-task-list">{characterRows.map(renderImageRow)}</div></section><section className={state.mode === "fast" ? "skipped" : state.stage === "storyboard" ? "active" : ["video", "composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 03</span><div><strong>分镜图生成</strong><small>{state.mode === "fast" ? "快速模式自动跳过" : "等待场景图和角色图全部完成"}</small></div>{retryButton("shot-images", shotImageFailures)}</header>{state.mode === "storyboard" && <div className="auto-workflow-task-list">{shotImageRows.map(renderImageRow)}</div>}</section><section className={state.stage === "video" ? "active" : ["composition", "completed"].includes(state.stage) ? "completed" : "pending"}><header><span>STEP 04</span><div><strong>分镜视频生成</strong><small>严格等待所有前置资产完成</small></div>{retryButton("shot-videos", videoFailures)}</header><div className="auto-workflow-task-list">{videoRows.map(renderVideoRow)}</div></section><section className={state.stage === "composition" ? "active" : state.stage === "completed" ? "completed" : "pending"}><header><span>STEP 05</span><div><strong>完整视频合成</strong><small>按照项目分镜顺序合成为一个完整视频</small></div>{retryButton("composition", compositionFailures)}</header><div className="auto-workflow-task-list">{renderCompositionRow}</div></section></div><footer><span>{state.running ? "任务失败时将停留在当前步骤并自动重新检查、重试，不能跳过；隐藏弹窗不会停止工作流。" : state.cancelled ? "可按区域重启失败任务；需要调用模型时会重新确认积分。" : "所有项目制作步骤及完整视频合成均已完成。"}</span><div className="auto-workflow-footer-actions">{state.running && <button className="secondary-button danger-button" type="button" onClick={onStop} disabled={stopping}><X size={16} />{stopping ? "正在停止…" : "停止工作流"}</button>}<button className={state.cancelled ? "secondary-button" : "primary-button"} type="button" onClick={onClose}>{state.running ? "隐藏工作流" : state.cancelled ? "关闭" : "完成"}</button>{state.cancelled && <button className="primary-button" type="button" onClick={onRestart}><RotateCcw size={16} />重启工作流</button>}</div></footer></section></div>{showComposedVideo && compositionPath && currentComposition && <ProjectVideoPlayerModal projectPath={projectPath} record={currentComposition} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowComposedVideo(false)} />}</>, document.body);
 }
 
 function StoryPage({ canonical, projectPath, projectId }: { canonical: CanonicalProject; projectPath: string; projectId: string }) {
   const queryClient = useQueryClient();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const update = useStudioStore((state) => state.updateCanonical);
   const pendingAgentProduction = useStudioStore((state) => state.pendingAgentProduction);
   const setPendingAgentProduction = useStudioStore((state) => state.setPendingAgentProduction);
@@ -1957,6 +1970,8 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
   const [autoResolution, setAutoResolution] = useState("720p");
   const [startingWorkflow, setStartingWorkflow] = useState(false);
   const [stoppingWorkflow, setStoppingWorkflow] = useState(false);
+  const [retryingWorkflowRegion, setRetryingWorkflowRegion] = useState<AutoWorkflowRetryRegion>();
+  const [workflowRegionMessage, setWorkflowRegionMessage] = useState<{ kind: "success" | "error"; text: string }>();
   const [workflowStartError, setWorkflowStartError] = useState("");
   const [showProjectVideo, setShowProjectVideo] = useState(false);
   const [workflow, setWorkflow] = useState<AutoProjectWorkflowState>({ visible: false, running: false, mode: "fast", resolution: "720p", stage: "assets", message: "准备开始", retryMessage: "", imageTasks: [], records: [] });
@@ -2285,6 +2300,103 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     setShowAutoMode(true);
     void Promise.all([imageTasksQuery.refetch(), generationRecordsQuery.refetch()]);
   };
+  const retryFailedWorkflowRegion = async (region: AutoWorkflowRetryRegion) => {
+    if (workflow.running || retryingWorkflowRegion) return;
+    setRetryingWorkflowRegion(region);
+    setWorkflowRegionMessage(undefined);
+    try {
+      const [refreshedImages, refreshedRecords] = await Promise.all([imageTasksQuery.refetch(), generationRecordsQuery.refetch()]);
+      const currentImageTasks = refreshedImages.data ?? imageTasks;
+      const currentRecords = refreshedRecords.data ?? records;
+      let createdCount = 0;
+      if (region === "composition") {
+        const failed = currentRecords.find((record) => record.media_type === "video" && record.target_type === "project" && record.status === "FAILED");
+        if (!failed || currentProjectComposition(currentRecords)) throw new Error("完整视频合成区域当前没有失败任务。");
+        await composeProjectVideo({
+          project_path: projectPath,
+          project_id: projectId,
+          ordered_shot_ids: canonical.shots.map((shot) => shot.id),
+          aspect_ratio: canonical.story.aspect_ratio === "16:9" ? "16:9" : "9:16",
+        });
+        createdCount = 1;
+      } else if (region === "shot-videos") {
+        const failedShots = canonical.shots.filter((shot) => {
+          if (firstProjectAsset(shot.video_assets)) return false;
+          const latest = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id);
+          const completed = currentRecords.some((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id && record.status === "COMPLETED" && record.result_relative_path);
+          return !completed && latest?.status === "FAILED";
+        });
+        if (!failedShots.length) throw new Error("分镜视频区域当前没有失败任务。");
+        const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
+        if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
+        const selection = await requestMediaModel("VIDEO_GENERATION", `重启 ${failedShots.length} 个失败的分镜视频`, projectPath,
+          failedShots.map((shot) => ({ key: `video:shot:${shot.id}`, seconds: shot.duration })));
+        for (const shot of failedShots) {
+          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_code, {
+            locale,
+            shotImageMode: workflow.mode === "storyboard" ? "reference" : "none",
+            mediaSelection: selection,
+          });
+          await createShotVideoGeneration(input);
+          createdCount += 1;
+        }
+      } else {
+        let imageItems: CreateImageGenerationTaskItem[] = [];
+        let pickerItems: MediaPickerItem[] = [];
+        let title = "重启失败的图片任务";
+        if (region === "scenes") {
+          const failedScenes = canonical.scenes.filter((scene) => {
+            const task = latestTargetTask(currentImageTasks, "scene", scene.id);
+            return task?.status === "FAILED" && !preferredProjectAsset(scene.reference_assets, latestTargetImage(currentImageTasks, "scene", scene.id));
+          });
+          imageItems = failedScenes.map((scene) => sceneImageTask(scene, canonical));
+          pickerItems = failedScenes.map((scene) => ({ key: `image:scene:${scene.id}` }));
+          title = `重启 ${failedScenes.length} 个失败的场景图`;
+        } else if (region === "characters") {
+          const failedStates = canonical.characters.flatMap((character) => characterStates(character).map((state) => ({ character, state }))).filter(({ character, state }) => {
+            const task = latestTargetTask(currentImageTasks, "character_state", state.id);
+            return task?.status === "FAILED" && !characterStateImage(character, state, currentImageTasks);
+          });
+          const template = settings.data?.character_image_prompt || CHARACTER_IMAGE_PROMPT;
+          imageItems = failedStates.map(({ character, state }) => characterImageTask(character, state, canonical, template));
+          pickerItems = failedStates.map(({ state }) => ({ key: `image:character_state:${state.id}` }));
+          title = `重启 ${failedStates.length} 个失败的角色图`;
+        } else {
+          if (workflow.mode !== "storyboard") throw new Error("快速模式没有分镜图任务。");
+          const failedShots = canonical.shots.filter((shot) => {
+            const task = latestTargetTask(currentImageTasks, "shot", shot.id);
+            return task?.status === "FAILED" && !(latestTargetImage(currentImageTasks, "shot", shot.id) ?? firstProjectAsset(shot.reference_assets));
+          });
+          imageItems = failedShots.map((shot) => ({
+            target_type: "shot",
+            target_id: shot.id,
+            prompt: shot.image_prompt_customized ? shot.image_prompt : defaultShotImagePrompt(shot, canonical),
+            aspect_ratio: canonical.story.aspect_ratio || shot.aspect_ratio || "9:16",
+            reference_assets: shotReferenceAssets(shot, canonical, currentImageTasks),
+          }));
+          pickerItems = failedShots.map((shot) => ({ key: `image:shot:${shot.id}` }));
+          title = `重启 ${failedShots.length} 个失败的分镜图`;
+        }
+        if (!imageItems.length) throw new Error("本区域当前没有失败任务。");
+        const selection = await requestMediaModel("IMAGE_GENERATION", title, projectPath, pickerItems);
+        const created = await createImageGenerationTasks({ project_path: projectPath, project_id: projectId, ...mediaImageFields(selection), tasks: imageItems });
+        createdCount = created.length;
+        if (!createdCount) throw new Error("任务状态已经变化，没有创建重复任务。");
+      }
+      const [nextImages, nextRecords] = await Promise.all([imageTasksQuery.refetch(), generationRecordsQuery.refetch()]);
+      setWorkflow((current) => ({
+        ...current,
+        imageTasks: mergeTaskSnapshots(current.imageTasks, nextImages.data ?? []),
+        records: mergeTaskSnapshots(current.records, nextRecords.data ?? []),
+      }));
+      setWorkflowRegionMessage({ kind: "success", text: `已重新启动本区域 ${createdCount} 个失败任务。` });
+    } catch (error) {
+      const message = readableError(error);
+      setWorkflowRegionMessage({ kind: "error", text: message.includes("已取消选择生成模型和积分确认") ? "已取消重启，没有创建任务或扣除积分。" : message });
+    } finally {
+      setRetryingWorkflowRegion(undefined);
+    }
+  };
   const closeWorkflowStart = () => {
     setShowAutoMode(false);
     if (!restartWorkflowId) return;
@@ -2382,6 +2494,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     ...canonical.shots.filter(shot=>!records.some(record=>record.media_type==="video"&&record.target_type==="shot"&&record.target_id===shot.id&&record.status==="COMPLETED"&&record.result_relative_path)&&!firstProjectAsset(shot.video_assets)&&!records.some(record=>record.media_type==="video"&&record.target_type==="shot"&&record.target_id===shot.id&&activeGeneration(record))).map(shot=>({key:`video:shot:${shot.id}`,group:"分镜视频" as const,seconds:shot.duration})),
   ];
   return <div className="story-page-layout"><section className="panel story-main story-main-single">
+    <header className="story-auto-header"><span className="section-label">STORY WORKFLOW</span><div className="story-auto-actions">{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}{hasRunningWorkflow ? <button className="secondary-button active-workflow-button" type="button" onClick={() => setWorkflow((current) => ({ ...current, visible: true }))}><LoaderCircle className="spin" size={17} />打开正在进行的工作流</button> : <button className="primary-button" type="button" onClick={() => setShowAutoMode(true)} disabled={settings.isLoading || imageTasksQuery.isLoading || generationRecordsQuery.isLoading || activeWorkflowQuery.isLoading || startingWorkflow}><WandSparkles size={17} />{startingWorkflow ? "正在创建工作流…" : "一键自动创作"}</button>}</div></header>
 
     {workflowStartError && <div className="error-banner">{workflowStartError}</div>}
     <input className="title-input" value={story.title} onChange={(e) => setStory({ title: e.target.value })} />
@@ -2391,9 +2504,9 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     {projectEpisodes.length > 0 && <section className="story-episodes"><header><div><span className="section-label">EPISODES</span><h3>分集内容</h3></div></header><div>{projectEpisodes.map((episode, index) => <article key={episode.id}><header><span>{String(index + 1).padStart(2, "0")}</span><input value={episode.title} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, title: event.target.value } : item))} /><em>{Math.round(episode.duration)}秒</em></header><textarea rows={7} value={episode.content} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, content: event.target.value } : item))} /></article>)}</div></section>}
     <label>{t("projectStyle")}<textarea rows={4} value={story.visual_style ?? canonical.shots[0]?.visual_style ?? ""} onChange={(e) => setVisualStyle(e.target.value)} /><small>默认采用视频理解结果；选择预设或直接编辑后，会同步到全部分镜。</small></label>
     {showAutoMode && settings.data && <WorkflowStartModal mode={autoMode} planned={planned} onModeChange={setAutoMode} onCancel={closeWorkflowStart} onCreditsPurchased={() => setWorkflowStartError("")} onStart={choice=>void startAutoWorkflow(choice)} busy={startingWorkflow} error={workflowStartError} restart={Boolean(restartWorkflowId)} />}
-    {workflow.visible && <AutoProjectWorkflowModal canonical={canonical} projectPath={projectPath} state={workflow} stopping={stoppingWorkflow} onStop={() => void stopAutomaticWorkflow()} onRestart={openRestartWorkflow} onClose={() => setWorkflow((current) => ({ ...current, visible: false }))} />}
+    {workflow.visible && <AutoProjectWorkflowModal canonical={canonical} projectPath={projectPath} state={workflow} stopping={stoppingWorkflow} retryingRegion={retryingWorkflowRegion} retryRegionMessage={workflowRegionMessage} onStop={() => void stopAutomaticWorkflow()} onRestart={openRestartWorkflow} onRetryFailedRegion={(region) => void retryFailedWorkflowRegion(region)} onClose={() => setWorkflow((current) => ({ ...current, visible: false }))} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
-  </section><footer className="story-auto-footer"><div className="story-auto-actions">{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}{hasRunningWorkflow ? <button className="secondary-button active-workflow-button" type="button" onClick={() => setWorkflow((current) => ({ ...current, visible: true }))}><LoaderCircle className="spin" size={17} />打开正在进行的工作流</button> : <button className="primary-button" type="button" onClick={() => setShowAutoMode(true)} disabled={settings.isLoading || imageTasksQuery.isLoading || generationRecordsQuery.isLoading || activeWorkflowQuery.isLoading || startingWorkflow}><WandSparkles size={17} />{startingWorkflow ? "正在创建工作流…" : "一键自动创作"}</button>}</div></footer></div>;
+  </section></div>;
 }
 
 function ProjectAssetPreview({ projectPath, relativePath, fallback }: { projectPath: string; relativePath?: string; fallback: ReactNode }) {

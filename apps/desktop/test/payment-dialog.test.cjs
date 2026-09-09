@@ -27,3 +27,12 @@ test('credit purchase uses a custom portal dialog, server expiry and serialized 
   assert.match(source, /localizedStatusLabel\(effectiveStatus, locale\)/);
   assert.doesNotMatch(source, /activePurchase && <section className="payment-card"/);
 });
+
+test('package cards keep bonus credits separate from the package price', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/components/AccountCenterModal.tsx'), 'utf8');
+  assert.match(source, /<strong>\{item\.base_credits\}<small> 积分<\/small><\/strong>/);
+  assert.match(source, /额外赠送 \{item\.bonus_credits\}，支付后实得 \{item\.total_credits\}/);
+  assert.match(source, /赠送积分额外到账，不抵扣套餐售价/);
+  assert.match(source, /\{money\(item\.price_fen\)\} 购买/);
+  assert.doesNotMatch(source, /price_fen\s*[-+]\s*item\.bonus_credits/);
+});

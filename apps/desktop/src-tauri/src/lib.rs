@@ -104,6 +104,7 @@ pub fn run() {
             ai::save_ai_settings,
             platform_session::get_platform_session,
             platform_session::save_platform_session,
+            platform_session::refresh_platform_session,
             platform_session::clear_platform_session,
             platform_session::get_remembered_credentials,
             platform_session::save_remembered_credential,

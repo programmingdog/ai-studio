@@ -2,8 +2,6 @@ use reqwest::{multipart, Client, StatusCode};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 
-use crate::platform_session::read_platform_session;
-
 const DEVELOPMENT_API_BASE_URL: &str = "http://localhost:3101/api/v1";
 const PRODUCTION_API_BASE_URL: &str = "https://ai-studio.yuntianxing.net/api/v1";
 
@@ -15,12 +13,6 @@ fn api_base_url(configured: Option<&str>) -> Result<String, String> {
         .or_else(|| option_env!("AIVS_PLATFORM_API_URL").map(str::to_owned))
         .unwrap_or_else(|| if cfg!(debug_assertions) { DEVELOPMENT_API_BASE_URL.to_owned() } else { PRODUCTION_API_BASE_URL.to_owned() });
     crate::platform_media::api_base_url(&value)
-}
-
-fn access_token() -> Result<String, String> {
-    read_platform_session()?
-        .map(|session| session.access_token)
-        .ok_or_else(|| "请先登录平台账户".to_owned())
 }
 
 fn platform_error(status: StatusCode, body: &str) -> String {
@@ -52,13 +44,15 @@ pub async fn analyze_file(
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(35 * 60))
         .build().map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
+    let base = api_base_url(configured_api_base_url)?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
     let part = multipart::Part::bytes(bytes).file_name(name).mime_str(mime).map_err(|error| format!("无法创建剧本上传内容：{error}"))?;
     let form = multipart::Form::new()
         .text("idempotency_key", idempotency_key.to_owned())
         .text("expected_credits", expected_credits.to_string())
         .part("script", part);
-    let response = client.post(format!("{}/tasks/script-analysis/upload", api_base_url(configured_api_base_url)?))
-        .bearer_auth(access_token()?).multipart(form).send().await
+    let response = client.post(format!("{base}/tasks/script-analysis/upload"))
+        .bearer_auth(token).multipart(form).send().await
         .map_err(|error| format!("上传剧本并等待文本大模型分析失败：{error}"))?;
     let status = response.status();
     let body = response.text().await.map_err(|error| format!("读取剧本分析响应失败：{error}"))?;

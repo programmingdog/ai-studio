@@ -6,6 +6,8 @@ use crate::platform_session::read_platform_session;
 
 const DEVELOPMENT_API_BASE_URL: &str = "http://localhost:3101/api/v1";
 const PRODUCTION_API_BASE_URL: &str = "https://ai-studio.yuntianxing.net/api/v1";
+const QUOTE_MAX_ATTEMPTS: usize = 3;
+const QUOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) fn api_base_url(configured: &str) -> Result<String, String> {
     let configured = if configured.trim().is_empty() {
@@ -21,8 +23,17 @@ pub(crate) fn api_base_url(configured: &str) -> Result<String, String> {
     Ok(value.trim_end_matches('/').to_owned())
 }
 
-fn access_token() -> Result<String, String> {
-    read_platform_session()?.map(|session| session.access_token).ok_or_else(|| "请先登录平台账户".to_owned())
+pub(crate) fn refresh_api_base_url(configured: &str) -> Result<String, String> {
+    let base = api_base_url(configured)?;
+    let configured_base = std::env::var("AIVS_PLATFORM_API_URL")
+        .ok()
+        .or_else(|| option_env!("AIVS_PLATFORM_API_URL").map(str::to_owned))
+        .and_then(|value| api_base_url(&value).ok());
+    if base == PRODUCTION_API_BASE_URL || base == DEVELOPMENT_API_BASE_URL || configured_base.as_deref() == Some(base.as_str()) {
+        Ok(base)
+    } else {
+        Err("拒绝向非平台地址发送登录刷新令牌".to_owned())
+    }
 }
 
 fn platform_error(status: StatusCode, body: &str) -> String {
@@ -55,7 +66,7 @@ pub async fn generate(api_base: &str, provider_model_id: &str, local_task_id: &s
 pub async fn resume(api_base: &str, remote_task_id: &str, local_task_id: &str, workflow: Option<(&std::path::Path, &str, String)>) -> Result<Value, String> {
     let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(15 * 60)).build().map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
     let base = api_base_url(api_base)?;
-    let token = access_token()?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
     if let Some((root, _, _)) = &workflow {
         let receipt = crate::workflow_credit::receipt(root, local_task_id, &base)?
             .ok_or_else(|| crate::workflow_credit::error("登录账号与原任务不一致，自动制作已停止。"))?;
@@ -77,17 +88,125 @@ pub async fn confirmed_quote(api_base: &str, provider_model_id: Option<&str>, ca
 }
 
 pub async fn quote(api_base: &str, provider_model_id: Option<&str>, capability: Option<&str>, payload: &Value) -> Result<Value, String> {
-    let client = Client::builder().timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
-    let quote = response_value(client.post(format!("{}/tasks/quote", api_base_url(api_base)?)).bearer_auth(access_token()?).json(&json!({
-        "provider_model_id": provider_model_id, "capability": capability,
-        "payload": { "resolution": payload.get("resolution"), "seconds": payload.get("seconds"), "duration": payload.get("duration"), "params": payload.get("params") },
-    })).send().await.map_err(|_| "暂时查不到所需积分，请稍后再试。本次没有开始，不扣分。".to_owned())?).await?;
-    Ok(quote)
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
+    let base = api_base_url(api_base)?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
+    request_quote_authenticated(
+        &client,
+        &base,
+        &token,
+        provider_model_id,
+        capability,
+        payload,
+    )
+    .await
+}
+
+fn login_required(error: &str) -> bool {
+    serde_json::from_str::<Value>(error).ok().is_some_and(|value| value["code"] == "PLATFORM_LOGIN_REQUIRED")
+}
+
+async fn request_quote_authenticated(
+    client: &Client,
+    base: &str,
+    token: &str,
+    provider_model_id: Option<&str>,
+    capability: Option<&str>,
+    payload: &Value,
+) -> Result<Value, String> {
+    match request_quote(client, base, token, provider_model_id, capability, payload).await {
+        Err(error) if login_required(&error) => {
+            let refreshed = crate::platform_session::refresh_after_unauthorized(base, token).await?;
+            request_quote(client, base, &refreshed, provider_model_id, capability, payload).await
+        }
+        result => result,
+    }
+}
+
+fn retryable_quote_status(status: StatusCode) -> bool {
+    status.is_server_error()
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+}
+
+async fn quote_retry_delay(attempt: usize) {
+    #[cfg(not(test))]
+    tokio::time::sleep(Duration::from_secs(attempt as u64)).await;
+    #[cfg(test)]
+    {
+        let _ = attempt;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+async fn request_quote(
+    client: &Client,
+    base: &str,
+    token: &str,
+    provider_model_id: Option<&str>,
+    capability: Option<&str>,
+    payload: &Value,
+) -> Result<Value, String> {
+    let request_body = json!({
+        "provider_model_id": provider_model_id,
+        "capability": capability,
+        "payload": {
+            "resolution": payload.get("resolution"),
+            "seconds": payload.get("seconds"),
+            "duration": payload.get("duration"),
+            "params": payload.get("params"),
+        },
+    });
+
+    for attempt in 1..=QUOTE_MAX_ATTEMPTS {
+        match client
+            .post(format!("{base}/tasks/quote"))
+            .bearer_auth(token)
+            .json(&request_body)
+            .timeout(QUOTE_REQUEST_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                let result = response_value(response).await;
+                let retryable = status.is_success() || retryable_quote_status(status);
+                if result.is_ok() || !retryable || attempt == QUOTE_MAX_ATTEMPTS {
+                    return result;
+                }
+                crate::logging::error(
+                    "ai.media.quote_retry",
+                    json!({
+                        "attempt": attempt,
+                        "reason": "response",
+                        "status": status.as_u16(),
+                        "error": result.unwrap_err(),
+                    }),
+                );
+            }
+            Err(error) => {
+                crate::logging::error(
+                    "ai.media.quote_retry",
+                    json!({"attempt": attempt, "reason": "transport", "error": error.to_string()}),
+                );
+                if attempt == QUOTE_MAX_ATTEMPTS {
+                    return Err("暂时查不到所需积分，请稍后再试。本次没有开始，不扣分。".to_owned());
+                }
+            }
+        }
+        quote_retry_delay(attempt).await;
+    }
+
+    unreachable!("quote retry loop always returns on its final attempt")
 }
 
 async fn generate_request(api_base: &str, provider_model_id: Option<&str>, capability: Option<&str>, local_task_id: &str, payload: Value, operation: &str, workflow: Option<(&std::path::Path, &str, String)>) -> Result<Value, String> {
     let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(15 * 60)).build().map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
     let base = api_base_url(api_base)?;
+    crate::platform_session::valid_access_token(&base).await?;
     // Keep the approved account's token paired with its identity. Switching
     // accounts after reservation must never charge the newly signed-in user.
     let workflow_session = if workflow.is_some() { Some(read_platform_session()?.ok_or_else(||crate::workflow_credit::error("请先登录后再开始自动制作。"))?) } else { None };
@@ -102,25 +221,42 @@ async fn generate_request(api_base: &str, provider_model_id: Option<&str>, capab
         }
     }
     let quote = if let Some((root, id, key)) = &workflow {
-        let value = quote(&base, provider_model_id, capability, &payload).await.map_err(|e|crate::workflow_credit::error(&e))?;
+        let value = request_quote_authenticated(
+            &client,
+            &base,
+            &workflow_session.as_ref().unwrap().access_token,
+            provider_model_id,
+            capability,
+            &payload,
+        )
+        .await
+        .map_err(|e|crate::workflow_credit::error(&e))?;
         let user = crate::platform_session::current_user_id()?;
         if workflow_session.as_ref().and_then(|session|session.user_id.as_deref()) != Some(user.as_str()) { return Err(crate::workflow_credit::error("账户已切换，自动制作已停止。")); }
         crate::workflow_credit::reserve(root,id,key,&value,local_task_id)?;
         value
     } else { confirmed_quote(&base, provider_model_id, capability, &payload, operation).await? };
-    let token = if let Some(session)=workflow_session { session.access_token } else { access_token()? };
+    let mut token = if let Some(session)=workflow_session { session.access_token } else { crate::platform_session::valid_access_token(&base).await? };
     let request_id = uuid::Uuid::new_v4().to_string();
     if let Some((root, _, _)) = &workflow {
         crate::workflow_credit::begin_request(root, local_task_id, &base, &request_id)?;
     }
-    let sent = client.post(format!("{base}/tasks")).bearer_auth(&token).json(&json!({
+    let request_body = json!({
         "local_task_id": request_id,
         "idempotency_key": format!("desktop-media-{local_task_id}"),
         "provider_model_id": quote["provider_model_id"],
         "expected_credits": quote["credits"],
         "payload": payload,
-    })).send().await;
-    let response = match sent { Ok(response) => response_value(response).await, Err(e) => Err(format!("无法连接服务端生成接口：{e}")) };
+    });
+    let sent = client.post(format!("{base}/tasks")).bearer_auth(&token).json(&request_body).send().await;
+    let mut response = match sent { Ok(response) => response_value(response).await, Err(e) => Err(format!("无法连接服务端生成接口：{e}")) };
+    if response.as_ref().err().is_some_and(|error| login_required(error)) {
+        token = crate::platform_session::refresh_after_unauthorized(&base, &token).await?;
+        response = match client.post(format!("{base}/tasks")).bearer_auth(&token).json(&request_body).send().await {
+            Ok(response) => response_value(response).await,
+            Err(error) => Err(format!("无法连接服务端生成接口：{error}")),
+        };
+    }
     let created = match response {
         Ok(value) => value,
         Err(e) => {
@@ -163,6 +299,7 @@ async fn recover_request(client: &Client, base: &str, token: &str, request_id: &
 async fn wait_for_result(client: &Client, base: &str, token: &str, mut current: Value,
     workflow: &Option<(&std::path::Path, &str, String)>, local_task_id: &str) -> Result<Value, String> {
     let uncertain = |message: &str| if workflow.is_some() { crate::workflow_credit::error(message) } else { message.to_owned() };
+    let mut active_token = token.to_owned();
     let mut errors = 0;
     let mut missing_result = false;
     // A submitted video may legitimately queue for hours. The original task
@@ -175,7 +312,7 @@ async fn wait_for_result(client: &Client, base: &str, token: &str, mut current: 
                 missing_result = true;
             }
             "FAILED" | "CANCELED" => {
-                if let Some((root,id,key)) = workflow { verify_refund(client,base,token,&current).await?; crate::workflow_credit::release(root,id,key,local_task_id)?; }
+                if let Some((root,id,key)) = workflow { verify_refund(client,base,&active_token,&current).await?; crate::workflow_credit::release(root,id,key,local_task_id)?; }
                 return Err(current.pointer("/task/error_code").and_then(Value::as_str).unwrap_or("服务端生成任务失败").to_owned());
             },
             _ => {}
@@ -185,10 +322,23 @@ async fn wait_for_result(client: &Client, base: &str, token: &str, mut current: 
         tokio::time::sleep(Duration::from_secs((5 + errors * 5).min(30))).await;
         #[cfg(test)]
         tokio::time::sleep(Duration::from_millis(1)).await;
-        let queried = match client.post(format!("{base}/tasks/{task_id}/query")).bearer_auth(token).send().await {
+        let mut queried = match client.post(format!("{base}/tasks/{task_id}/query")).bearer_auth(&active_token).send().await {
             Ok(response) => response_value(response).await,
             Err(e) => Err(e.to_string()),
         };
+        if queried.as_ref().err().is_some_and(|error| login_required(error)) {
+            #[cfg(not(test))]
+            match crate::platform_session::refresh_after_unauthorized(base, &active_token).await {
+                Ok(refreshed) => {
+                    active_token = refreshed;
+                    queried = match client.post(format!("{base}/tasks/{task_id}/query")).bearer_auth(&active_token).send().await {
+                        Ok(response) => response_value(response).await,
+                        Err(error) => Err(error.to_string()),
+                    };
+                }
+                Err(error) => queried = Err(error),
+            }
+        }
         match queried {
             Ok(value) => { current = value; errors = 0; },
             Err(e) => {
@@ -281,6 +431,48 @@ mod tests {
     }
 
     #[test]
+    fn quote_retries_a_transient_server_error_without_submitting_a_task() {
+        let expected = json!({"provider_model_id":"model-1","credits":10});
+        let (base, server) = fixture(vec![
+            ("POST /tasks/quote ", 503, json!({"message":"temporary"})),
+            ("POST /tasks/quote ", 200, expected.clone()),
+        ]);
+        let received = tauri::async_runtime::block_on(request_quote(
+            &Client::new(),
+            &base,
+            "test",
+            Some("model-1"),
+            None,
+            &json!({"duration":10,"resolution":"768p"}),
+        ))
+        .unwrap();
+        assert_eq!(received, expected);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn quote_does_not_retry_a_business_rejection() {
+        let (base, server) = fixture(vec![(
+            "POST /tasks/quote ",
+            400,
+            json!({"message":"unsupported duration"}),
+        )]);
+        let error = tauri::async_runtime::block_on(request_quote(
+            &Client::new(),
+            &base,
+            "test",
+            Some("model-1"),
+            None,
+            &json!({"duration":7}),
+        ))
+        .unwrap_err();
+        let value: Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(value["code"], "PLATFORM_MEDIA_API_ERROR");
+        assert_eq!(value["retryable"], false);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn expired_login_preserves_the_original_remote_task_for_resume() {
         let (base, server) = fixture(vec![(
             "POST /tasks/original/query ",
@@ -337,6 +529,7 @@ mod tests {
         assert_eq!(api_base_url(DEVELOPMENT_API_BASE_URL).unwrap(), DEVELOPMENT_API_BASE_URL);
         assert!(api_base_url("http://example.com/api/v1").is_err());
         assert!(api_base_url("ftp://localhost/api/v1").is_err());
+        assert!(refresh_api_base_url("https://untrusted.example/api/v1").is_err());
     }
 
     #[test]

@@ -3,8 +3,6 @@ use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 
 use crate::ai::VideoUnderstandingResult;
-use crate::platform_session::read_platform_session;
-
 const DEVELOPMENT_API_BASE_URL: &str = "http://localhost:3101/api/v1";
 const PRODUCTION_API_BASE_URL: &str = "https://ai-studio.yuntianxing.net/api/v1";
 fn api_base_url(task_url: Option<&str>) -> Result<String, String> {
@@ -31,12 +29,6 @@ fn client() -> Result<Client, String> {
         .timeout(Duration::from_secs(15 * 60))
         .build()
         .map_err(|error| format!("无法创建平台 API 客户端：{error}"))
-}
-
-fn access_token() -> Result<String, String> {
-    read_platform_session()?
-        .map(|session| session.access_token)
-        .ok_or_else(|| "请先登录平台账户".to_owned())
 }
 
 fn platform_error(status: StatusCode, body: &str) -> String {
@@ -93,10 +85,11 @@ pub async fn understand_public_url(
     video_name: String,
 ) -> Result<VideoUnderstandingResult, String> {
     let client = client()?;
-    let quote = crate::platform_media::confirmed_quote(&api_base_url(configured_api_base_url)?, None, Some("VIDEO_UNDERSTANDING"), &json!({}), "视频链接理解与分镜解析").await?;
-    let token = access_token()?;
+    let base = api_base_url(configured_api_base_url)?;
+    let quote = crate::platform_media::confirmed_quote(&base, None, Some("VIDEO_UNDERSTANDING"), &json!({}), "视频链接理解与分镜解析").await?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
     let response = client
-        .post(format!("{}/tasks/video-understanding/url", api_base_url(configured_api_base_url)?))
+        .post(format!("{base}/tasks/video-understanding/url"))
         .bearer_auth(token)
         .json(&json!({
             "idempotency_key": uuid::Uuid::new_v4().to_string(),
@@ -121,8 +114,9 @@ pub async fn understand_uploaded_file(
 ) -> Result<VideoUnderstandingResult, String> {
     let bytes = tokio::fs::read(path).await.map_err(|error| format!("无法读取压缩后的视频：{error}"))?;
     let client = client()?;
-    let quote = crate::platform_media::confirmed_quote(&api_base_url(configured_api_base_url)?, None, Some("VIDEO_UNDERSTANDING"), &json!({}), "本地视频理解与分镜解析").await?;
-    let token = access_token()?;
+    let base = api_base_url(configured_api_base_url)?;
+    let quote = crate::platform_media::confirmed_quote(&base, None, Some("VIDEO_UNDERSTANDING"), &json!({}), "本地视频理解与分镜解析").await?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
     let part = multipart::Part::bytes(bytes)
         .file_name("compressed-video.mp4")
         .mime_str("video/mp4")
@@ -134,7 +128,7 @@ pub async fn understand_uploaded_file(
         .text("prompt", crate::ai::video_understanding_prompt(prompt))
         .part("video", part);
     let response = client
-        .post(format!("{}/tasks/video-understanding/upload", api_base_url(configured_api_base_url)?))
+        .post(format!("{base}/tasks/video-understanding/upload"))
         .bearer_auth(token)
         .multipart(form)
         .send()

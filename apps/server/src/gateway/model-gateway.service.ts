@@ -29,6 +29,7 @@ interface ScriptAnalysisConfigRow extends RowDataPacket { prompt: string; credit
 
 // Synchronous image models return base64 image bytes in their JSON response.
 const responseLimit = 64 * 1024 * 1024;
+const providerVideoRequestLimit = 48_000_000;
 const geminiVideoMimeTypes = new Set([
   "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/x-flv",
   "video/mpg", "video/webm", "video/wmv", "video/3gpp",
@@ -765,6 +766,12 @@ export class ModelGatewayService {
       throw new ConflictException("本次需要的积分有变化，请重新确认后再开始。现在没有扣分。");
     }
     providerRequest = this.request(target, payload, this.secretCrypto.decrypt(target.api_key_ciphertext));
+    if (target.capability === "VIDEO_GENERATION" && !(providerRequest.body instanceof FormData)) {
+      const requestBytes = Buffer.byteLength(JSON.stringify(providerRequest.body), "utf8");
+      if (requestBytes > providerVideoRequestLimit) {
+        throw new BadRequestException(`视频参考图请求体约 ${(requestBytes / 1_000_000).toFixed(1)}MB，超过 48MB 平台安全线；请升级客户端以自动压缩，或减少参考图`);
+      }
+    }
     } catch (error) {
       // These validation failures occur before any hold, task, or upstream call.
       if (error instanceof BadRequestException || error instanceof ConflictException || error instanceof ServiceUnavailableException) {

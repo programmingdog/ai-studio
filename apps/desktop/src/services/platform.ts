@@ -88,6 +88,7 @@ export class PlatformApiError extends Error {
 
 let sessionCache: PlatformSession | null | undefined;
 let refreshPromise: Promise<PlatformSession> | null = null;
+const SESSION_REFRESH_EARLY_MS = 24 * 60 * 60 * 1000;
 
 function browserSession(): PlatformSession | null {
   try { return JSON.parse(localStorage.getItem(BROWSER_SESSION_KEY) || "null") as PlatformSession | null; } catch { return null; }
@@ -169,9 +170,12 @@ async function publicRequest<T>(path: string, init: RequestInit = {}): Promise<T
 
 async function refreshSession(session: PlatformSession): Promise<PlatformSession> {
   if (!refreshPromise) {
-    refreshPromise = publicRequest<PlatformTokenResult>("/auth/refresh", {
-      method: "POST", body: JSON.stringify({ refresh_token: session.refresh_token, device_name: "AI Video Studio Desktop" }),
-    }).then(async (result) => { const next = sessionFrom(result); await persistPlatformSession(next); return next; })
+    refreshPromise = (isTauri()
+      ? invoke<PlatformSession>("refresh_platform_session", { platformApiBaseUrl, rejectedAccessToken: session.access_token })
+      : publicRequest<PlatformTokenResult>("/auth/refresh", {
+          method: "POST", body: JSON.stringify({ refresh_token: session.refresh_token, device_name: "AI Video Studio Desktop" }),
+        }).then(async (result) => { const next = sessionFrom(result); await persistPlatformSession(next); return next; }))
+      .then(async (next) => { sessionCache = next; return next; })
       .catch(async (error) => { await persistPlatformSession(null); throw error; })
       .finally(() => { refreshPromise = null; });
   }
@@ -181,7 +185,7 @@ async function refreshSession(session: PlatformSession): Promise<PlatformSession
 async function authenticatedRequest<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   let session = await loadPlatformSession();
   if (!session) throw new PlatformApiError("请先登录平台账户", 401);
-  if (new Date(session.expires_at).getTime() <= Date.now() + 30_000) session = await refreshSession(session);
+  if (new Date(session.expires_at).getTime() <= Date.now() + SESSION_REFRESH_EARLY_MS) session = await refreshSession(session);
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${session.access_token}`);
   headers.set("Accept", "application/json");

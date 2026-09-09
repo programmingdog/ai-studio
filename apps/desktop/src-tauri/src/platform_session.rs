@@ -1,6 +1,8 @@
 use keyring::Entry;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde_json::{json, Value};
+use std::sync::{atomic::{AtomicBool, Ordering}, OnceLock};
 use tauri::Manager;
 
 const SERVICE: &str = "AI Video Studio Platform Session";
@@ -8,7 +10,9 @@ const USER: &str = "default";
 const REMEMBERED_CREDENTIALS_SERVICE: &str = "AI Video Studio Remembered Login Credentials";
 const REMEMBERED_CREDENTIALS_USER: &str = "accounts";
 const MAX_REMEMBERED_CREDENTIALS: usize = 10;
+const SESSION_REFRESH_EARLY_SECONDS: i64 = 24 * 60 * 60;
 static USER_CONTEXT_INITIALIZING: AtomicBool = AtomicBool::new(false);
+static SESSION_REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformSession {
@@ -96,6 +100,82 @@ fn validate(session: &PlatformSession) -> Result<(), String> {
         return Err("平台用户标识无效".into());
     }
     Ok(())
+}
+
+fn expires_soon(session: &PlatformSession) -> bool {
+    chrono::DateTime::parse_from_rfc3339(&session.expires_at)
+        .map(|expires_at| expires_at.timestamp() <= chrono::Utc::now().timestamp() + SESSION_REFRESH_EARLY_SECONDS)
+        .unwrap_or(true)
+}
+
+fn refresh_error(status: StatusCode, body: &str) -> String {
+    let value = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+    let message = value.get("message")
+        .and_then(|message| message.as_str().map(str::to_owned).or_else(|| message.as_array().map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("；"))))
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or_else(|| format!("刷新平台登录会话失败：HTTP {}", status.as_u16()));
+    json!({
+        "code": if status == StatusCode::UNAUTHORIZED { "PLATFORM_LOGIN_REQUIRED" } else { "PLATFORM_SESSION_REFRESH_FAILED" },
+        "message": message,
+        "retryable": status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+    }).to_string()
+}
+
+async fn refresh_locked(api_base: &str, rejected_access_token: &str, force: bool) -> Result<PlatformSession, String> {
+    let api_base = crate::platform_media::refresh_api_base_url(api_base)?;
+    let _guard = SESSION_REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    let current = read_platform_session()?.ok_or_else(|| "请先登录平台账户".to_owned())?;
+    // A concurrent browser/Rust request may already have rotated the one-time
+    // refresh token. Always reuse that newer session instead of rotating again.
+    if current.access_token != rejected_access_token || (!force && !expires_soon(&current)) {
+        return Ok(current);
+    }
+    let response = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("无法创建平台登录刷新客户端：{error}"))?
+        .post(format!("{api_base}/auth/refresh"))
+        .json(&json!({"refresh_token": current.refresh_token, "device_name": "AI Video Studio Desktop"}))
+        .send()
+        .await
+        .map_err(|error| format!("无法连接平台登录刷新接口：{error}"))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| format!("读取平台登录刷新响应失败：{error}"))?;
+    if !status.is_success() {
+        if status == StatusCode::UNAUTHORIZED {
+            let _ = delete_platform_session();
+        }
+        return Err(refresh_error(status, &body));
+    }
+    let value = serde_json::from_str::<Value>(&body).map_err(|error| format!("平台登录刷新响应格式无效：{error}"))?;
+    let access_token = value.get("access_token").and_then(Value::as_str).unwrap_or("").to_owned();
+    let refresh_token = value.get("refresh_token").and_then(Value::as_str).unwrap_or("").to_owned();
+    let expires_in = value.get("expires_in").and_then(Value::as_i64).unwrap_or(0);
+    if access_token.is_empty() || refresh_token.is_empty() || expires_in < 60 {
+        return Err("平台登录刷新响应缺少有效令牌".to_owned());
+    }
+    let session = PlatformSession {
+        access_token,
+        refresh_token,
+        expires_at: (chrono::Utc::now() + chrono::Duration::seconds(expires_in)).to_rfc3339(),
+        user_id: value.pointer("/user/id").and_then(Value::as_str).map(str::to_owned).or(current.user_id),
+    };
+    write_platform_session(session.clone())?;
+    Ok(session)
+}
+
+pub(crate) async fn valid_access_token(api_base: &str) -> Result<String, String> {
+    let session = read_platform_session()?.ok_or_else(|| "请先登录平台账户".to_owned())?;
+    if !expires_soon(&session) {
+        return Ok(session.access_token);
+    }
+    let rejected = session.access_token.clone();
+    Ok(refresh_locked(api_base, &rejected, false).await?.access_token)
+}
+
+pub(crate) async fn refresh_after_unauthorized(api_base: &str, rejected_access_token: &str) -> Result<String, String> {
+    Ok(refresh_locked(api_base, rejected_access_token, true).await?.access_token)
 }
 
 #[cfg(not(test))]
@@ -345,6 +425,15 @@ pub async fn save_platform_session(session: PlatformSession) -> Result<(), Strin
 }
 
 #[tauri::command]
+pub async fn refresh_platform_session(
+    platform_api_base_url: String,
+    rejected_access_token: String,
+) -> Result<PlatformSession, String> {
+    let base = crate::platform_media::api_base_url(&platform_api_base_url)?;
+    refresh_locked(&base, &rejected_access_token, true).await
+}
+
+#[tauri::command]
 pub async fn clear_platform_session() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(delete_platform_session)
         .await
@@ -390,4 +479,24 @@ pub async fn delete_remembered_credential(
     })
     .await
     .map_err(|error| format!("删除已保存账号线程失败：{error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(expires_at: chrono::DateTime<chrono::Utc>) -> PlatformSession {
+        PlatformSession {
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            expires_at: expires_at.to_rfc3339(),
+            user_id: Some("test-user".into()),
+        }
+    }
+
+    #[test]
+    fn refreshes_one_day_before_expiry_but_not_earlier() {
+        assert!(expires_soon(&session(chrono::Utc::now() + chrono::Duration::hours(23))));
+        assert!(!expires_soon(&session(chrono::Utc::now() + chrono::Duration::hours(25))));
+    }
 }
