@@ -45,6 +45,10 @@ const PLATFORM_VIDEO_REQUEST_TARGET_BYTES: usize = 45_000_000;
 // The provider validates each decoded image independently at 10 MB. Keep a
 // safety margin in addition to the whole-request limit above.
 const PLATFORM_VIDEO_REFERENCE_TARGET_BYTES: usize = 9_500_000;
+// Provider-side base64 accounting is stricter than the overall JSON request:
+// decoded reference files must total at most 30 MB. Leave headroom and switch
+// to temporary signed HTTPS URLs instead of repeatedly degrading many images.
+const PLATFORM_VIDEO_INLINE_REFERENCE_TOTAL_BYTES: usize = 28_000_000;
 
 pub(crate) fn video_understanding_prompt(prompt: &str) -> String {
     format!("{}\n\n{}", prompt.trim(), VIDEO_DIALOGUE_VISUAL_RULE)
@@ -2447,10 +2451,10 @@ fn load_reference_images(
     project_root: &Path,
     inputs: &[GenerationReferenceAssetInput],
 ) -> Result<Vec<ReferenceImage>, String> {
-    if inputs.len() > 12 {
+    if inputs.len() > 30 {
         return Err(error(
             "AI_REFERENCE_COUNT_INVALID",
-            "一次最多使用 12 张参考图",
+            "一次最多使用 30 张参考图",
             false,
         ));
     }
@@ -2586,7 +2590,45 @@ fn platform_video_payload(
     })
 }
 
-fn fit_platform_video_request(
+fn platform_video_url_payload(
+    prompt: &str,
+    aspect_ratio: &str,
+    duration: f64,
+    resolution: &str,
+    version: Option<&str>,
+    references: &[ReferenceImage],
+    urls: &[String],
+) -> Value {
+    let reference_images = references.iter().zip(urls).map(|(reference, url)| json!({
+        "url": url,
+        "label": reference.label,
+        "type": reference.kind,
+    })).collect::<Vec<_>>();
+    json!({
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "duration": duration,
+        "seconds": duration,
+        "resolution": resolution,
+        "version": version,
+        "reference_images": reference_images,
+        "params": {
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "seconds": duration,
+            "resolution": resolution,
+            "version": version,
+        }
+    })
+}
+
+fn platform_video_requires_upload(references: &[ReferenceImage], inline_payload: &Value) -> bool {
+    references.iter().map(|reference| reference.bytes.len()).sum::<usize>() > PLATFORM_VIDEO_INLINE_REFERENCE_TOTAL_BYTES
+        || serde_json::to_vec(inline_payload).map_or(true, |bytes| bytes.len() > PLATFORM_VIDEO_REQUEST_TARGET_BYTES)
+}
+
+async fn prepare_platform_video_request(
+    api_base: &str,
     prompt: &str,
     aspect_ratio: &str,
     duration: f64,
@@ -2594,15 +2636,28 @@ fn fit_platform_video_request(
     version: Option<&str>,
     references: &mut [ReferenceImage],
 ) -> Result<Value, String> {
-    fit_platform_video_request_to_limit(
-        prompt,
-        aspect_ratio,
-        duration,
-        resolution,
-        version,
-        references,
-        PLATFORM_VIDEO_REQUEST_TARGET_BYTES,
-    )
+    // Apply only the provider's per-file limit first. If the aggregate is too
+    // large, preserve image quality and use temporary URLs for the whole set.
+    let inline_payload = fit_platform_video_request_to_limits(
+        prompt, aspect_ratio, duration, resolution, version, references,
+        usize::MAX, PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
+    )?;
+    if !platform_video_requires_upload(references, &inline_payload) { return Ok(inline_payload); }
+    crate::logging::debug("ai.video.references_server_upload", json!({
+        "reference_count": references.len(),
+        "decoded_bytes": references.iter().map(|reference| reference.bytes.len()).sum::<usize>(),
+        "inline_request_bytes": serde_json::to_vec(&inline_payload).map(|bytes| bytes.len()).unwrap_or(0),
+    }));
+    let mut urls = Vec::with_capacity(references.len());
+    for reference in references.iter() {
+        urls.push(crate::platform_media::upload_reference_image(
+            api_base,
+            reference.bytes.clone(),
+            &reference.mime_type,
+            &reference.filename,
+        ).await?);
+    }
+    Ok(platform_video_url_payload(prompt, aspect_ratio, duration, resolution, version, references, &urls))
 }
 
 fn fit_platform_video_request_to_limit(
@@ -3831,14 +3886,15 @@ async fn execute_video_task(
         let value = if let Some(remote_task_id) = record.remote_task_id.as_deref() {
             crate::platform_media::resume(&record.base_url, remote_task_id, record_id, workflow).await?
         } else {
-            let payload = fit_platform_video_request(
+            let payload = prepare_platform_video_request(
+                &record.base_url,
                 &record.prompt,
                 &record.aspect_ratio,
                 duration,
                 resolution,
                 version,
                 &mut references,
-            )?;
+            ).await?;
             crate::platform_media::generate(&record.base_url, provider_model_id, record_id, payload, &operation, workflow).await?
         };
         media_result_url(&value).or_else(|| find_media_value(&value, &["video_url", "result_url", "url"], 0).map(str::to_owned)).ok_or_else(|| error("AI_VIDEO_RESPONSE_INVALID", "服务端视频生成结果中没有找到视频地址", true))?
@@ -4970,6 +5026,24 @@ mod tests {
         assert_eq!(payload.pointer("/reference_images/0/data_url"), Some(&json!("data:image/png;base64,unique-reference-data")));
         assert!(payload.pointer("/params/reference_images").is_none());
         assert_eq!(payload.to_string().matches("unique-reference-data").count(), 1);
+    }
+
+    #[test]
+    fn many_references_switch_to_server_urls_before_the_provider_base64_total_limit() {
+        let reference = |size| ReferenceImage {
+            label: "参考图".into(), kind: "scene".into(), filename: "scene.png".into(),
+            bytes: vec![1; size], mime_type: "image/png".into(), data_url: "data:image/png;base64,eA==".into(),
+        };
+        let small = vec![reference(1024), reference(2048)];
+        let small_payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &small);
+        assert!(!platform_video_requires_upload(&small, &small_payload));
+        let large = vec![reference(9_500_000), reference(9_500_000), reference(9_500_000)];
+        let large_payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &large);
+        assert!(platform_video_requires_upload(&large, &large_payload));
+        let urls = vec!["https://api.example/a".into(), "https://api.example/b".into(), "https://api.example/c".into()];
+        let url_payload = platform_video_url_payload("测试提示", "16:9", 10.0, "720p", None, &large, &urls);
+        assert_eq!(url_payload.pointer("/reference_images/1/url"), Some(&json!("https://api.example/b")));
+        assert!(url_payload.pointer("/reference_images/1/data_url").is_none());
     }
 
     #[test]

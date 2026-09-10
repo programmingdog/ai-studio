@@ -2,6 +2,7 @@ name: aivs
 services:
   api:
     image: ${API_IMAGE:?Set an immutable API image reference}
+    user: "${RUNTIME_UID:-1000}:${RUNTIME_GID:-1000}"
     # Linux only: share host networking to reach Baota MySQL at 127.0.0.1.
     # BOTH processes are explicitly bound to loopback. Do not add ports mappings.
     network_mode: host
@@ -13,9 +14,12 @@ services:
       BIND_HOST: 127.0.0.1
       PORT: "3101"
       TRUST_PROXY: loopback
+      REFERENCE_IMAGE_DIRECTORY: /var/lib/aivs/reference-images
     init: true
     restart: unless-stopped
     read_only: true
+    volumes:
+      - /opt/aivs/shared/reference-images:/var/lib/aivs/reference-images:rw
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     cap_drop: [ALL]

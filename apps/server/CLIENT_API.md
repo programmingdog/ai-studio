@@ -7,7 +7,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 ```
 
-访问令牌有效期 2 小时，刷新令牌有效期 30 天。刷新与退出都会立即撤销旧会话。
+访问令牌有效期 7 天，刷新令牌有效期 30 天。客户端会在访问令牌临近过期时自动刷新；刷新与退出都会立即撤销旧会话。
 
 ## 注册与登录
 
@@ -52,6 +52,7 @@ Content-Type: application/json
 - `GET /client-config/models`：公开读取客户端可选模型、能力、参数规则及积分价格。
 - `GET /client-config/prompts?channel=stable`：公开读取服务端当前发布的客户端默认提示词；客户端本地手动覆盖优先。
 - `POST /tasks`：创建模型任务。
+- `POST /tasks/reference-images`：以 `multipart/form-data` 上传临时参考图（字段名 `image`，单张最大 10MB），返回短期签名公网 URL。
 - `POST /tasks/video-understanding/url`：把公网 HTTPS 视频 URL 交给后台默认视频理解模型。
 - `POST /tasks/video-understanding/upload`：以 `multipart/form-data` 上传客户端压缩后的视频（字段名 `video`，最大 15MB），交给后台默认视频理解模型。
 - `GET /tasks`：最近 100 条任务元数据。
@@ -74,6 +75,8 @@ Content-Type: application/json
 ```
 
 服务端按模型配置选择供应商和数据库中的启用 API Key，客户端传入的 `model`/`model_id` 会被忽略。非视频模型按次预占积分，视频生成按请求的 `seconds`/`duration` 乘以每秒积分；成功后结算，创建失败或供应商明确失败时释放预占。
+
+视频生成参考图较少且合计较小时，客户端直接使用 Data URL；超过供应商 Base64 合计安全线时，客户端会逐张上传到 `/tasks/reference-images`，再用返回的 HTTPS URL 创建任务。临时图不写入数据库，URL 带签名和有效期；供应商确认创建任务后保留短暂抓取宽限期并自动删除，未使用的上传也会在一小时后清理。
 
 Gemini 视频理解既接受原生 `contents`，也接受简化字段 `video_uri`、`mime_type`、`media_resolution` 和 `prompt`。默认提示会同时分析视频画面、人物对话台词、关键事件与音频信息。
 

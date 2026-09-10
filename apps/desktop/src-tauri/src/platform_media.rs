@@ -124,6 +124,31 @@ pub async fn stop_workflow_quote(api_base: &str, approval_id: &str) -> Result<()
     authenticated_json_request(api_base, &path, json!({})).await.map(|_| ())
 }
 
+pub async fn upload_reference_image(api_base: &str, bytes: Vec<u8>, mime_type: &str, filename: &str) -> Result<String, String> {
+    let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(Duration::from_secs(3 * 60)).build()
+        .map_err(|error| format!("无法创建参考图上传客户端：{error}"))?;
+    let base = api_base_url(api_base)?;
+    let mut token = crate::platform_session::valid_access_token(&base).await?;
+    let send = |access_token: &str| {
+        let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.to_owned())
+            .mime_str(mime_type).map_err(|error| format!("参考图 MIME 类型无效：{error}"))?;
+        let form = reqwest::multipart::Form::new().part("image", part);
+        Ok::<_, String>(client.post(format!("{base}/tasks/reference-images")).bearer_auth(access_token).multipart(form).send())
+    };
+    let mut response = send(&token)?.await.map_err(|error| format!("无法上传参考图：{error}"))?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        token = crate::platform_session::refresh_after_unauthorized(&base, &token).await?;
+        response = send(&token)?.await.map_err(|error| format!("无法上传参考图：{error}"))?;
+    }
+    let value = response_value(response).await?;
+    let url = value["url"].as_str().filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "平台未返回参考图公网地址".to_owned())?;
+    let parsed = Url::parse(url).map_err(|_| "平台返回的参考图地址无效".to_owned())?;
+    let local_http = parsed.scheme() == "http" && matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+    if parsed.scheme() != "https" && !local_http { return Err("参考图公网地址必须使用 HTTPS".to_owned()); }
+    Ok(url.to_owned())
+}
+
 async fn authenticated_json_request(api_base: &str, path: &str, body: Value) -> Result<Value, String> {
     let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(QUOTE_REQUEST_TIMEOUT).build()
         .map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;

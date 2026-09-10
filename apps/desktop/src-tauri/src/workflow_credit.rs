@@ -133,6 +133,14 @@ fn validate(item: &BudgetItem, quote: &Value) -> Result<(), String> {
         || quote["credits"].as_f64() != Some(item.credits) { return Err(error("所需积分或生成内容有变化，自动制作已停止，没有追加扣分。请重新开始。")); }
     Ok(())
 }
+fn missing_item_error(budget: &Budget, key: &str) -> String {
+    crate::logging::error("workflow.quote_item_missing", json!({
+        "item_key": key,
+        "confirmed_item_count": budget.items.len(),
+        "confirmed_item_keys": budget.items.keys().take(50).collect::<Vec<_>>(),
+    }));
+    error("新增内容不在本次确认范围内，自动制作已停止。")
+}
 fn update(root: &Path, id: &str, change: impl FnOnce(&mut Budget) -> Result<(),String>) -> Result<(),String> {
     let mut connection = open(root)?;
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
@@ -146,7 +154,8 @@ fn update(root: &Path, id: &str, change: impl FnOnce(&mut Budget) -> Result<(),S
 pub fn reserve_legacy(root: &Path, id: &str, key: &str, quote: &Value, attempt: &str) -> Result<(),String> {
     update(root,id,|budget| {
         if !budget.active { return Err(error("自动制作已停止，不再扣分。")); }
-        let item = budget.items.get_mut(key).ok_or_else(||error("新增内容不在本次确认范围内，自动制作已停止。"))?;
+        if !budget.items.contains_key(key) { return Err(missing_item_error(budget, key)); }
+        let item = budget.items.get_mut(key).expect("item existence checked above");
         validate(item,quote)?;
         if item.used && item.attempt.as_deref()!=Some(attempt) { return Err(error("这项内容已经提交，暂时无法确认结果。为避免重复扣分，自动制作已停止。")); }
         item.used = true; item.attempt=Some(attempt.to_owned()); Ok(())
@@ -162,7 +171,8 @@ pub fn reserve_locked(root: &Path, id: &str, key: &str, provider_model_id: &str,
     update(root,id,|budget| {
         let Some(approval_id) = budget.server_approval_id.clone() else { return Ok(()); };
         if !budget.active { return Err(error("自动制作已停止，不再扣分。")); }
-        let item = budget.items.get_mut(key).ok_or_else(||error("新增内容不在本次确认范围内，自动制作已停止。"))?;
+        if !budget.items.contains_key(key) { return Err(missing_item_error(budget, key)); }
+        let item = budget.items.get_mut(key).expect("item existence checked above");
         let matches = item.provider_model_id == provider_model_id && item.capability == capability
             && item.resolution.eq_ignore_ascii_case(resolution)
             && match (item.seconds,seconds) { (None,None)=>true,(Some(left),Some(right))=>(left-right).abs()<0.000_001,_=>false };

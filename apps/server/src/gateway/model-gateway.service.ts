@@ -10,6 +10,7 @@ import { WagaModelMetadataService } from "../common/waga-model-metadata.service"
 import { multiplyCredits, storedModelCreditMultiplier } from "../common/model-credit";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
+import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
@@ -293,7 +294,8 @@ function providerFetchError(error: unknown): string {
 export class ModelGatewayService {
   private readonly logger = new Logger(ModelGatewayService.name);
   constructor(@Inject(DatabaseService) private readonly database: DatabaseService, @Inject(SecretCryptoService) private readonly secretCrypto: SecretCryptoService,
-    @Inject(WagaModelMetadataService) private readonly wagaMetadata?: WagaModelMetadataService) {}
+    @Inject(WagaModelMetadataService) private readonly wagaMetadata?: WagaModelMetadataService,
+    @Inject(TemporaryReferenceImageService) private readonly referenceImages?: TemporaryReferenceImageService) {}
 
   private async target(modelId: string): Promise<TargetRow> {
     const rows = await this.database.query<TargetRow[]>(
@@ -956,6 +958,7 @@ export class ModelGatewayService {
     workflowQuoteApprovalId?: string; workflowQuoteItemKey?: string;
   }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
+    const temporaryReferenceTokens = this.referenceImages?.ownedTokens(payload, userId) || [];
     const localTaskId = input.localTaskId || randomUUID(); if (!/^[0-9a-f-]{36}$/i.test(localTaskId)) throw new BadRequestException("local_task_id 必须是 UUID");
     const requestHash = createHash("sha256").update(JSON.stringify(canonical({ model: input.providerModelId, payload }))).digest("hex");
     const replay = await this.existing(userId, input.idempotencyKey, requestHash); if (replay) return replay;
@@ -1115,6 +1118,19 @@ export class ModelGatewayService {
       });
       if (status === "SUCCEEDED") await this.settle(taskId, asObject(result.value).usage);
       else if (status === "FAILED") await this.release(taskId, "FAILED", findString(result.value, ["error", "message", "msg"]) || "PROVIDER_TASK_FAILED");
+      // The supplier has acknowledged the create request. Keep URLs readable
+      // for a short grace period in case media ingestion finishes just after
+      // the response, then remove the files automatically.
+      if (temporaryReferenceTokens.length) {
+        try { await this.referenceImages?.markConsumed(temporaryReferenceTokens); }
+        catch (cleanupError) {
+          // A cleanup failure must never turn an acknowledged remote task into
+          // a failed local create (which could cause an unsafe duplicate retry).
+          this.logger.warn({ event: "task.temporary_references_cleanup_deferred", taskId, localTaskId,
+            referenceCount: temporaryReferenceTokens.length,
+            error: cleanupError instanceof Error ? cleanupError.message : "临时参考图清理失败" });
+        }
+      }
       const rows = await this.database.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? LIMIT 1", [taskId]);
       return { task: this.taskView(rows[0]!), provider_response: result.value };
     } catch (error) { await this.release(taskId, "FAILED", error instanceof Error ? error.message : "PROVIDER_CREATE_FAILED"); throw error; }

@@ -31,7 +31,7 @@ test('restart opens a locked model picker with a fresh exact credit quote', () =
   assert.match(picker, /services\.getMediaCreditQuote/);
 });
 
-test('restart creates a new run and continues only unfinished inactive media', () => {
+test('restart quote covers all unfinished media, including tasks that may fail while still active', () => {
   const start = section(app, 'const startAutoWorkflow =', 'useEffect(() => {');
   assert.match(start, /const restarting = Boolean\(restartWorkflowId\)/);
   assert.match(start, /!restarting && \(imageTasks\.some\(activeImageTask\) \|\| records\.some\(activeGeneration\)\)/);
@@ -40,8 +40,9 @@ test('restart creates a new run and continues only unfinished inactive media', (
   assert.match(start, /正在重启自动制作工作流并检查未完成任务/);
 
   const planned = section(app, 'const planned: PlannedMedia[] = [', 'return <div className="story-page-layout">');
-  assert.match(planned, /!activeImageTask\(latestTargetTask/);
-  assert.match(planned, /!records\.some\(record=>record\.media_type==="video"[^]*activeGeneration\(record\)\)/);
+  assert.doesNotMatch(planned, /!activeImageTask\(latestTargetTask/);
+  assert.doesNotMatch(planned, /activeGeneration\(record\)/);
+  assert.match(planned, /record\.status==="COMPLETED"&&record\.result_relative_path/);
 });
 
 test('every automatic workflow media region exposes a failed-task restart action', () => {

@@ -1,13 +1,16 @@
-import { Body, Controller, Get, Inject, Param, Post, Req, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Get, Header, Inject, Param, Post, Req, Res, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import type { Response } from "express";
 import { asRecord, jsonValue, optionalString, requiredString } from "../common/input";
+import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
 import { UserAuthGuard, UserRequest } from "../user-auth/user-auth.guard";
 import { ModelGatewayService } from "./model-gateway.service";
 
 @Controller("tasks")
 @UseGuards(UserAuthGuard)
 export class ModelGatewayController {
-  constructor(@Inject(ModelGatewayService) private readonly gateway: ModelGatewayService) {}
+  constructor(@Inject(ModelGatewayService) private readonly gateway: ModelGatewayService,
+    @Inject(TemporaryReferenceImageService) private readonly referenceImages: TemporaryReferenceImageService) {}
 
   @Post()
   create(@Req() request: UserRequest, @Body() input: unknown) {
@@ -58,6 +61,16 @@ export class ModelGatewayController {
     });
   }
 
+  @Post("reference-images")
+  @UseInterceptors(FileInterceptor("image", { limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  uploadReferenceImage(
+    @Req() request: UserRequest,
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+  ) {
+    const host = request.get("host") || "";
+    return this.referenceImages.upload(request.user.sub, file, `${request.protocol}://${host}`);
+  }
+
   @Post("video-understanding/upload")
   @UseInterceptors(FileInterceptor("video", { limits: { fileSize: 15 * 1024 * 1024, files: 1 } }))
   createVideoUnderstandingFromUpload(
@@ -106,4 +119,20 @@ export class ModelGatewayController {
 
   @Post(":taskId/query")
   query(@Req() request: UserRequest, @Param("taskId") taskId: string) { return this.gateway.query(request.user.sub, taskId); }
+}
+
+@Controller("temporary-reference-images")
+export class TemporaryReferenceImageController {
+  constructor(@Inject(TemporaryReferenceImageService) private readonly referenceImages: TemporaryReferenceImageService) {}
+
+  @Get(":token")
+  @Header("Cache-Control", "private, no-store, max-age=0")
+  @Header("X-Content-Type-Options", "nosniff")
+  async open(@Param("token") token: string, @Res({ passthrough: true }) response: Response) {
+    const image = await this.referenceImages.open(token);
+    response.type(image.mimeType);
+    response.setHeader("Content-Length", String(image.size));
+    response.setHeader("Content-Disposition", "inline");
+    return new StreamableFile(image.stream);
+  }
 }

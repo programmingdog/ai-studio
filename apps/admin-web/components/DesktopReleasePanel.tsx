@@ -39,6 +39,7 @@ function statusLabel(status: Release["status"]) {
 export function DesktopReleasePanel({ token }: { token: string }) {
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [editing, setEditing] = useState<Release | "new" | null>(null);
+  const [editingNotes, setEditingNotes] = useState<Release | null>(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -77,7 +78,7 @@ export function DesktopReleasePanel({ token }: { token: string }) {
 
   return <>
     <section className="section-card desktop-release-card">
-      <header><div><span className="kicker">SIGNED DESKTOP UPDATES</span><h2>客户端版本管理</h2><p>管理签名更新包、灰度比例和强制升级门槛。发布后的版本不可编辑，避免线上清单被静默替换。</p></div><button className="primary" onClick={() => setEditing("new")}>新建版本</button></header>
+      <header><div><span className="kicker">SIGNED DESKTOP UPDATES</span><h2>客户端版本管理</h2><p>管理签名更新包、灰度比例和强制升级门槛。发布后更新包与签名保持锁定，更新说明可随时修订并由客户端直接读取。</p></div><button className="primary" onClick={() => setEditing("new")}>新建版本</button></header>
       <div className="release-practices"><span>① CI 构建并签名</span><span>② 上传更新包与 .sig</span><span>③ 后台保存为草稿</span><span>④ 小范围验证后发布</span></div>
       {error && <div className="form-error" role="alert">{error}</div>}
       {message && <div className="form-success" role="status">{message}</div>}
@@ -87,13 +88,35 @@ export function DesktopReleasePanel({ token }: { token: string }) {
           <div className="release-detail"><p>{release.notes || "未填写更新说明"}</p><small>更新包：{release.artifacts.map((item) => artifactOptions.find((option) => option.target === item.target && option.arch === item.arch)?.label || `${item.target}/${item.arch}`).join("、") || "尚未配置"}</small><small>灰度 {release.rollout_percent}% · 最低可运行 v{release.min_supported_version} · 发布于 {time(release.published_at)}</small></div>
           <div className="release-actions">
             {release.status === "DRAFT" && <><button className="secondary" disabled={busyId === release.id} onClick={() => setEditing(release)}>编辑</button><button className="primary" disabled={busyId === release.id || !release.artifacts.length} onClick={() => void action(release, "publish")}>发布</button><button className="danger-button" disabled={busyId === release.id} onClick={() => void action(release, "delete")}>删除</button></>}
+            {release.status !== "DRAFT" && <button className="secondary" disabled={busyId === release.id} onClick={() => setEditingNotes(release)}>编辑更新说明</button>}
             {release.status === "PUBLISHED" && <><button className="secondary" disabled={busyId === release.id} onClick={() => void changeRollout(release)}>调整灰度</button><button className="secondary" disabled={busyId === release.id} onClick={() => void action(release, "archive")}>停止分发</button></>}
           </div>
         </article>)}
       </div>}
     </section>
     {editing && <ReleaseEditor token={token} release={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={async (release) => { setEditing(null); setMessage(release.status === "DRAFT" ? `v${release.version} 草稿已保存。` : "版本已保存。"); await load(); }} />}
+    {editingNotes && <ReleaseNotesEditor token={token} release={editingNotes} onClose={() => setEditingNotes(null)} onSaved={async () => { setEditingNotes(null); setMessage(`v${editingNotes.version} 的客户端更新说明已更新。`); await load(); }} />}
   </>;
+}
+
+function ReleaseNotesEditor({ token, release, onClose, onSaved }: { token: string; release: Release; onClose: () => void; onSaved: () => void }) {
+  const [notes, setNotes] = useState(release.notes);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setSaving(true); setError("");
+    try {
+      await apiRequest(`/admin/desktop-releases/${release.id}/notes`, { method: "PATCH", body: JSON.stringify({ notes }) }, token);
+      onSaved();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
+    finally { setSaving(false); }
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) onClose(); }}><form className="modal release-editor-modal" onSubmit={submit}>
+    <header><div><span className="kicker">UPDATE RELEASE NOTES</span><h2>编辑 v{release.version} 更新说明</h2><p>保存后，客户端下次检查该版本时会直接读取这里的内容；更新包和签名不受影响。</p></div><button type="button" disabled={saving} onClick={onClose}>×</button></header>
+    <label>版本升级内容<textarea className="compact-textarea" rows={12} value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={20000} placeholder="修复内容、功能变化和升级注意事项" /></label>
+    {error && <div className="form-error" role="alert">{error}</div>}
+    <footer><button type="button" className="secondary" disabled={saving} onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存更新说明"}</button></footer>
+  </form></div>;
 }
 
 function ReleaseEditor({ token, release, onClose, onSaved }: { token: string; release: Release | null; onClose: () => void; onSaved: (release: Release) => void }) {

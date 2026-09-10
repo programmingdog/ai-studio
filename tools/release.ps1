@@ -329,7 +329,7 @@ function Invoke-Check {
   if ($versions.package -ne $versions.tauri -or $versions.package -ne $versions.cargo) {
     Fail "客户端版本号不一致：package=$($versions.package)，tauri=$($versions.tauri)，cargo=$($versions.cargo)"
   }
-  Invoke-Native git @("diff", "--check")
+  Invoke-Native git @("--no-pager", "diff", "--check")
   Write-Host "客户端当前版本：$($versions.package)"
   Write-Host "发布环境基础检查通过。"
 }
@@ -370,10 +370,10 @@ function Invoke-Prepare {
   if ([bool](Get-PropertyValue $script:Config "run_python_tests" $true)) {
     Invoke-Native npm.cmd @("run", "test:python")
   }
-  Invoke-Native git @("diff", "--check")
+  Invoke-Native git @("--no-pager", "diff", "--check")
   Invoke-Native git @("add", "-A")
-  Invoke-Native git @("diff", "--cached", "--check")
-  $cached = Invoke-Native git @("diff", "--cached", "--name-only") -Capture
+  Invoke-Native git @("--no-pager", "diff", "--cached", "--check")
+  $cached = Invoke-Native git @("--no-pager", "diff", "--cached", "--name-only") -Capture
   if ($cached) {
     Invoke-Native git @("commit", "-m", "Release platform and desktop v$Version")
   } else {

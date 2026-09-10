@@ -46,3 +46,22 @@ test("partial rollout is deterministic and requires a cohort id", async () => {
   const second = await service.selectUpdate({ currentVersion: "1.0.0", channel: "stable", target: "windows", arch: "x86_64", cohort: "same-device" });
   assert.deepEqual(first, second);
 });
+
+test("published release notes remain editable and feed the updater manifest", async () => {
+  const release = { id: "r1", version: "2.0.0", channel: "stable", status: "PUBLISHED", notes: "old", min_supported_version: "0.0.0", rollout_percent: 100, published_at: "2026-01-01" };
+  const writes = [], audits = [];
+  const database = {
+    async query(sql) {
+      if (sql.includes("FROM desktop_releases")) return [release];
+      if (sql.includes("FROM desktop_release_artifacts")) return [{ id: "a1", release_id: "r1", target: "windows", arch: "x86_64", url: "https://cdn.example/r1.zip", signature: "sig" }];
+      return [];
+    },
+    async execute(sql, args) { writes.push({ sql, args }); release.notes = args[0]; return { affectedRows: 1 }; },
+  };
+  const service = new DesktopReleaseService(database, { record: async value => audits.push(value) });
+  await service.updateNotes("admin", "r1", "\n后台修改后的更新内容\n");
+  const selected = await service.selectUpdate({ currentVersion: "1.0.0", channel: "stable", target: "windows", arch: "x86_64", cohort: "device" });
+  assert.equal(selected.notes, "后台修改后的更新内容");
+  assert.match(writes[0].sql, /SET notes/);
+  assert.equal(audits[0].action, "desktop_release.notes");
+});

@@ -463,6 +463,23 @@ const schemas: Record<string, JsonSchema> = {
       prompt: { type: "string" },
     },
   },
+  TemporaryReferenceImageUploadRequest: {
+    type: "object",
+    required: ["image"],
+    properties: {
+      image: { type: "string", format: "binary", description: "PNG、JPEG 或 WebP 参考图，最大 10MB" },
+    },
+  },
+  TemporaryReferenceImageUploadResult: {
+    type: "object",
+    required: ["url", "expires_at", "size", "mime_type"],
+    properties: {
+      url: { type: "string", format: "uri", description: "供应商可临时读取的签名公网 URL" },
+      expires_at: { type: "string", format: "date-time" },
+      size: { type: "integer", minimum: 1, maximum: 10485760 },
+      mime_type: { type: "string", enum: ["image/png", "image/jpeg", "image/webp"] },
+    },
+  },
   VideoUnderstandingUploadRequest: {
     type: "object",
     required: ["idempotency_key", "prompt", "video"],
@@ -855,6 +872,9 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/tasks/workflow-quotes/{approvalId}/stop": {
       post: operation({ id: "stopWorkflowQuote", tag: "模型任务", summary: "停止自动工作流锁价", security: true, parameters: [pathId("approvalId", "自动工作流锁价编号")] }),
+    },
+    "/tasks/reference-images": {
+      post: operation({ id: "uploadTemporaryReferenceImage", tag: "模型任务", summary: "上传视频生成临时参考图", description: "当 Base64 参考图合计接近供应商限制时使用。返回短期签名 URL；供应商确认创建任务后自动清理文件，未使用上传一小时后清理。", security: true, body: ref("TemporaryReferenceImageUploadRequest"), bodyContentType: "multipart/form-data", success: ref("TemporaryReferenceImageUploadResult") }),
     },
     "/tasks/video-understanding/url": {
       post: operation({ id: "understandVideoUrl", tag: "模型任务", summary: "通过公网 URL 理解视频", description: "自动使用后台配置的默认视频理解模型；不会下载或保存视频。", security: true, body: ref("VideoUnderstandingUrlRequest"), success: ref("TaskRelayResult") }),

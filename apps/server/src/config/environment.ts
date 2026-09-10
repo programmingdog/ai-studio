@@ -22,6 +22,7 @@ export interface AppConfig {
   database: DatabaseConfig;
   mailApiTimeoutMs: number;
   recommendedVideoConcurrency: number;
+  referenceImageDirectory: string;
 }
 
 function required(name: string): string {
@@ -77,5 +78,6 @@ export function loadAppConfig(): AppConfig {
     database: loadDatabaseConfig(),
     mailApiTimeoutMs: positiveInteger("MAIL_API_TIMEOUT_MS", 30000),
     recommendedVideoConcurrency: nonNegativeInteger("RECOMMENDED_VIDEO_CONCURRENCY", 4),
+    referenceImageDirectory: process.env.REFERENCE_IMAGE_DIRECTORY?.trim() || "/tmp/aivs-reference-images",
   };
 }

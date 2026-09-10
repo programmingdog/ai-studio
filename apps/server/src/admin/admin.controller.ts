@@ -73,6 +73,12 @@ export class AdminController {
     return this.desktopReleases.updateRollout(request.admin.sub, releaseId, Number(asRecord(input).rollout_percent));
   }
 
+  @Patch("desktop-releases/:releaseId/notes")
+  @RequirePermissions("releases.manage")
+  updateDesktopReleaseNotes(@Req() request: AdminRequest, @Param("releaseId") releaseId: string, @Body() input: unknown) {
+    return this.desktopReleases.updateNotes(request.admin.sub, releaseId, asRecord(input).notes);
+  }
+
   @Delete("desktop-releases/:releaseId")
   @RequirePermissions("releases.manage")
   deleteDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {

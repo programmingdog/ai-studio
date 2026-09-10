@@ -14,4 +14,6 @@ test("admin includes immutable signed desktop release management", () => {
   assert.match(panel, /macOS Apple Silicon/);
   assert.match(panel, /最低可运行版本/);
   assert.match(panel, /发布后版本号、更新包与签名将不可修改/);
+  assert.match(panel, /编辑更新说明/);
+  assert.match(panel, /desktop-releases\/\$\{release\.id\}\/notes/);
 });

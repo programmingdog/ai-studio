@@ -183,6 +183,17 @@ export class DesktopReleaseService {
     return this.get(id);
   }
 
+  async updateNotes(adminUserId: string, id: string, rawNotes: unknown) {
+    const release = await this.release(id);
+    if (typeof rawNotes !== "string") throw new BadRequestException("更新说明必须是文本");
+    const notes = rawNotes.trim();
+    if (notes.length > 20_000) throw new BadRequestException("更新说明不能超过 20000 个字符");
+    await this.database.execute("UPDATE desktop_releases SET notes = ? WHERE id = ?", [notes, id]);
+    await this.audit.record({ adminUserId, action: "desktop_release.notes", entityType: "desktop_release", entityId: id,
+      details: { version: release.version, channel: release.channel, before: release.notes, after: notes } });
+    return this.get(id);
+  }
+
   async removeDraft(adminUserId: string, id: string) {
     const release = await this.release(id);
     if (release.status !== "DRAFT") throw new ConflictException("只能删除尚未发布的草稿");

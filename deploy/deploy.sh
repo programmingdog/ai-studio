@@ -21,6 +21,8 @@ mkdir -p "$releases"
 exec 9>"$root/deploy.lock"
 flock -n 9 || fail 'Another deployment is running.'
 [[ -s "$root/shared/api.env" ]] || fail 'Missing /opt/aivs/shared/api.env'
+mkdir -p "$root/shared/reference-images"
+chmod 700 "$root/shared/reference-images"
 docker compose version >/dev/null
 previous=''
 if [[ -L "$root/current" ]]; then
@@ -59,7 +61,7 @@ release="$releases/$1"
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 mkdir "$release"
 cp "$source_dir/compose.yml" "$source_dir/deploy.sh" "$release/"
-printf 'API_IMAGE=%s\nADMIN_IMAGE=%s\n' "$2" "$3" > "$release/release.env"
+printf 'API_IMAGE=%s\nADMIN_IMAGE=%s\nRUNTIME_UID=%s\nRUNTIME_GID=%s\n' "$2" "$3" "$(id -u)" "$(id -g)" > "$release/release.env"
 # Validate and pull BEFORE stopping the running version.
 compose "$release" config --quiet
 log "Pulling immutable API and admin images; the running release is still untouched."

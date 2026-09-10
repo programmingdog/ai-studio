@@ -182,6 +182,35 @@ test('confirmed text calls reserve and settle the final quoted credits', async (
   assert.equal(state.released.length, 0);
 });
 
+test('acknowledged provider creation marks owned temporary reference URLs for cleanup', async () => {
+  const state = taskHarness();
+  const consumed = [];
+  state.gateway.referenceImages = {
+    ownedTokens: (payload, userId) => {
+      assert.equal(userId, 'user');
+      assert.equal(payload.reference_images[0].url, 'https://api.example/temp');
+      return ['signed-token'];
+    },
+    markConsumed: async tokens => consumed.push(tokens),
+  };
+  await state.gateway.create('user', { idempotencyKey: 'temporary-reference', providerModelId: 'model-1',
+    payload: { prompt: 'test', reference_images: [{ url: 'https://api.example/temp' }] }, expectedCredits: 3 });
+  assert.deepEqual(consumed, [['signed-token']]);
+});
+
+test('temporary reference cleanup failure cannot fail an acknowledged provider task', async () => {
+  const state = taskHarness();
+  state.gateway.referenceImages = {
+    ownedTokens: () => ['signed-token'],
+    markConsumed: async () => { throw new Error('temporary disk unavailable'); },
+  };
+  const result = await state.gateway.create('user', { idempotencyKey: 'cleanup-deferred', providerModelId: 'model-1',
+    payload: { prompt: 'test', reference_images: [{ url: 'https://api.example/temp' }] }, expectedCredits: 3 });
+  assert.equal(result.task.status, 'SUCCEEDED');
+  assert.equal(state.settled.length, 1);
+  assert.equal(state.released.length, 0);
+});
+
 test('parallel media reservations lock the wallet before inspecting task keys', async () => {
   const state = taskHarness();
   const queries = [];
