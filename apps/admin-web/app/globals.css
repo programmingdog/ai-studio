@@ -309,6 +309,22 @@ textarea { resize: vertical; min-height: 130px; font-family: ui-monospace, SFMon
 .product-brand-form label small { color: var(--muted); font-size: 9px; font-weight: 400; line-height: 1.6; }
 .product-brand-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .product-brand-actions small { margin-left: auto; color: var(--muted); font-size: 9px; }
+.client-runtime-config-card { margin-bottom: 18px; background: linear-gradient(135deg, #fff 0%, #fbfdfb 72%, #eef7f2 100%); }
+.client-runtime-form { display: grid; grid-template-columns: minmax(230px, .8fr) minmax(260px, 1fr); gap: 16px; margin-top: 18px; }
+.client-runtime-form > label { min-width: 0; margin: 0; }
+.client-runtime-form > label > small { color: var(--muted); font-size: 9px; font-weight: 400; line-height: 1.65; }
+.client-runtime-source { display: flex !important; align-items: flex-start; gap: 12px !important; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: #f7f8f7; cursor: pointer; }
+.client-runtime-source.selected { border-color: #91c4ae; background: #f0f8f4; }
+.client-runtime-source input { width: 17px; height: 17px; flex: 0 0 17px; margin-top: 2px; accent-color: var(--green); }
+.client-runtime-source span, .client-runtime-source strong, .client-runtime-source small { display: block; }
+.client-runtime-source small { margin-top: 6px; color: var(--muted); font-size: 9px; font-weight: 400; line-height: 1.65; }
+.client-runtime-summary { grid-column: 1/-1; display: grid; gap: 5px; padding: 14px 16px; border: 1px solid #cfe0d8; border-radius: 10px; background: #f4faf7; }
+.client-runtime-summary span { color: var(--muted); font-size: 9px; }
+.client-runtime-summary strong { font-size: 15px; }
+.client-runtime-summary small { color: var(--muted); font-size: 9px; line-height: 1.6; }
+.client-runtime-actions { grid-column: 1/-1; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.client-runtime-actions button { width: auto; }
+.client-runtime-actions small { margin-left: auto; color: var(--muted); font-size: 9px; }
 .auth-method-config-card { margin-bottom: 18px; background: linear-gradient(135deg, #fff 0%, #fbfdfb 72%, #f0f7f4 100%); }
 .ip-access-card { margin-bottom: 18px; background: linear-gradient(135deg, #fff 0%, #fffdfb 72%, #fff5ee 100%); }
 .ip-access-current { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; padding: 12px 14px; border: 1px solid #eadacb; border-radius: 9px; background: #fffaf5; font-size: 11px; }
@@ -344,7 +360,7 @@ textarea { resize: vertical; min-height: 130px; font-family: ui-monospace, SFMon
 .auth-method-actions button { width: auto; }
 .auth-method-actions small { margin-left: auto; color: var(--muted); font-size: 9px; }
 @media (max-width: 760px) { .auth-method-options { grid-template-columns: 1fr; } .auth-method-actions small { width: 100%; margin-left: 0; } }
-@media (max-width: 620px) { .product-brand-form fieldset { grid-template-columns: 1fr; } .product-brand-actions small { width: 100%; margin-left: 0; } }
+@media (max-width: 620px) { .product-brand-form fieldset, .client-runtime-form { grid-template-columns: 1fr; } .product-brand-actions small, .client-runtime-actions small { width: 100%; margin-left: 0; } }
 .desktop-release-card > header { align-items: flex-start; gap: 20px; }
 .desktop-release-card > header > button { flex: none; }
 .release-practices { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }

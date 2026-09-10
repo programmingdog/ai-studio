@@ -118,6 +118,37 @@ const schemas: Record<string, JsonSchema> = {
       english_name: { type: "string", minLength: 1, maxLength: 64, example: "逐梦帧" },
     },
   },
+  ClientRuntimeConfig: {
+    type: "object",
+    required: ["recommended_video_concurrency", "configured_video_concurrency", "environment_default_video_concurrency", "source", "revision"],
+    properties: {
+      recommended_video_concurrency: { type: "integer", minimum: 0, description: "当前实际生效值；0 表示客户端不限制视频并发" },
+      configured_video_concurrency: { type: "integer", minimum: 0, nullable: true, description: "管理后台数据库覆盖值；NULL 表示跟随环境变量" },
+      environment_default_video_concurrency: { type: "integer", minimum: 0, readOnly: true },
+      source: { type: "string", enum: ["database", "environment"] },
+      revision: { type: "integer", minimum: 0, description: "乐观锁版本" },
+      updated_at: { type: "string", format: "date-time" },
+    },
+  },
+  ClientRuntimeConfigRequest: {
+    type: "object",
+    required: ["recommended_video_concurrency", "revision"],
+    properties: {
+      recommended_video_concurrency: { type: "integer", minimum: 0, nullable: true, description: "0 表示不限制；NULL 表示恢复跟随环境变量；不设置业务上限" },
+      revision: { type: "integer", minimum: 0 },
+    },
+  },
+  ClientBootstrap: {
+    type: "object",
+    required: ["api_version", "media_storage", "task_result_mode", "config_merge_policy", "recommended_video_concurrency"],
+    properties: {
+      api_version: { type: "string", example: "v1" },
+      media_storage: { type: "string", example: "client_only" },
+      task_result_mode: { type: "string", example: "string_relay" },
+      config_merge_policy: { type: "string" },
+      recommended_video_concurrency: { type: "integer", minimum: 0, description: "新启动自动工作流使用的推荐视频并发；0 表示不限制" },
+    },
+  },
   DashboardOverview: {
     type: "object",
     required: ["users", "new_users_30d", "active_tasks", "paid_orders", "revenue_fen", "invitations", "commissions", "withdrawals", "payouts", "revenue_trend", "user_growth_trend", "recent", "generated_at"],
@@ -667,7 +698,7 @@ export function createApiDocument(): OpenAPIObject {
       get: operation({ id: "health", tag: "系统", summary: "服务与数据库健康检查", success: ref("Health") }),
     },
     "/client-config/bootstrap": {
-      get: operation({ id: "clientBootstrap", tag: "客户端配置", summary: "读取客户端引导配置" }),
+      get: operation({ id: "clientBootstrap", tag: "客户端配置", summary: "读取客户端引导配置", success: ref("ClientBootstrap") }),
     },
     "/client-config/auth-methods": {
       get: operation({ id: "clientAuthMethods", tag: "客户端配置", summary: "读取客户端可显示的注册登录方式", success: ref("ClientAuthMethods") }),
@@ -873,6 +904,10 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/configs/product-brand": {
       get: operation({ id: "getProductBrand", tag: "管理配置", summary: "读取产品中英文名称", security: true, success: ref("ProductBrand") }),
       patch: operation({ id: "updateProductBrand", tag: "管理配置", summary: "保存产品中英文名称", security: true, body: ref("ProductBrandRequest"), success: ref("ProductBrand") }),
+    },
+    "/admin/configs/client-runtime": {
+      get: operation({ id: "getClientRuntimeConfig", tag: "管理配置", summary: "读取客户端运行配置", security: true, success: ref("ClientRuntimeConfig") }),
+      patch: operation({ id: "updateClientRuntimeConfig", tag: "管理配置", summary: "实时调整客户端视频并发", description: "保存后新启动的自动工作流立即使用；0 表示不限制，NULL 表示跟随 RECOMMENDED_VIDEO_CONCURRENCY。", security: true, body: ref("ClientRuntimeConfigRequest"), success: ref("ClientRuntimeConfig") }),
     },
     "/admin/configs/ip-access-rules": {
       get: operation({ id: "listIpAccessRules", tag: "管理配置", summary: "读取 IP 风控规则和当前管理端 IP", security: true }),

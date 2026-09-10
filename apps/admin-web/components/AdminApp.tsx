@@ -19,6 +19,7 @@ import { useProductBrand } from "@/components/ProductBrand";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { DesktopReleasePanel } from "@/components/DesktopReleasePanel";
 import { ScriptAnalysisConfigPanel, ScriptAnalysisPricingPanel } from "@/components/ScriptAnalysisConfigPanel";
+import { ClientRuntimeConfigPanel } from "@/components/ClientRuntimeConfigPanel";
 
 type View = "overview" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
 type NavigationItem = { id: View; label: string; eyebrow: string };
@@ -151,7 +152,8 @@ export function AdminApp() {
           {view === "overview" && <DashboardOverview token={token} />}
           {view === "product-brand" && <ProductBrandConfigPanel token={token} />}
           {view === "auth-methods" && <AuthMethodsConfigPanel token={token} />}
-          {view === "client-distribution" && <PageTabs label="客户端交付" description="下载入口与版本发布属于同一套客户端交付流程。" tabs={[
+          {view === "client-distribution" && <PageTabs label="客户端配置" description="集中维护客户端运行参数、下载入口与版本发布。" tabs={[
+            { id: "client-runtime", label: "运行参数", content: <ClientRuntimeConfigPanel token={token} /> },
             { id: "software-downloads", label: "下载入口", content: <SoftwareDownloadConfigPanel token={token} /> },
             { id: "client-releases", label: "版本发布", content: <DesktopReleasePanel token={token} /> },
           ]} />}

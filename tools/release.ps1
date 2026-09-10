@@ -103,7 +103,10 @@ function Read-Utf8Text([string]$Path) {
 
 function ConvertTo-Utf8JsonBytes($Value, [int]$Depth = 10) {
   $json = $Value | ConvertTo-Json -Depth $Depth
-  return [Text.UTF8Encoding]::new($false).GetBytes($json)
+  # PowerShell functions enumerate arrays by default. Without the unary comma,
+  # a byte[] becomes Object[] and Windows PowerShell sends "123 13 10 ..."
+  # instead of the JSON payload.
+  return ,([Text.UTF8Encoding]::new($false).GetBytes($json))
 }
 
 function Resolve-RepositoryPath([string]$Path) {
@@ -605,7 +608,33 @@ function Invoke-AivsApi([string]$Path, [string]$Method = "GET", $Body = $null, [
     $parameters.ContentType = "application/json; charset=utf-8"
     $parameters.Body = ConvertTo-Utf8JsonBytes $Body 10
   }
-  return Invoke-RestMethod @parameters
+  try {
+    return Invoke-RestMethod @parameters
+  } catch {
+    $response = $_.Exception.Response
+    $statusCode = if ($response -and $response.StatusCode) { [int]$response.StatusCode } else { 0 }
+    $detail = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { [string]$_.ErrorDetails.Message } else { "" }
+    if (-not $detail -and $response) {
+      try {
+        $stream = $response.GetResponseStream()
+        if ($stream) {
+          $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+          try { $detail = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        }
+      } catch { }
+    }
+    $apiMessage = $detail.Trim()
+    if ($apiMessage) {
+      try {
+        $errorBody = $apiMessage | ConvertFrom-Json
+        $rawMessage = Get-PropertyValue $errorBody "message" (Get-PropertyValue $errorBody "msg" $apiMessage)
+        $apiMessage = if ($rawMessage -is [System.Array]) { @($rawMessage) -join "；" } else { [string]$rawMessage }
+      } catch { }
+    }
+    if (-not $apiMessage) { $apiMessage = $_.Exception.Message }
+    $statusLabel = if ($statusCode) { "HTTP $statusCode" } else { "无 HTTP 状态码" }
+    Fail "API $Method $Path 请求失败（$statusLabel）：$apiMessage"
+  }
 }
 
 function Get-AdminToken {
@@ -613,6 +642,7 @@ function Get-AdminToken {
   $email = [string](Get-PropertyValue $script:Config "admin_email")
   $password = Read-PlainSecret "AIVS_ADMIN_PASSWORD" "请输入生产管理后台密码"
   try {
+    Write-Info "登录生产管理 API：$email"
     $login = Invoke-AivsApi "/admin/auth/login" "POST" @{ email = $email; password = $password }
     if (-not $login.access_token) { Fail "管理后台登录没有返回 access_token" }
     return [string]$login.access_token
@@ -634,6 +664,7 @@ function Invoke-PublishClient {
   if (-not $notes) { Fail "更新说明不能为空" }
   Set-StateValue "release_notes" $notes
   $token = Get-AdminToken
+  Write-Info "读取当前软件下载配置"
   $downloads = Invoke-AivsApi "/admin/distribution/downloads" "GET" $null $token
   $downloadBody = @{
     windows_download_enabled = $true
@@ -642,6 +673,7 @@ function Invoke-PublishClient {
     macos_download_url = [string]$downloads.macos_download_url
     revision = [int]$downloads.revision
   }
+  Write-Info "启用 Windows 下载地址"
   Invoke-AivsApi "/admin/distribution/downloads" "PATCH" $downloadBody $token | Out-Null
 
   $rollout = if ($RolloutPercent -gt 0) { $RolloutPercent } else { [int](Get-PropertyValue $script:Config "initial_rollout_percent" 10) }
@@ -661,10 +693,12 @@ function Invoke-PublishClient {
       signature = $signature
     })
   }
+  Write-Info "读取线上客户端版本记录"
   $releaseResponse = Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token
   $releases = @((Get-ApiCollection $releaseResponse "客户端版本列表接口" "version").items)
   $release = $releases | Where-Object { $_.version -eq $Version -and $_.channel -eq $channel } | Select-Object -First 1
   if (-not $release) {
+    Write-Info "创建 v$Version 客户端版本草稿"
     $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases" "POST" $releaseBody $token) "创建客户端版本接口").item
   } elseif ($release.status -eq "DRAFT") {
     $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)" "PATCH" $releaseBody $token) "更新客户端版本接口").item
@@ -680,6 +714,7 @@ function Invoke-PublishClient {
 
   $shouldPublish = $PublishUpdate -or [bool](Get-PropertyValue $script:Config "publish_update_automatically" $false)
   if ($release.status -eq "DRAFT" -and $shouldPublish) {
+    Write-Info "发布 v$Version 客户端版本"
     $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)/publish" "POST" @{} $token) "发布客户端版本接口").item
   }
   Set-StateValue "desktop_release_id" ([string]$release.id)

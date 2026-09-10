@@ -40,6 +40,26 @@ test("respects actual min_price floor and exact option final_price", () => {
   assert.equal(calculate({}, [group({ base_price: 0.216, min_price: 0.216, option_prices: [option("resolution", "4k", 0.3857, 1.7857)] })])[2].price_cny, 0.3857);
 });
 
+test("Hailuo H3 2K does not fall back to a 768P-only channel base price", () => {
+  const result = calculate({
+    model_code: "hailuo-h3-quannengcankao",
+    capability: "VIDEO_GENERATION",
+    parameter_schema_json: [field("resolution", ["768P", "1080P", "2K", "4K"])],
+    resolution_prices: [{ resolution: "2k", credit_cost: 1 }],
+  }, [
+    group({ group_name: "RQ2", billing_method: "按秒", base_price: 0.072, min_price: 0.072, option_prices: [
+      option("resolution", "1080P", 0.144, 2), option("resolution", "2K", 0.144, 2),
+      option("resolution", "4K", 0.192, 2.6667), option("resolution", "768P", 0.072, 1),
+    ] }),
+    group({ group_name: "DMC-default", billing_method: "按秒", base_price: 0.072, min_price: 0.072,
+      option_prices: [option("resolution", "768P", 0.072, 1)] }),
+  ]);
+  assert.equal(result[0].channel, "RQ2");
+  assert.equal(result[0].parameters.resolution, "2K");
+  assert.equal(result[0].price_cny, 0.144);
+  assert.equal(result[0].credits, 2);
+});
+
 test("omitted price options use base, but unavailable or unsupported schema tiers are skipped", () => {
   const results = calculate({ parameter_schema_json: [field("resolution", [{ value: "1k", currently_unavailable: true }, "2k"])] });
   assert.equal(results[0].status, "SKIPPED");

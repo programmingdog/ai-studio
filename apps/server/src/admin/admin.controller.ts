@@ -8,6 +8,7 @@ import { AuthMethodConfigService } from "../common/auth-method-config.service";
 import { IpAccessControlService } from "../common/ip-access-control.service";
 import { ProductBrandConfigService } from "../common/product-brand-config.service";
 import { DesktopReleaseService, type DesktopReleaseInput } from "../common/desktop-release.service";
+import { ClientRuntimeConfigService } from "../common/client-runtime-config.service";
 import { AdminService } from "./admin.service";
 import { CreditAdminService } from "./credit-admin.service";
 import { ModelTestService } from "./model-test.service";
@@ -32,6 +33,7 @@ export class AdminController {
     @Inject(IpAccessControlService) private readonly ipAccess: IpAccessControlService,
     @Inject(ProductBrandConfigService) private readonly productBrand: ProductBrandConfigService,
     @Inject(DesktopReleaseService) private readonly desktopReleases: DesktopReleaseService,
+    @Inject(ClientRuntimeConfigService) private readonly clientRuntimeConfig: ClientRuntimeConfigService,
   ) {}
 
   @Get("desktop-releases")
@@ -221,6 +223,24 @@ export class AdminController {
     return this.productBrand.update(request.admin.sub, {
       chineseName: requiredString(body, "chinese_name", 32),
       englishName: requiredString(body, "english_name", 64),
+    });
+  }
+
+  @Get("configs/client-runtime")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  getClientRuntimeConfig() {
+    return this.clientRuntimeConfig.get();
+  }
+
+  @Patch("configs/client-runtime")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("configs.manage")
+  updateClientRuntimeConfig(@Req() request: AdminRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.clientRuntimeConfig.update(request.admin.sub, {
+      recommendedVideoConcurrency: body.recommended_video_concurrency,
+      revision: body.revision,
     });
   }
 

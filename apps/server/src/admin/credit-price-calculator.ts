@@ -80,6 +80,17 @@ function dimension(group: Group, schema: unknown, name: string, selected?: strin
   let available = choices(field).filter((choice) => !choice.unavailable);
   if (selected !== undefined) {
     if (available.length && !available.some((choice) => key(choice.value) === key(selected))) throw new Error(`参数 ${name} 不支持所选档位`);
+    // Some providers omit the default/base option and list only surcharges;
+    // in that shape an absent value legitimately uses base_price. If the
+    // channel explicitly names its base option, however, the listed values
+    // form the channel's supported set. Treating another absent resolution as
+    // base can make a 768P-only channel look like the cheapest 2K channel.
+    const hasExplicitBaseOption = priced.some((option) =>
+      (option.final_price !== null && Math.abs(option.final_price - group.base_price!) < 1e-10)
+      || (option.price_multiplier === 1 && (option.price_addition === null || option.price_addition === 0)));
+    if (hasExplicitBaseOption && !priced.some((option) => key(option.option_value) === key(selected))) {
+      throw new Error(`渠道未提供参数 ${name}=${selected} 的报价`);
+    }
     available = [{ value: selected, label: selected, unavailable: false }];
   } else if (!available.length) {
     if (choices(field).length) throw new Error(`参数 ${name} 暂无可用选项`);
