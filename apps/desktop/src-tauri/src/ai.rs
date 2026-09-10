@@ -42,6 +42,9 @@ const VIDEO_DIALOGUE_VISUAL_RULE: &str = "【台词内化到画面的最高优�
 // The upstream media gateway rejects request bodies around 50 MB. Leave room
 // for prompts, labels and transport wrappers after base64 expansion.
 const PLATFORM_VIDEO_REQUEST_TARGET_BYTES: usize = 45_000_000;
+// The provider validates each decoded image independently at 10 MB. Keep a
+// safety margin in addition to the whole-request limit above.
+const PLATFORM_VIDEO_REFERENCE_TARGET_BYTES: usize = 9_500_000;
 
 pub(crate) fn video_understanding_prompt(prompt: &str) -> String {
     format!("{}\n\n{}", prompt.trim(), VIDEO_DIALOGUE_VISUAL_RULE)
@@ -296,6 +299,7 @@ static ACTIVE_IMAGE_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static IMAGE_TASK_LIMITER: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 static ACTIVE_VIDEO_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static VIDEO_TASK_LIMITER: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+static PLATFORM_VIDEO_TASK_LIMITER: OnceLock<Option<Arc<tokio::sync::Semaphore>>> = OnceLock::new();
 static TEXT_AI_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
 fn active_image_tasks() -> &'static Mutex<HashSet<String>> {
@@ -317,6 +321,10 @@ fn active_video_tasks() -> &'static Mutex<HashSet<String>> {
     ACTIVE_VIDEO_TASKS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn configured_video_limiter(concurrency: usize) -> Option<Arc<tokio::sync::Semaphore>> {
+    (concurrency > 0).then(|| Arc::new(tokio::sync::Semaphore::new(concurrency)))
+}
+
 fn text_ai_client() -> Result<Client, String> {
     TEXT_AI_CLIENT
         .get_or_init(|| {
@@ -335,10 +343,20 @@ fn text_ai_client() -> Result<Client, String> {
         .clone()
 }
 
-fn video_task_limiter() -> Arc<tokio::sync::Semaphore> {
-    VIDEO_TASK_LIMITER
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
-        .clone()
+async fn video_task_limiter(api_base: Option<&str>) -> Option<Arc<tokio::sync::Semaphore>> {
+    if let Some(base) = api_base {
+        if let Some(limiter) = PLATFORM_VIDEO_TASK_LIMITER.get() { return limiter.clone(); }
+        let concurrency = crate::platform_media::recommended_video_concurrency(base).await.unwrap_or(4);
+        let configured = configured_video_limiter(concurrency);
+        let limiter = PLATFORM_VIDEO_TASK_LIMITER.get_or_init(|| configured).clone();
+        crate::logging::info("ai.video.concurrency_configured",json!({"concurrency":concurrency,
+            "unlimited":concurrency==0,"source":"server_or_fallback"}));
+        return limiter;
+    }
+    let concurrency = 4;
+    let limiter = VIDEO_TASK_LIMITER.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(concurrency))).clone();
+    crate::logging::info("ai.video.concurrency_configured",json!({"concurrency":concurrency,"source":"fallback"}));
+    Some(limiter)
 }
 
 fn error(code: &str, message: impl Into<String>, retryable: bool) -> String {
@@ -2596,11 +2614,40 @@ fn fit_platform_video_request_to_limit(
     references: &mut [ReferenceImage],
     target_bytes: usize,
 ) -> Result<Value, String> {
+    fit_platform_video_request_to_limits(prompt,aspect_ratio,duration,resolution,version,references,target_bytes,PLATFORM_VIDEO_REFERENCE_TARGET_BYTES)
+}
+
+fn fit_platform_video_request_to_limits(
+    prompt: &str,
+    aspect_ratio: &str,
+    duration: f64,
+    resolution: &str,
+    version: Option<&str>,
+    references: &mut [ReferenceImage],
+    target_bytes: usize,
+    reference_target_bytes: usize,
+) -> Result<Value, String> {
+    let mut individually_compressed = 0usize;
+    for reference in references.iter_mut() {
+        if reference.bytes.len() <= reference_target_bytes { continue; }
+        let original = reference.clone();
+        let mut fitted = None;
+        for (max_edge,quality) in [(2048,85),(1920,82),(1600,78),(1280,72),(1024,65),(768,60),(512,55)] {
+            let compressed=compressed_reference_jpeg(&original,max_edge,quality)?;
+            if compressed.bytes.len() <= reference_target_bytes { fitted=Some(compressed); break; }
+        }
+        *reference=fitted.ok_or_else(||error("AI_VIDEO_REFERENCE_TOO_LARGE",
+            format!("参考图 {} 自动压缩后仍超过单张 {:.1}MB 安全线，请更换或手动压缩后重试",original.label,reference_target_bytes as f64/1_000_000.0),false))?;
+        individually_compressed+=1;
+    }
     let mut payload = platform_video_payload(prompt, aspect_ratio, duration, resolution, version, references);
     let mut request_bytes = serde_json::to_vec(&payload).map_err(|serialize_error| {
         error("AI_VIDEO_REQUEST_INVALID", format!("无法序列化视频生成请求：{serialize_error}"), false)
     })?;
     if request_bytes.len() <= target_bytes {
+        if individually_compressed>0 { crate::logging::debug("ai.video.references_compressed",json!({
+            "request_bytes":request_bytes.len(),"reference_count":references.len(),"individually_compressed":individually_compressed,
+            "per_reference_target_bytes":reference_target_bytes,"request_target_bytes":target_bytes})); }
         return Ok(payload);
     }
 
@@ -3692,7 +3739,7 @@ fn login_error_remote_task_id(message: &str) -> Option<String> {
     serde_json::from_str::<Value>(message).ok().and_then(|value| find(&value))
 }
 
-fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: String) {
+fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: String, api_base: String) {
     let should_spawn = active_video_tasks()
         .lock()
         .map(|mut active| active.insert(record_id.clone()))
@@ -3701,7 +3748,10 @@ fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: Str
         return;
     }
     tauri::async_runtime::spawn(async move {
-        let permit = video_task_limiter().acquire_owned().await;
+        let permit = match video_task_limiter(Some(&api_base)).await {
+            Some(limiter) => limiter.acquire_owned().await.map(Some),
+            None => Ok(None),
+        };
         let result = match permit {
             Ok(_permit) => execute_video_task(&app, &project_root, &record_id).await,
             Err(error) => Err(format!("视频生成并发队列不可用：{error}")),
@@ -3956,7 +4006,7 @@ pub fn create_shot_video_generation(
         &json!({"duration": input.duration, "resolution": resolution, "version": version, "reference_assets": reference_assets, "provider_model_id": input.provider_model_id, "workflow_credit_id": input.workflow_credit_id}),
     )?;
     drop(connection);
-    spawn_video_task(app, project_root, record.id.clone());
+    spawn_video_task(app, project_root, record.id.clone(), record.base_url.clone());
     Ok(record)
 }
 
@@ -4391,7 +4441,10 @@ fn spawn_project_video_composition(
         return;
     }
     tauri::async_runtime::spawn(async move {
-        let permit = video_task_limiter().acquire_owned().await;
+        let permit = match video_task_limiter(None).await {
+            Some(limiter) => limiter.acquire_owned().await.map(Some),
+            None => Ok(None),
+        };
         let result = match permit {
             Ok(_permit) => {
                 let task_root = project_root.clone();
@@ -4727,7 +4780,7 @@ pub(crate) fn resume_project_video_tasks(
         if record.target_type == "project" {
             spawn_project_video_composition(app.clone(), project_root.to_path_buf(), record.id.clone());
         } else {
-            spawn_video_task(app.clone(), project_root.to_path_buf(), record.id.clone());
+            spawn_video_task(app.clone(), project_root.to_path_buf(), record.id.clone(), record.base_url.clone());
         }
     }
     Ok(records)
@@ -4950,6 +5003,24 @@ mod tests {
     }
 
     #[test]
+    fn a_single_oversized_reference_is_compressed_even_when_the_total_request_is_allowed() {
+        let mut pixels=image::RgbImage::new(256,256);
+        for (index,pixel) in pixels.pixels_mut().enumerate(){let value=index as u32;*pixel=image::Rgb([
+            value.wrapping_mul(29) as u8,value.wrapping_mul(71).wrapping_add(value/97) as u8,value.wrapping_mul(113) as u8]);}
+        let mut encoded=Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels).write_to(&mut encoded,image::ImageFormat::Png).unwrap();
+        let bytes=encoded.into_inner();
+        let per_reference_limit=bytes.len()/2;
+        let mut references=vec![ReferenceImage{label:"超大单图".into(),kind:"scene".into(),filename:"scene.png".into(),
+            data_url:format!("data:image/png;base64,{}",BASE64.encode(&bytes)),mime_type:"image/png".into(),bytes}];
+        let request_limit=serde_json::to_vec(&platform_video_payload("测试提示","16:9",10.0,"720p",None,&references)).unwrap().len()*2;
+        let payload=fit_platform_video_request_to_limits("测试提示","16:9",10.0,"720p",None,&mut references,request_limit,per_reference_limit).unwrap();
+        assert!(serde_json::to_vec(&payload).unwrap().len()<=request_limit);
+        assert!(references[0].bytes.len()<=per_reference_limit);
+        assert_eq!(references[0].mime_type,"image/jpeg");
+    }
+
+    #[test]
     fn builds_hailuo_reference_video_payload_with_images_inside_params() {
         let references = vec![
             ReferenceImage {
@@ -5125,5 +5196,11 @@ mod tests {
         .unwrap();
         assert!(probe.has_audio);
         assert!((probe.video_duration - 12.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zero_video_concurrency_means_unlimited_and_positive_values_are_not_clamped() {
+        assert!(configured_video_limiter(0).is_none());
+        assert_eq!(configured_video_limiter(37).unwrap().available_permits(), 37);
     }
 }

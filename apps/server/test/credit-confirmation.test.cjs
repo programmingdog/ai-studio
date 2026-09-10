@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { ModelGatewayService } = require('../dist/gateway/model-gateway.service');
 const factors = { TEXT_GENERATION: 1.5, VIDEO_UNDERSTANDING: 2, IMAGE_GENERATION: 3, VIDEO_GENERATION: 1.25 };
-const target = (capability, extra = {}) => ({ model_id: 'model-1', model_code: 'demo', model_alias: '模型别名', capability, credit_cost: 2, credit_multiplier: factors[capability], supports_async_tasks: 0, ...extra });
+const target = (capability, extra = {}) => ({ provider_id: 'provider-1', provider_code: 'demo-provider', model_id: 'model-1', model_code: 'demo', model_alias: '模型别名', capability, credit_cost: 2, credit_multiplier: factors[capability], supports_async_tasks: 0, ...extra });
 function service() {
   const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 4 }] }, { decrypt: () => 'test-only' });
   gateway.defaultTextTarget = async () => target('TEXT_GENERATION');
@@ -55,6 +55,7 @@ function taskHarness(failure = false) {
   gateway.database.query = async () => [stored];
   gateway.database.transaction = async fn => fn({
     query: async sql => {
+      if (sql.includes('FROM provider_credentials')) return [[{ id: 'credential-1', api_key_ciphertext: 'ciphertext', last_selected_at: null }]];
       if (sql.includes('FROM ai_tasks')) return [[]];
       if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
       if (sql.includes('FROM ledger_entries')) return [[{ balance: 100 }]];
@@ -63,7 +64,7 @@ function taskHarness(failure = false) {
     },
     execute: async (sql, args) => {
       writes.push({ sql, args });
-      if (sql.includes('INSERT INTO ai_tasks')) stored = { id: args[0], user_id: 'user', provider_model_id: args[8], estimated_credits: args[9], status: 'SUCCEEDED' };
+      if (sql.includes('INSERT INTO ai_tasks')) stored = { id: args[0], user_id: 'user', provider_model_id: args[8], provider_credential_id: args[9], estimated_credits: args[12], status: 'SUCCEEDED' };
     },
   });
   gateway.existing = async () => null;
@@ -74,6 +75,103 @@ function taskHarness(failure = false) {
   gateway.release = async (...args) => released.push(args);
   return { gateway, writes, calls, released, settled };
 }
+
+test('provider pool chooses the least-active Key and persists its selection time', async () => {
+  const gateway = service();
+  const writes = [];
+  const connection = {
+    query: async sql => {
+      if (sql.includes('FROM provider_credentials')) return [[
+        { id: 'credential-a', api_key_ciphertext: 'a', last_selected_at: new Date('2026-01-01') },
+        { id: 'credential-b', api_key_ciphertext: 'b', last_selected_at: new Date('2026-01-02') },
+      ]];
+      if (sql.includes('FROM ai_tasks')) return [[
+        { id: 'credential-a', active_count: 3 },
+        { id: 'credential-b', active_count: 1 },
+      ]];
+      throw new Error(sql);
+    },
+    execute: async (sql, args) => writes.push({ sql, args }),
+  };
+  const selected = await gateway.selectProviderCredential(connection, 'provider-1');
+  assert.equal(selected.id, 'credential-b');
+  assert.deepEqual(writes[0].args, ['credential-b']);
+});
+
+test('an explicit pre-creation rate rejection rotates Key, but HTTP 502 does not', async () => {
+  const rotating = taskHarness();
+  rotating.gateway.selectProviderCredential = async (_connection, _providerId, excluded = []) => excluded.length
+    ? { id: 'credential-2', api_key_ciphertext: 'cipher-2', last_selected_at: null }
+    : { id: 'credential-1', api_key_ciphertext: 'cipher-1', last_selected_at: null };
+  rotating.gateway.call = async request => {
+    rotating.calls.push(request);
+    return rotating.calls.length === 1
+      ? { ok: false, status: 429, value: { code: 'RATE_LIMIT', message: 'Key concurrency limit' } }
+      : { ok: true, status: 200, value: { choices: [{ message: { content: '{}' } }] } };
+  };
+  await rotating.gateway.create('user', { idempotencyKey: 'rotate-key', providerModelId: 'model-1', payload: { prompt: 'test' }, expectedCredits: 3 });
+  assert.equal(rotating.calls.length, 2);
+  assert.equal(rotating.writes.filter(write => write.sql.includes('INSERT INTO task_attempts')).length, 2);
+  assert.ok(rotating.writes.some(write => write.sql.includes('UPDATE ai_tasks SET provider_credential_id') && write.args[0] === 'credential-2'));
+
+  const uncertain = taskHarness(true);
+  uncertain.gateway.selectProviderCredential = rotating.gateway.selectProviderCredential;
+  await assert.rejects(uncertain.gateway.create('user', { idempotencyKey: 'no-rotate-502', providerModelId: 'model-1', payload: { prompt: 'test' }, expectedCredits: 3 }), /HTTP 502/);
+  assert.equal(uncertain.calls.length, 1);
+  assert.equal(uncertain.writes.filter(write => write.sql.includes('INSERT INTO task_attempts')).length, 1);
+});
+
+test('a response carrying a remote task id is persisted and never rotates Key even when its HTTP status is 429', async () => {
+  const state = taskHarness();
+  state.gateway.target = async () => target('TEXT_GENERATION', { supports_async_tasks: 1, query_endpoint: '/tasks/{task_id}' });
+  state.gateway.selectProviderCredential = async () => ({ id: 'credential-1', api_key_ciphertext: 'cipher-1', last_selected_at: null });
+  state.gateway.call = async request => {
+    state.calls.push(request);
+    return { ok: false, status: 429, value: { task_id: 'remote-created', message: 'busy' } };
+  };
+  await state.gateway.create('user', { idempotencyKey: 'remote-id-no-rotate', providerModelId: 'model-1', payload: { prompt: 'test' }, expectedCredits: 3 });
+  assert.equal(state.calls.length, 1);
+  assert.equal(state.writes.filter(write => write.sql.includes('INSERT INTO task_attempts')).length, 1);
+  assert.ok(state.writes.some(write => write.sql.includes('UPDATE ai_tasks SET remote_task_id') && write.args[0] === 'remote-created'));
+});
+
+test('polling an async task remains bound to the credential used at creation', async () => {
+  const gateway = service();
+  gateway.database.query = async sql => sql.includes('FROM ai_tasks') ? [{
+    id: 'task-1', user_id: 'user', provider_model_id: 'model-1', provider_credential_id: 'credential-original',
+    remote_task_id: 'remote-1', status: 'PROCESSING', progress: 0,
+  }] : [];
+  gateway.database.execute = async () => ({ affectedRows: 1 });
+  let binding;
+  gateway.boundTarget = async (modelId, credentialId) => {
+    binding = { modelId, credentialId };
+    return target('VIDEO_GENERATION', { query_endpoint: '/tasks/{task_id}', api_key_ciphertext: 'original-cipher', supports_async_tasks: 1 });
+  };
+  gateway.queryRequest = (_target, taskId, key) => ({ taskId, key });
+  gateway.call = async request => {
+    assert.deepEqual(request, { taskId: 'remote-1', key: 'test-only' });
+    return { ok: true, status: 200, value: { status: 'PROCESSING' } };
+  };
+  await gateway.query('user', 'task-1');
+  assert.deepEqual(binding, { modelId: 'model-1', credentialId: 'credential-original' });
+});
+
+test('workflow item uses its confirmed credits after the live model price changes', async () => {
+  const gateway = service();
+  const connection = {
+    query: async sql => {
+      if (sql.includes('FROM workflow_quote_items')) return [[{
+        approval_id: 'approval', item_key: 'video:shot:1', user_id: 'user', approval_status: 'ACTIVE',
+        expires_at: new Date(Date.now() + 60_000), provider_model_id: 'model-1', capability: 'VIDEO_GENERATION',
+        resolution: '1080P', seconds: 5, credits: 12.5, current_task_id: null,
+      }]];
+      throw new Error(sql);
+    },
+  };
+  const locked = await gateway.lockedWorkflowCredits(connection, 'user', 'approval', 'video:shot:1',
+    target('VIDEO_GENERATION'), { resolution: '1080P', seconds: 5 }, 99);
+  assert.equal(locked, 12.5);
+});
 
 test('confirmed text calls reserve and settle the final quoted credits', async () => {
   const state = taskHarness();

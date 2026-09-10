@@ -18,6 +18,8 @@ export class ModelGatewayController {
       providerModelId: requiredString(body, "provider_model_id", 36),
       payload: jsonValue(body, "payload"),
       expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
+      workflowQuoteApprovalId: optionalString(body, "workflow_quote_approval_id", 36),
+      workflowQuoteItemKey: optionalString(body, "workflow_quote_item_key", 191),
     });
   }
 
@@ -29,6 +31,18 @@ export class ModelGatewayController {
       capability: optionalString(body, "capability", 40),
       payload: jsonValue(body, "payload"),
     });
+  }
+
+  @Post("workflow-quotes")
+  approveWorkflowQuote(@Req() request: UserRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    const items = jsonValue(body, "items");
+    return this.gateway.approveWorkflowQuote(request.user.sub, Array.isArray(items) ? items : []);
+  }
+
+  @Post("workflow-quotes/:approvalId/stop")
+  stopWorkflowQuote(@Req() request: UserRequest, @Param("approvalId") approvalId: string) {
+    return this.gateway.stopWorkflowQuote(request.user.sub, approvalId);
   }
 
   @Post("video-understanding/url")

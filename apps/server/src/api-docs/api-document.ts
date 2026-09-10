@@ -408,6 +408,8 @@ const schemas: Record<string, JsonSchema> = {
     properties: {
       local_task_id: { type: "string", format: "uuid", description: "可选的客户端任务 UUID" },
       expected_credits: { type: "number", minimum: 0, description: "用户已确认的 /tasks/quote 报价；与当前价格不一致则拒绝，且不占用或扣除积分" },
+      workflow_quote_approval_id: { type: "string", format: "uuid", description: "自动工作流开始时由服务端签发的锁价编号；必须和 item_key 同时提供" },
+      workflow_quote_item_key: { type: "string", maxLength: 191, description: "锁价清单中的唯一项目编号" },
       idempotency_key: { type: "string", maxLength: 191, example: "model-task-20260829-0001" },
       provider_model_id: { type: "string", format: "uuid", description: "从 /client-config/models 获取" },
       payload: {
@@ -813,6 +815,15 @@ export function createApiDocument(): OpenAPIObject {
         body: { type: "object", required: ["payload"], properties: { provider_model_id: { type: "string" }, capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING"] }, payload: { type: "object", additionalProperties: true } } },
         success: { type: "object", properties: { provider_model_id: { type: "string" }, model_alias: { type: "string" }, capability: { type: "string" }, credits: { type: "number" }, resolution: { type: "string", nullable: true }, seconds: { type: "number", nullable: true }, includes_multiplier: { type: "boolean" } } },
       }),
+    },
+    "/tasks/workflow-quotes": {
+      post: operation({ id: "approveWorkflowQuote", tag: "模型任务", summary: "确认并锁定本次自动工作流报价", security: true,
+        description: "服务端复核模型、分辨率、时长和积分后持久化锁价；后续后台改价只影响新的工作流。",
+        body: { type: "object", required: ["items"], properties: { items: { type: "array", minItems: 1, maxItems: 2000, items: { type: "object", required: ["key", "provider_model_id", "capability", "resolution", "credits"], properties: { key: { type: "string", maxLength: 191 }, provider_model_id: { type: "string", format: "uuid" }, capability: { type: "string", enum: ["IMAGE_GENERATION", "VIDEO_GENERATION"] }, resolution: { type: "string" }, seconds: { type: "number", nullable: true }, credits: { type: "number", minimum: 0 } } } } } },
+      }),
+    },
+    "/tasks/workflow-quotes/{approvalId}/stop": {
+      post: operation({ id: "stopWorkflowQuote", tag: "模型任务", summary: "停止自动工作流锁价", security: true, parameters: [pathId("approvalId", "自动工作流锁价编号")] }),
     },
     "/tasks/video-understanding/url": {
       post: operation({ id: "understandVideoUrl", tag: "模型任务", summary: "通过公网 URL 理解视频", description: "自动使用后台配置的默认视频理解模型；不会下载或保存视频。", security: true, body: ref("VideoUnderstandingUrlRequest"), success: ref("TaskRelayResult") }),

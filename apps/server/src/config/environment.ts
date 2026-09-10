@@ -21,6 +21,7 @@ export interface AppConfig {
   credentialEncryptionKey: string;
   database: DatabaseConfig;
   mailApiTimeoutMs: number;
+  recommendedVideoConcurrency: number;
 }
 
 function required(name: string): string {
@@ -34,6 +35,14 @@ function positiveInteger(name: string, fallback: number): number {
   if (!raw) return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+
+function nonNegativeInteger(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative safe integer`);
   return value;
 }
 
@@ -67,5 +76,6 @@ export function loadAppConfig(): AppConfig {
     credentialEncryptionKey,
     database: loadDatabaseConfig(),
     mailApiTimeoutMs: positiveInteger("MAIL_API_TIMEOUT_MS", 30000),
+    recommendedVideoConcurrency: nonNegativeInteger("RECOMMENDED_VIDEO_CONCURRENCY", 4),
   };
 }

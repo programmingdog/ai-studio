@@ -105,6 +105,39 @@ pub async fn quote(api_base: &str, provider_model_id: Option<&str>, capability: 
     .await
 }
 
+pub async fn approve_workflow_quote(api_base: &str, items: Value) -> Result<Value, String> {
+    authenticated_json_request(api_base, "/tasks/workflow-quotes", json!({"items": items})).await
+}
+
+pub async fn recommended_video_concurrency(api_base: &str) -> Result<usize, String> {
+    let client = Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20)).build()
+        .map_err(|error| format!("无法创建平台配置客户端：{error}"))?;
+    let base = api_base_url(api_base)?;
+    let value = response_value(client.get(format!("{base}/client-config/bootstrap")).send().await
+        .map_err(|error|format!("无法读取平台并发配置：{error}"))?).await?;
+    value["recommended_video_concurrency"].as_u64().and_then(|value|usize::try_from(value).ok())
+        .ok_or_else(||"平台没有返回有效的视频并发配置".to_owned())
+}
+
+pub async fn stop_workflow_quote(api_base: &str, approval_id: &str) -> Result<(), String> {
+    let path = format!("/tasks/workflow-quotes/{approval_id}/stop");
+    authenticated_json_request(api_base, &path, json!({})).await.map(|_| ())
+}
+
+async fn authenticated_json_request(api_base: &str, path: &str, body: Value) -> Result<Value, String> {
+    let client = Client::builder().connect_timeout(Duration::from_secs(30)).timeout(QUOTE_REQUEST_TIMEOUT).build()
+        .map_err(|error| format!("无法创建平台 API 客户端：{error}"))?;
+    let base = api_base_url(api_base)?;
+    let mut token = crate::platform_session::valid_access_token(&base).await?;
+    let send = |access_token: &str| client.post(format!("{base}{path}")).bearer_auth(access_token).json(&body).send();
+    let mut response = send(&token).await.map_err(|error| format!("无法连接平台 API：{error}"));
+    if response.as_ref().ok().is_some_and(|value| value.status() == StatusCode::UNAUTHORIZED) {
+        token = crate::platform_session::refresh_after_unauthorized(&base, &token).await?;
+        response = send(&token).await.map_err(|error| format!("无法连接平台 API：{error}"));
+    }
+    response_value(response?).await
+}
+
 fn login_required(error: &str) -> bool {
     serde_json::from_str::<Value>(error).ok().is_some_and(|value| value["code"] == "PLATFORM_LOGIN_REQUIRED")
 }
@@ -220,21 +253,23 @@ async fn generate_request(api_base: &str, provider_model_id: Option<&str>, capab
             return Ok(result);
         }
     }
+    let mut workflow_lock: Option<crate::workflow_credit::WorkflowReservation> = None;
     let quote = if let Some((root, id, key)) = &workflow {
-        let value = request_quote_authenticated(
-            &client,
-            &base,
-            &workflow_session.as_ref().unwrap().access_token,
-            provider_model_id,
-            capability,
-            &payload,
-        )
-        .await
-        .map_err(|e|crate::workflow_credit::error(&e))?;
         let user = crate::platform_session::current_user_id()?;
         if workflow_session.as_ref().and_then(|session|session.user_id.as_deref()) != Some(user.as_str()) { return Err(crate::workflow_credit::error("账户已切换，自动制作已停止。")); }
-        crate::workflow_credit::reserve(root,id,key,&value,local_task_id)?;
-        value
+        let resolution = payload.get("resolution").or_else(|| payload.pointer("/params/resolution")).and_then(Value::as_str).unwrap_or("");
+        let seconds = payload.get("seconds").or_else(||payload.get("duration")).or_else(||payload.pointer("/params/seconds")).or_else(||payload.pointer("/params/duration")).and_then(Value::as_f64);
+        if let Some(reservation) = crate::workflow_credit::reserve_locked(root,id,key,provider_model_id.unwrap_or(""),
+            capability.unwrap_or_else(|| if seconds.is_some() { "VIDEO_GENERATION" } else { "IMAGE_GENERATION" }),resolution,seconds,local_task_id)? {
+            let value = json!({"provider_model_id":provider_model_id,"capability": if seconds.is_some(){"VIDEO_GENERATION"}else{"IMAGE_GENERATION"},
+                "resolution":resolution,"seconds":seconds,"credits":reservation.credits});
+            workflow_lock = Some(reservation); value
+        } else {
+            let value = request_quote_authenticated(&client,&base,&workflow_session.as_ref().unwrap().access_token,
+                provider_model_id,capability,&payload).await.map_err(|e|crate::workflow_credit::error(&e))?;
+            crate::workflow_credit::reserve_legacy(root,id,key,&value,local_task_id)?;
+            value
+        }
     } else { confirmed_quote(&base, provider_model_id, capability, &payload, operation).await? };
     let mut token = if let Some(session)=workflow_session { session.access_token } else { crate::platform_session::valid_access_token(&base).await? };
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -246,6 +281,8 @@ async fn generate_request(api_base: &str, provider_model_id: Option<&str>, capab
         "idempotency_key": format!("desktop-media-{local_task_id}"),
         "provider_model_id": quote["provider_model_id"],
         "expected_credits": quote["credits"],
+        "workflow_quote_approval_id": workflow_lock.as_ref().map(|lock| lock.approval_id.as_str()),
+        "workflow_quote_item_key": workflow_lock.as_ref().map(|lock| lock.item_key.as_str()),
         "payload": payload,
     });
     let sent = client.post(format!("{base}/tasks")).bearer_auth(&token).json(&request_body).send().await;

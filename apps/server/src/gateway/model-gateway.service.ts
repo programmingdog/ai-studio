@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, randomUUID } from "node:crypto";
-import { RowDataPacket } from "mysql2/promise";
+import { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { parseStoredJson } from "../common/input";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
@@ -19,17 +19,27 @@ interface TargetRow extends RowDataPacket {
 }
 interface TaskRow extends RowDataPacket {
   id: string; user_id: string; local_task_id: string; idempotency_key: string; request_hash: string;
-  task_type: string; logical_model_code: string; provider_id: string; provider_model_id: string;
+  task_type: string; logical_model_code: string; provider_id: string; provider_model_id: string; provider_credential_id: string | null;
   remote_task_id: string | null; status: string; progress: number | string; revision: number;
   estimated_credits: number | string; settled_credits: number | string; error_code: string | null;
   created_at: Date; updated_at: Date; finished_at: Date | null;
 }
 interface ResolutionPriceRow extends RowDataPacket { credit_cost: number | string; }
 interface ScriptAnalysisConfigRow extends RowDataPacket { prompt: string; credit_cost: number | string; revision: number; }
+interface CredentialRow extends RowDataPacket {
+  id: string; api_key_ciphertext: string; last_selected_at: Date | null; active_count?: number | string;
+}
+interface WorkflowQuoteItemRow extends RowDataPacket {
+  approval_id: string; item_key: string; user_id: string; approval_status: string; expires_at: Date;
+  provider_model_id: string; capability: string; resolution: string; seconds: number | string | null;
+  credits: number | string; current_task_id: string | null;
+}
 
 // Synchronous image models return base64 image bytes in their JSON response.
 const responseLimit = 64 * 1024 * 1024;
 const providerVideoRequestLimit = 48_000_000;
+const activeProviderTaskStatuses = ["ACCEPTED", "CREDIT_RESERVED", "SUBMITTING", "PROVIDER_ACCEPTED", "PROCESSING", "UNKNOWN"];
+const workflowQuoteLifetimeDays = 30;
 const geminiVideoMimeTypes = new Set([
   "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/x-flv",
   "video/mpg", "video/webm", "video/wmv", "video/3gpp",
@@ -66,6 +76,19 @@ function applicationError(value: unknown): string | null {
   if (typeof source.code === "number" && source.code !== 0 && source.code !== 200) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
   if (typeof source.code === "string" && source.code.trim() && !["0", "200", "OK", "SUCCESS"].includes(source.code.trim().toUpperCase())) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
   return null;
+}
+function credentialRetryableRejection(status: number, value: unknown): string | null {
+  const remoteTaskId = findString(value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
+  if (remoteTaskId) return null;
+  const detail = applicationError(value) || findString(value, ["error", "message", "msg"]) || "";
+  const normalized = `${findString(value, ["code", "error_code", "type"]) || ""} ${detail}`.toLowerCase();
+  if ([401, 403, 429].includes(status)) return detail || `供应商明确拒绝请求（HTTP ${status}）`;
+  if (!detail) return null;
+  const keyScoped = [
+    "concurr", "rate limit", "too many request", "quota", "api key", "apikey", "unauthorized", "forbidden",
+    "并发", "频率", "限流", "配额", "额度不足", "余额不足", "密钥", "鉴权", "未授权",
+  ].some(marker => normalized.includes(marker));
+  return keyScoped ? detail : null;
 }
 function assertVideoUnderstandingResponse(value: unknown): void {
   let text: string;
@@ -306,6 +329,61 @@ export class ModelGatewayService {
     return target;
   }
 
+  /** Existing async tasks must always be queried with the credential that created them. */
+  private async boundTarget(modelId: string, credentialId: string | null): Promise<TargetRow> {
+    if (!credentialId) return this.target(modelId);
+    const rows = await this.database.query<TargetRow[]>(
+      `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
+              pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
+              pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
+       FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
+       INNER JOIN provider_credentials pc ON pc.provider_id = p.id AND pc.id = ?
+       WHERE pm.id = ? AND pc.api_key_ciphertext IS NOT NULL AND LENGTH(pc.api_key_ciphertext) > 0
+       LIMIT 1`,
+      [credentialId, modelId],
+    );
+    if (!rows.length) throw new ServiceUnavailableException("原任务使用的 API Key 已不存在，无法安全切换其他 Key 查询");
+    const target = rows[0]!;
+    if (target.provider_code === "wagaai" && this.wagaMetadata && wagaProfiles[target.model_code]) {
+      target.parameter_schema_json = await this.wagaMetadata.schema(target.provider_id, target.model_code);
+    }
+    return target;
+  }
+
+  /** Serialize selection per provider, then choose the least-active and least-recently-used Key. */
+  private async selectProviderCredential(connection: PoolConnection, providerId: string, excluded: string[] = []): Promise<CredentialRow> {
+    const [credentials] = await connection.query<CredentialRow[]>(
+      `SELECT id, api_key_ciphertext, last_selected_at
+       FROM provider_credentials
+       WHERE provider_id = ? AND status = 'ACTIVE'
+         AND api_key_ciphertext IS NOT NULL AND LENGTH(api_key_ciphertext) > 0
+       ORDER BY created_at, id FOR UPDATE`,
+      [providerId],
+    );
+    const eligible = credentials.filter(credential => !excluded.includes(credential.id));
+    if (!eligible.length) throw new ServiceUnavailableException(excluded.length ? "所有可用 API Key 均已明确拒绝本次任务" : "供应商没有可用的 API Key");
+    const placeholders = eligible.map(() => "?").join(",");
+    const [counts] = await connection.query<CredentialRow[]>(
+      `SELECT provider_credential_id AS id, COUNT(*) AS active_count
+       FROM ai_tasks
+       WHERE provider_credential_id IN (${placeholders}) AND status IN (${activeProviderTaskStatuses.map(() => "?").join(",")})
+       GROUP BY provider_credential_id`,
+      [...eligible.map(credential => credential.id), ...activeProviderTaskStatuses],
+    );
+    const active = new Map(counts.map(row => [row.id, Number(row.active_count || 0)]));
+    eligible.sort((left, right) => {
+      const load = (active.get(left.id) || 0) - (active.get(right.id) || 0);
+      if (load) return load;
+      const leftTime = left.last_selected_at?.getTime() || 0;
+      const rightTime = right.last_selected_at?.getTime() || 0;
+      return leftTime - rightTime || left.id.localeCompare(right.id);
+    });
+    const selected = eligible[0]!;
+    await connection.execute("UPDATE provider_credentials SET last_selected_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [selected.id]);
+    return selected;
+  }
+
   private async defaultVideoUnderstandingTarget(): Promise<TargetRow> {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
@@ -437,6 +515,107 @@ export class ModelGatewayService {
       billing_unit: target.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
       includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING",
     };
+  }
+
+  async approveWorkflowQuote(userId: string, rawItems: unknown[]): Promise<Record<string, unknown>> {
+    if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 2_000) throw new BadRequestException("自动制作报价清单数量无效");
+    const seen = new Set<string>();
+    const items: Array<{ itemKey: string; providerModelId: string; capability: string; resolution: string; seconds: number | null; credits: number }> = [];
+    for (const raw of rawItems) {
+      const source = asObject(raw);
+      const itemKey = String(source.key || "").trim();
+      const providerModelId = String(source.provider_model_id || "").trim();
+      const capability = String(source.capability || "").trim();
+      const resolution = String(source.resolution || "").trim();
+      const seconds = source.seconds === null || source.seconds === undefined ? null : Number(source.seconds);
+      const expectedCredits = Number(source.credits);
+      if (!itemKey || itemKey.length > 191 || seen.has(itemKey)) throw new BadRequestException("自动制作报价项目编号无效或重复");
+      if (!/^[0-9a-f-]{36}$/i.test(providerModelId) || !["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(capability) || !resolution) throw new BadRequestException("自动制作报价项目内容无效");
+      if (capability === "VIDEO_GENERATION" && (!Number.isFinite(seconds) || Number(seconds) <= 0)) throw new BadRequestException("视频报价时长无效");
+      if (capability === "IMAGE_GENERATION" && seconds !== null) throw new BadRequestException("图片报价不能包含视频时长");
+      if (!Number.isFinite(expectedCredits) || expectedCredits < 0) throw new BadRequestException("自动制作确认积分无效");
+      seen.add(itemKey);
+      const target = await this.target(providerModelId);
+      if (target.capability !== capability) throw new BadRequestException("自动制作模型类型发生变化，请重新选择");
+      const currentCredits = await this.estimatedCredits(target, { resolution, seconds });
+      if (currentCredits !== expectedCredits) {
+        this.logger.warn({ event: "workflow.quote_mismatch", userId, itemKey,
+          original: { credits: expectedCredits, providerModelId, capability, resolution, seconds },
+          current: { credits: currentCredits, providerModelId: target.model_id, capability: target.capability, resolution, seconds } });
+        throw new ConflictException("所需积分发生变化，请查看新价格并重新确认。本次没有开始生成或扣分。");
+      }
+      items.push({ itemKey, providerModelId, capability, resolution, seconds, credits: currentCredits });
+    }
+    const approvalId = randomUUID();
+    await this.database.transaction(async connection => {
+      await connection.execute(
+        `INSERT INTO workflow_quote_approvals (id, user_id, status, expires_at)
+         VALUES (?, ?, 'ACTIVE', DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY))`,
+        [approvalId, userId, workflowQuoteLifetimeDays],
+      );
+      for (const item of items) {
+        await connection.execute(
+          `INSERT INTO workflow_quote_items
+            (approval_id, item_key, provider_model_id, capability, resolution, seconds, credits)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [approvalId, item.itemKey, item.providerModelId, item.capability, item.resolution, item.seconds, item.credits],
+        );
+      }
+    });
+    return { approval_id: approvalId, expires_in_days: workflowQuoteLifetimeDays,
+      items: items.map(item => ({ key: item.itemKey, provider_model_id: item.providerModelId, capability: item.capability,
+        resolution: item.resolution, seconds: item.seconds, credits: item.credits })) };
+  }
+
+  async stopWorkflowQuote(userId: string, approvalId: string): Promise<{ stopped: boolean }> {
+    const result = await this.database.execute(
+      "UPDATE workflow_quote_approvals SET status = 'STOPPED' WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
+      [approvalId, userId],
+    );
+    return { stopped: result.affectedRows > 0 };
+  }
+
+  private async lockedWorkflowCredits(connection: PoolConnection, userId: string, approvalId: string, itemKey: string,
+    target: TargetRow, payload: Record<string, unknown>, currentCredits: number): Promise<number> {
+    const [rows] = await connection.query<WorkflowQuoteItemRow[]>(
+      `SELECT qi.*, qa.user_id, qa.status AS approval_status, qa.expires_at
+       FROM workflow_quote_items qi INNER JOIN workflow_quote_approvals qa ON qa.id = qi.approval_id
+       WHERE qi.approval_id = ? AND qi.item_key = ? LIMIT 1 FOR UPDATE`,
+      [approvalId, itemKey],
+    );
+    const item = rows[0];
+    if (!item || item.user_id !== userId || item.approval_status !== "ACTIVE" || new Date(item.expires_at).getTime() <= Date.now()) {
+      throw new ConflictException("本次自动制作的锁定报价已失效，请重新确认");
+    }
+    const params = asObject(payload.params);
+    const resolution = String(payload.resolution ?? params.resolution ?? "").trim();
+    const seconds = target.capability === "VIDEO_GENERATION" ? Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration) : null;
+    const expectedSeconds = item.seconds === null ? null : Number(item.seconds);
+    const matches = item.provider_model_id === target.model_id && item.capability === target.capability
+      && item.resolution.toLowerCase() === resolution.toLowerCase()
+      && (expectedSeconds === null ? seconds === null : Number.isFinite(seconds) && Math.abs(expectedSeconds - Number(seconds)) < 0.000_001);
+    if (!matches) {
+      this.logger.warn({ event: "workflow.quote_mismatch", userId, approvalId, itemKey,
+        original: { credits: Number(item.credits), providerModelId: item.provider_model_id, capability: item.capability, resolution: item.resolution, seconds: expectedSeconds },
+        current: { credits: currentCredits, providerModelId: target.model_id, capability: target.capability, resolution, seconds } });
+      throw new ConflictException("生成模型、清晰度或时长与已确认内容不同，请重新开始。本次没有扣分。");
+    }
+    if (item.current_task_id) {
+      const [prior] = await connection.query<RowDataPacket[]>(
+        `SELECT t.status, h.status AS hold_status FROM ai_tasks t
+         LEFT JOIN credit_holds h ON h.task_id = t.id WHERE t.id = ? LIMIT 1`,
+        [item.current_task_id],
+      );
+      if (!prior[0] || !["FAILED", "CANCELED"].includes(String(prior[0].status)) || prior[0].hold_status === "ACTIVE" || prior[0].hold_status === "CAPTURED") {
+        throw new ConflictException("这项自动制作内容已经提交，不能重复生成或扣分");
+      }
+    }
+    if (Number(item.credits) !== currentCredits) {
+      this.logger.log({ event: "workflow.locked_quote_used", userId, approvalId, itemKey,
+        original: { credits: Number(item.credits), providerModelId: item.provider_model_id, capability: item.capability, resolution: item.resolution, seconds: expectedSeconds },
+        current: { credits: currentCredits, providerModelId: target.model_id, capability: target.capability, resolution, seconds } });
+    }
+    return Number(item.credits);
   }
 
   async createVideoUnderstanding(userId: string, input: { idempotencyKey: string; prompt: string; videoUrl: string; mimeType?: string; providerModelId?: string; expectedCredits?: number }): Promise<Record<string, unknown>> {
@@ -747,31 +926,66 @@ export class ModelGatewayService {
     });
   }
 
+  private async rotateProviderCredential(taskId: string, target: TargetRow, failedAttemptId: string, reason: string,
+    excludedCredentialIds: string[], nextAttemptNumber: number): Promise<{ credential: CredentialRow; attemptId: string }> {
+    let credential!: CredentialRow;
+    const attemptId = randomUUID();
+    await this.database.transaction(async connection => {
+      await connection.execute(
+        "UPDATE task_attempts SET status = 'FAILED', error_code = ?, finished_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND finished_at IS NULL",
+        [reason.slice(0, 100), failedAttemptId],
+      );
+      credential = await this.selectProviderCredential(connection, target.provider_id, excludedCredentialIds);
+      await connection.execute(
+        "UPDATE ai_tasks SET provider_credential_id = ?, status = 'SUBMITTING', error_code = NULL, revision = revision + 1 WHERE id = ? AND remote_task_id IS NULL",
+        [credential.id, taskId],
+      );
+      await connection.execute(
+        `INSERT INTO task_attempts
+          (id, task_id, attempt_number, provider_id, provider_model_id, provider_credential_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'SUBMITTING')`,
+        [attemptId, taskId, nextAttemptNumber, target.provider_id, target.model_id, credential.id],
+      );
+    });
+    return { credential, attemptId };
+  }
+
   async create(userId: string, input: {
     localTaskId?: string; idempotencyKey: string; providerModelId: string; payload: unknown; expectedCredits?: number;
     creditOverride?: number; taskType?: string; validateResponse?: (value: unknown) => unknown;
+    workflowQuoteApprovalId?: string; workflowQuoteItemKey?: string;
   }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
     const localTaskId = input.localTaskId || randomUUID(); if (!/^[0-9a-f-]{36}$/i.test(localTaskId)) throw new BadRequestException("local_task_id 必须是 UUID");
     const requestHash = createHash("sha256").update(JSON.stringify(canonical({ model: input.providerModelId, payload }))).digest("hex");
     const replay = await this.existing(userId, input.idempotencyKey, requestHash); if (replay) return replay;
     let target: TargetRow;
-    let credits: number;
-    let providerRequest: ReturnType<ModelGatewayService["request"]>;
+    let currentCredits: number;
     try {
-    target = await this.target(input.providerModelId);
-    credits = input.creditOverride === undefined ? await this.estimatedCredits(target, payload) : Number(input.creditOverride);
-    if (!Number.isFinite(credits) || credits < 0) throw new ServiceUnavailableException("任务积分价格配置无效");
-    if (input.expectedCredits !== undefined && (!Number.isFinite(input.expectedCredits) || input.expectedCredits < 0 || input.expectedCredits !== credits)) {
-      throw new ConflictException("本次需要的积分有变化，请重新确认后再开始。现在没有扣分。");
-    }
-    providerRequest = this.request(target, payload, this.secretCrypto.decrypt(target.api_key_ciphertext));
-    if (target.capability === "VIDEO_GENERATION" && !(providerRequest.body instanceof FormData)) {
-      const requestBytes = Buffer.byteLength(JSON.stringify(providerRequest.body), "utf8");
-      if (requestBytes > providerVideoRequestLimit) {
-        throw new BadRequestException(`视频参考图请求体约 ${(requestBytes / 1_000_000).toFixed(1)}MB，超过 48MB 平台安全线；请升级客户端以自动压缩，或减少参考图`);
+      target = await this.target(input.providerModelId);
+      currentCredits = input.creditOverride === undefined ? await this.estimatedCredits(target, payload) : Number(input.creditOverride);
+      if (!Number.isFinite(currentCredits) || currentCredits < 0) throw new ServiceUnavailableException("任务积分价格配置无效");
+      const hasWorkflowQuote = Boolean(input.workflowQuoteApprovalId || input.workflowQuoteItemKey);
+      if (hasWorkflowQuote && (!input.workflowQuoteApprovalId || !input.workflowQuoteItemKey)) throw new BadRequestException("自动制作锁定报价参数不完整");
+      if (!hasWorkflowQuote && input.expectedCredits !== undefined
+        && (!Number.isFinite(input.expectedCredits) || input.expectedCredits < 0 || input.expectedCredits !== currentCredits)) {
+        const params = asObject(payload.params);
+        this.logger.warn({ event: "task.quote_mismatch", userId, localTaskId,
+          original: { credits: input.expectedCredits, providerModelId: input.providerModelId,
+            resolution: payload.resolution ?? params.resolution ?? null,
+            seconds: payload.seconds ?? payload.duration ?? params.seconds ?? params.duration ?? null },
+          current: { credits: currentCredits, providerModelId: target.model_id, capability: target.capability,
+            resolution: payload.resolution ?? params.resolution ?? null,
+            seconds: payload.seconds ?? payload.duration ?? params.seconds ?? params.duration ?? null } });
+        throw new ConflictException("本次需要的积分有变化，请重新确认后再开始。现在没有扣分。");
       }
-    }
+      const validatedRequest = this.request(target, payload, "");
+      if (target.capability === "VIDEO_GENERATION" && !(validatedRequest.body instanceof FormData)) {
+        const requestBytes = Buffer.byteLength(JSON.stringify(validatedRequest.body), "utf8");
+        if (requestBytes > providerVideoRequestLimit) {
+          throw new BadRequestException(`视频参考图请求体约 ${(requestBytes / 1_000_000).toFixed(1)}MB，超过 48MB 平台安全线；请升级客户端以自动压缩，或减少参考图`);
+        }
+      }
     } catch (error) {
       // These validation failures occur before any hold, task, or upstream call.
       if (error instanceof BadRequestException || error instanceof ConflictException || error instanceof ServiceUnavailableException) {
@@ -780,7 +994,10 @@ export class ModelGatewayService {
       }
       throw error;
     }
-    const taskId = randomUUID(); const attemptId = randomUUID();
+    const taskId = randomUUID();
+    let attemptId: string = randomUUID();
+    let selectedCredential!: CredentialRow;
+    let credits = currentCredits;
     for (let reservationAttempt = 0; ; reservationAttempt++) {
       try {
         await this.database.transaction(async (connection) => {
@@ -793,16 +1010,31 @@ export class ModelGatewayService {
         if (existingRows.length) { if (existingRows[0]!.request_hash !== requestHash) throw new ConflictException("相同幂等键对应了不同请求"); throw new ConflictException("任务正在由相同幂等请求创建"); }
         const [balanceRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) balance FROM ledger_entries WHERE account_id = ?", [accounts[0]!.id]);
         const [holdRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+        if (input.workflowQuoteApprovalId && input.workflowQuoteItemKey) {
+          credits = await this.lockedWorkflowCredits(connection, userId, input.workflowQuoteApprovalId, input.workflowQuoteItemKey, target, payload, currentCredits);
+        }
         if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) < credits) throw new ConflictException("可用积分不足");
+        selectedCredential = await this.selectProviderCredential(connection, target.provider_id);
         await connection.execute(
           `INSERT INTO ai_tasks
             (id, user_id, local_task_id, idempotency_key, request_hash, task_type, logical_model_code,
-             provider_id, provider_model_id, status, estimated_credits)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?)`,
-          [taskId, userId, localTaskId, input.idempotencyKey, requestHash, input.taskType || target.capability, target.model_code, target.provider_id, target.model_id, credits],
+             provider_id, provider_model_id, provider_credential_id, workflow_quote_approval_id, workflow_quote_item_key,
+             status, estimated_credits)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?)`,
+          [taskId, userId, localTaskId, input.idempotencyKey, requestHash, input.taskType || target.capability,
+            target.model_code, target.provider_id, target.model_id, selectedCredential.id,
+            input.workflowQuoteApprovalId || null, input.workflowQuoteItemKey || null, credits],
         );
         await connection.execute("INSERT INTO credit_holds (id, user_id, task_id, amount, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 MINUTE))", [randomUUID(), userId, taskId, credits]);
-        await connection.execute("INSERT INTO task_attempts (id, task_id, attempt_number, provider_id, provider_model_id, status) VALUES (?, ?, 1, ?, ?, 'SUBMITTING')", [attemptId, taskId, target.provider_id, target.model_id]);
+        await connection.execute(
+          `INSERT INTO task_attempts (id, task_id, attempt_number, provider_id, provider_model_id, provider_credential_id, status)
+           VALUES (?, ?, 1, ?, ?, ?, 'SUBMITTING')`,
+          [attemptId, taskId, target.provider_id, target.model_id, selectedCredential.id],
+        );
+        if (input.workflowQuoteApprovalId && input.workflowQuoteItemKey) {
+          await connection.execute("UPDATE workflow_quote_items SET current_task_id = ? WHERE approval_id = ? AND item_key = ?",
+            [taskId, input.workflowQuoteApprovalId, input.workflowQuoteItemKey]);
+        }
         });
         break;
       } catch (error) {
@@ -820,14 +1052,56 @@ export class ModelGatewayService {
           throw new ServiceUnavailableException({ code: "TASK_NOT_SUBMITTED", retryable: true,
             message: "服务暂时繁忙，本次没有开始生成，也没有扣分，可以重试。" });
         }
+        // Application rejections raised inside the reservation transaction are
+        // known to have rolled back before any provider request. Make that
+        // proof explicit so the desktop can safely free its workflow slot.
+        if (error instanceof HttpException) {
+          const response = error.getResponse();
+          const message = typeof response === "string" ? response
+            : typeof response === "object" && response && "message" in response
+              ? String((response as { message?: unknown }).message || error.message) : error.message;
+          throw new BadRequestException({ code: "TASK_NOT_SUBMITTED", retryable: false,
+            message: `${message} 本次没有开始生成，也没有扣分。` });
+        }
         throw error;
       }
     }
+    const attemptedCredentialIds: string[] = [];
+    let attemptNumber = 1;
     try {
-      const result = await this.call(providerRequest);
-      if (!result.ok) throw new BadGatewayException(`供应商创建任务返回 HTTP ${result.status}`);
-      const upstreamError = applicationError(result.value);
-      if (upstreamError) throw new BadGatewayException(`供应商创建任务失败：${upstreamError}`);
+      let result: Awaited<ReturnType<ModelGatewayService["call"]>>;
+      while (true) {
+        const providerRequest = this.request(target, payload, this.secretCrypto.decrypt(selectedCredential.api_key_ciphertext));
+        result = await this.call(providerRequest);
+        const upstreamError = applicationError(result.value);
+        const returnedRemoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
+        const retryReason = credentialRetryableRejection(result.status, result.value);
+        if ((!result.ok || upstreamError) && retryReason) {
+          attemptedCredentialIds.push(selectedCredential.id);
+          try {
+            const rotated = await this.rotateProviderCredential(taskId, target, attemptId, retryReason,
+              attemptedCredentialIds, ++attemptNumber);
+            selectedCredential = rotated.credential;
+            attemptId = rotated.attemptId;
+            this.logger.warn({ event: "task.credential_rotated", taskId, localTaskId, attemptNumber, reason: retryReason });
+            continue;
+          } catch (rotationError) {
+            if (!(rotationError instanceof ServiceUnavailableException)) throw rotationError;
+          }
+        }
+        // A remote task id is durable evidence that the provider may have
+        // accepted the task. Keep this credential binding and let polling
+        // resolve the final state; never switch Key or claim a safe refund.
+        if ((!result.ok || upstreamError) && returnedRemoteTaskId && Number(target.supports_async_tasks)) {
+          this.logger.warn({ event: "task.provider_accepted_with_error_response", taskId, localTaskId,
+            providerCredentialId: selectedCredential.id, remoteTaskId: returnedRemoteTaskId,
+            httpStatus: result.status, upstreamError: upstreamError || null });
+          break;
+        }
+        if (!result.ok) throw new BadGatewayException(`供应商创建任务返回 HTTP ${result.status}`);
+        if (upstreamError) throw new BadGatewayException(`供应商创建任务失败：${upstreamError}`);
+        break;
+      }
       if (!Number(target.supports_async_tasks) && input.validateResponse) input.validateResponse(result.value);
       const remoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
       let status = Number(target.supports_async_tasks) ? upstreamStatus(result.value, "PROVIDER_ACCEPTED") : "SUCCEEDED";
@@ -866,7 +1140,7 @@ export class ModelGatewayService {
     const taskRows = await this.database.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? AND user_id = ? LIMIT 1", [taskId, userId]); const task = taskRows[0];
     if (!task) throw new NotFoundException("任务不存在");
     if (task.status === "SUCCEEDED" && task.remote_task_id) {
-      const target = await this.target(task.provider_model_id);
+      const target = await this.boundTarget(task.provider_model_id, task.provider_credential_id);
       if (target.query_endpoint) {
         const result = await this.call(this.queryRequest(target, task.remote_task_id, this.secretCrypto.decrypt(target.api_key_ciphertext)));
         if (!result.ok) throw new BadGatewayException(`供应商查询结果返回 HTTP ${result.status}`);
@@ -875,7 +1149,7 @@ export class ModelGatewayService {
     }
     if (["SUCCEEDED", "FAILED", "CANCELED"].includes(task.status)) return { task: this.taskView(task), terminal: true };
     if (!task.remote_task_id) throw new ConflictException("任务尚未获得供应商任务 ID");
-    const target = await this.target(task.provider_model_id);
+    const target = await this.boundTarget(task.provider_model_id, task.provider_credential_id);
     try {
       const result = await this.call(this.queryRequest(target, task.remote_task_id, this.secretCrypto.decrypt(target.api_key_ciphertext)));
       if (!result.ok) throw new BadGatewayException(`供应商查询任务返回 HTTP ${result.status}`);

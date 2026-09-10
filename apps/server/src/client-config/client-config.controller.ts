@@ -5,6 +5,7 @@ import { ClientConfigService } from "./client-config.service";
 import { AuthMethodConfigService } from "../common/auth-method-config.service";
 import { ProductBrandConfigService } from "../common/product-brand-config.service";
 import { DesktopReleaseService } from "../common/desktop-release.service";
+import { EnvironmentService } from "../config/environment.service";
 
 @Controller("client-config")
 export class ClientConfigController {
@@ -14,15 +15,18 @@ export class ClientConfigController {
     @Inject(AuthMethodConfigService) private readonly authMethodsConfig: AuthMethodConfigService,
     @Inject(ProductBrandConfigService) private readonly productBrandConfig: ProductBrandConfigService,
     @Inject(DesktopReleaseService) private readonly desktopReleases: DesktopReleaseService,
+    @Inject(EnvironmentService) private readonly environment: EnvironmentService,
   ) {}
 
   @Get("bootstrap")
+  @Header("Cache-Control", "no-store")
   bootstrap(): Record<string, unknown> {
     return {
       api_version: "v1",
       media_storage: "client_only",
       task_result_mode: "string_relay",
       config_merge_policy: "LOCAL_OVERRIDE_THEN_SERVER_DEFAULT_THEN_CLIENT_FALLBACK",
+      recommended_video_concurrency: this.environment.values.recommendedVideoConcurrency,
     };
   }
 

@@ -17,7 +17,16 @@ pub struct BudgetItem {
     attempt: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
-struct Budget { user: String, active: bool, items: BTreeMap<String, BudgetItem> }
+struct Budget {
+    user: String,
+    active: bool,
+    items: BTreeMap<String, BudgetItem>,
+    #[serde(default)]
+    api_base: String,
+    #[serde(default)]
+    server_approval_id: Option<String>,
+}
+pub struct WorkflowReservation { pub approval_id: String, pub item_key: String, pub credits: f64 }
 pub fn error(message: &str) -> String { json!({"code":"WORKFLOW_CREDIT_STOPPED", "message":message, "retryable":false}).to_string() }
 fn open(root: &Path) -> Result<rusqlite::Connection, String> {
     let connection = crate::database::open(root)?;
@@ -86,25 +95,33 @@ pub fn failure_message(root: &Path, id: &str, key: &str, attempt: &str, message:
 pub async fn approve_workflow_credit(project_path: String, items: Vec<BudgetItem>, api_base: String) -> Result<String, String> {
     let user = crate::platform_session::current_user_id()?;
     let mut approved = BTreeMap::new();
-    let mut quotes: BTreeMap<String, Value> = BTreeMap::new();
-    for mut item in items {
+    for item in &items {
         if item.key.is_empty() || !item.credits.is_finite() || item.credits < 0.0 || !matches!(item.capability.as_str(), "IMAGE_GENERATION" | "VIDEO_GENERATION") { return Err(error("费用信息不完整，请重新开始。")); }
-        let cache_key = format!("{}|{}|{:?}", item.provider_model_id, item.resolution, item.seconds);
-        let quote = if let Some(value) = quotes.get(&cache_key) { value.clone() } else {
-            let value = crate::platform_media::quote(&api_base, Some(&item.provider_model_id), None, &json!({"resolution":item.resolution,"seconds":item.seconds})).await?;
-            quotes.insert(cache_key, value.clone()); value
-        };
-        validate(&item, &quote)?;
+        if approved.insert(item.key.clone(), item.clone()).is_some() { return Err(error("生成清单有重复，请重新开始。")); }
+    }
+    let response = crate::platform_media::approve_workflow_quote(&api_base, serde_json::to_value(&items).map_err(|e|e.to_string())?).await?;
+    let server_approval_id = response["approval_id"].as_str().filter(|value|!value.is_empty())
+        .ok_or_else(||error("服务端没有返回自动制作报价编号，请重新开始。"))?.to_owned();
+    let returned = response["items"].as_array().ok_or_else(||error("服务端返回的自动制作报价无效，请重新开始。"))?;
+    let returned_by_key = returned.iter().filter_map(|quote|quote["key"].as_str().map(|key|(key,quote))).collect::<BTreeMap<_,_>>();
+    approved.clear();
+    for mut item in items {
+        let quote = returned_by_key.get(item.key.as_str()).ok_or_else(||error("服务端返回的自动制作报价不完整，请重新开始。"))?;
+        if let Err(message) = validate(&item,quote) {
+            crate::logging::error("workflow.quote_mismatch", json!({"item_key":item.key,"original":item,"current":quote}));
+            let _ = crate::platform_media::stop_workflow_quote(&api_base,&server_approval_id).await;
+            return Err(message);
+        }
         item.used = false;
         item.attempt = None;
-        if approved.insert(item.key.clone(), item).is_some() { return Err(error("生成清单有重复，请重新开始。")); }
+        approved.insert(item.key.clone(), item);
     }
     if crate::platform_session::current_user_id()? != user { return Err(error("账户已切换，请重新开始。")); }
     let id = uuid::Uuid::new_v4().to_string();
     let stored_id = id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let connection = open(Path::new(&project_path))?;
-        let data = serde_json::to_string(&Budget { user, active: true, items: approved }).map_err(|e|e.to_string())?;
+        let data = serde_json::to_string(&Budget { user, active: true, items: approved, api_base, server_approval_id: Some(server_approval_id) }).map_err(|e|e.to_string())?;
         connection.execute("INSERT INTO workflow_credit_approvals(id,data) VALUES (?,?)", rusqlite::params![stored_id, data]).map_err(|e|e.to_string())?;
         Ok::<_,String>(())
     }).await.map_err(|e|e.to_string())??;
@@ -126,7 +143,7 @@ fn update(root: &Path, id: &str, change: impl FnOnce(&mut Budget) -> Result<(),S
     tx.execute("UPDATE workflow_credit_approvals SET data=? WHERE id=?", rusqlite::params![serde_json::to_string(&budget).map_err(|e|e.to_string())?, id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())
 }
-pub fn reserve(root: &Path, id: &str, key: &str, quote: &Value, attempt: &str) -> Result<(),String> {
+pub fn reserve_legacy(root: &Path, id: &str, key: &str, quote: &Value, attempt: &str) -> Result<(),String> {
     update(root,id,|budget| {
         if !budget.active { return Err(error("自动制作已停止，不再扣分。")); }
         let item = budget.items.get_mut(key).ok_or_else(||error("新增内容不在本次确认范围内，自动制作已停止。"))?;
@@ -135,12 +152,49 @@ pub fn reserve(root: &Path, id: &str, key: &str, quote: &Value, attempt: &str) -
         item.used = true; item.attempt=Some(attempt.to_owned()); Ok(())
     })
 }
+#[cfg(test)]
+fn reserve(root: &Path, id: &str, key: &str, quote: &Value, attempt: &str) -> Result<(),String> {
+    reserve_legacy(root,id,key,quote,attempt)
+}
+pub fn reserve_locked(root: &Path, id: &str, key: &str, provider_model_id: &str, capability: &str,
+    resolution: &str, seconds: Option<f64>, attempt: &str) -> Result<Option<WorkflowReservation>,String> {
+    let mut reservation = None;
+    update(root,id,|budget| {
+        let Some(approval_id) = budget.server_approval_id.clone() else { return Ok(()); };
+        if !budget.active { return Err(error("自动制作已停止，不再扣分。")); }
+        let item = budget.items.get_mut(key).ok_or_else(||error("新增内容不在本次确认范围内，自动制作已停止。"))?;
+        let matches = item.provider_model_id == provider_model_id && item.capability == capability
+            && item.resolution.eq_ignore_ascii_case(resolution)
+            && match (item.seconds,seconds) { (None,None)=>true,(Some(left),Some(right))=>(left-right).abs()<0.000_001,_=>false };
+        if !matches {
+            crate::logging::error("workflow.quote_mismatch",json!({"item_key":key,
+                "original":{"credits":item.credits,"provider_model_id":item.provider_model_id,"capability":item.capability,"resolution":item.resolution,"seconds":item.seconds},
+                "current":{"credits":Value::Null,"provider_model_id":provider_model_id,"capability":capability,"resolution":resolution,"seconds":seconds}}));
+            return Err(error("生成模型、清晰度或时长与已确认内容不同，自动制作已停止，没有追加扣分。请重新开始。"));
+        }
+        if item.used && item.attempt.as_deref()!=Some(attempt) { return Err(error("这项内容已经提交，暂时无法确认结果。为避免重复扣分，自动制作已停止。")); }
+        item.used=true; item.attempt=Some(attempt.to_owned());
+        reservation=Some(WorkflowReservation{approval_id,item_key:key.to_owned(),credits:item.credits}); Ok(())
+    })?;
+    Ok(reservation)
+}
 pub fn release(root: &Path, id: &str, key: &str, attempt: &str) -> Result<(),String> {
     update(root,id,|budget| { if let Some(item)=budget.items.get_mut(key) { if item.attempt.as_deref()==Some(attempt) { item.used=false; item.attempt=None; } } Ok(()) })
 }
 #[tauri::command]
 pub async fn stop_workflow_credit(project_path: String, id: String) -> Result<(),String> {
-    tauri::async_runtime::spawn_blocking(move || update(Path::new(&project_path), &id, |budget| {budget.active=false; Ok(())})).await.map_err(|e|e.to_string())?
+    let remote = tauri::async_runtime::spawn_blocking(move || {
+        let mut remote=None;
+        update(Path::new(&project_path), &id, |budget| { budget.active=false;
+            if let Some(approval)=budget.server_approval_id.clone(){remote=Some((budget.api_base.clone(),approval));} Ok(()) })?;
+        Ok::<_,String>(remote)
+    }).await.map_err(|e|e.to_string())??;
+    if let Some((api_base,approval_id))=remote {
+        if let Err(message)=crate::platform_media::stop_workflow_quote(&api_base,&approval_id).await {
+            crate::logging::error("workflow.quote_stop_failed",json!({"approval_id":approval_id,"error":message}));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -177,7 +231,7 @@ mod tests {
         let root=std::env::temp_dir().join(format!("aivs-budget-test-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let item=BudgetItem{key:"image:scene:S1".into(),provider_model_id:"model".into(),resolution:"2K".into(),seconds:None,credits:2.5,capability:"IMAGE_GENERATION".into(),used:false,attempt:None};
-        let data=serde_json::to_string(&Budget{user:"test-user".into(),active:true,items:BTreeMap::from([(item.key.clone(),item)])}).unwrap();
+        let data=serde_json::to_string(&Budget{user:"test-user".into(),active:true,items:BTreeMap::from([(item.key.clone(),item)]),api_base:String::new(),server_approval_id:None}).unwrap();
         open(&root).unwrap().execute("INSERT INTO workflow_credit_approvals VALUES ('grant',?)",[data]).unwrap();
         (root,json!({"provider_model_id":"model","resolution":"2K","seconds":null,"credits":2.5,"capability":"IMAGE_GENERATION"}))
     }
@@ -204,6 +258,41 @@ mod tests {
         }
         assert!(reserve(&root,"grant","image:scene:S2",&quote,"attempt").is_err());
         reserve(&root,"grant","image:scene:S1",&quote,"attempt").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn server_locked_approval_keeps_the_confirmed_credits_without_requoting() {
+        let (root, _) = setup();
+        update(&root, "grant", |budget| {
+            budget.server_approval_id = Some("server-approval".into());
+            Ok(())
+        })
+        .unwrap();
+        let reservation = reserve_locked(
+            &root,
+            "grant",
+            "image:scene:S1",
+            "model",
+            "IMAGE_GENERATION",
+            "2K",
+            None,
+            "attempt",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(reservation.approval_id, "server-approval");
+        assert_eq!(reservation.credits, 2.5);
+        assert!(reserve_locked(
+            &root,
+            "grant",
+            "image:scene:S1",
+            "model",
+            "IMAGE_GENERATION",
+            "4K",
+            None,
+            "other-attempt",
+        )
+        .is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
