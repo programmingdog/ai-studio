@@ -1,7 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, ServiceUnavailableException } from "@nestjs/common";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { EnvironmentService } from "../config/environment.service";
 
@@ -71,9 +70,22 @@ export class TemporaryReferenceImageService implements OnModuleInit, OnModuleDes
     for (const state of ["pending", "consumed"] as const) {
       const filePath = this.path(payload.n, state);
       try {
-        const info = await stat(filePath);
-        if (!info.isFile() || info.size !== payload.s) break;
-        return { stream: createReadStream(filePath), mimeType: payload.m, size: payload.s };
+        const handle = await open(filePath, "r");
+        try {
+          const info = await handle.stat();
+          if (!info.isFile() || info.size !== payload.s) {
+            await handle.close();
+            break;
+          }
+          // Open the file descriptor before returning the stream. The task may
+          // concurrently rename `.pending` to `.consumed`; a descriptor remains
+          // readable across that rename, whereas a path-based stream can fail
+          // with ENOENT before its asynchronous open finishes.
+          return { stream: handle.createReadStream(), mimeType: payload.m, size: payload.s };
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          throw error;
+        }
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     throw new BadRequestException("临时参考图不存在或已清理");
