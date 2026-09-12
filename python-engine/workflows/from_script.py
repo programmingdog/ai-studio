@@ -15,7 +15,7 @@ STORYBOARD_SEGMENT = re.compile(
 )
 STRUCTURED_FIELDS = {
     "屏幕比例", "景别", "机位", "运镜", "画风设定", "场景引用", "场景锁定",
-    "人物引用", "人物锁定", "画面", "口播台词", "动作", "声音", "约束",
+    "人物引用", "人物锁定", "画面", "口播台词", "动作", "声音", "约束", "生成时长",
 }
 
 
@@ -216,6 +216,24 @@ def _bounded_shot_ranges(start_time: float, end_time: float) -> List[Tuple[float
     return ranges
 
 
+def _fixed_source_ranges(start_time: float, end_time: float, fixed_seconds: float) -> List[Tuple[float, float]]:
+    """Keep source positions truthful while making every generated shot fixed-length.
+
+    A final source slice may contain less material than the generation duration. It
+    remains the final source range, while the canonical shot duration stays fixed.
+    """
+    start_time = round(start_time, 3)
+    end_time = round(max(start_time + 0.5, end_time), 3)
+    ranges: List[Tuple[float, float]] = []
+    cursor = start_time
+    while end_time - cursor > fixed_seconds:
+        next_time = round(cursor + fixed_seconds, 3)
+        ranges.append((cursor, next_time))
+        cursor = next_time
+    ranges.append((cursor, end_time))
+    return ranges
+
+
 def _storyboard_seconds(value: str) -> float:
     """Parse seconds as well as MM:SS / HH:MM:SS storyboard positions."""
     parts = value.replace("：", ":").split(":")
@@ -349,6 +367,16 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
     project_aspect_ratio = "16:9" if "16:9" in project_aspect_ratio else "9:16"
     project_visual_style = str(spec.get("visual_style") or "") or project_fields.get("画风设定") or first_shot_fields.get("画风设定") or "写实电影感"
 
+    configured_fixed_seconds = spec.get("storyboard_fixed_seconds")
+    fixed_seconds = float(configured_fixed_seconds) if configured_fixed_seconds in (6, 10, 15) else None
+    if fixed_seconds is None:
+        declared_durations = []
+        for _, fields in parsed_blocks:
+            match = re.search(r"(?:^|\D)(6|10|15)(?:\.0+)?\s*秒", fields.get("生成时长", ""))
+            if match:
+                declared_durations.append(float(match.group(1)))
+        if len(declared_durations) == len(parsed_blocks) and len(set(declared_durations)) == 1:
+            fixed_seconds = declared_durations[0]
     shots: List[Dict[str, Any]] = []
     for match, fields in parsed_blocks:
         start_time = _storyboard_seconds(match.group(2))
@@ -434,7 +462,12 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
             "status": "DRAFT",
             "locked": False,
         }
-        for bounded_start, bounded_end in _bounded_shot_ranges(start_time, end_time):
+        source_ranges = (
+            _fixed_source_ranges(start_time, end_time, fixed_seconds)
+            if fixed_seconds is not None
+            else _bounded_shot_ranges(start_time, end_time)
+        )
+        for bounded_start, bounded_end in source_ranges:
             localized_visual = _localize_visual_timeline(
                 visual, start_time, end_time, bounded_start, bounded_end
             )
@@ -456,7 +489,7 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
             shot.update({
                 "id": "A-{0:03d}".format(len(shots) + 1),
                 "source_time_range": {"start": bounded_start, "end": bounded_end},
-                "duration": round(bounded_end - bounded_start, 2),
+                "duration": fixed_seconds if fixed_seconds is not None else round(bounded_end - bounded_start, 2),
             })
             shots.append(shot)
 
@@ -497,7 +530,11 @@ def _structured_storyboard(text: str, spec: Dict[str, Any]) -> Optional[Dict[str
         "scenes": scenes,
         "sequences": sequences,
         "shots": shots,
-        "metadata": {"script_type": "STRUCTURED_VIDEO_STORYBOARD", "source_character_count": len(text)},
+        "metadata": {
+            "script_type": "STRUCTURED_VIDEO_STORYBOARD",
+            "source_character_count": len(text),
+            **({"storyboard_fixed_seconds": fixed_seconds} if fixed_seconds is not None else {}),
+        },
     }
 
 

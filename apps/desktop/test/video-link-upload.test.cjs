@@ -10,12 +10,14 @@ assert.notEqual(start, -1, 'missing link video task');
 assert.notEqual(end, -1, 'missing local video task boundary');
 const linkTask = tasks.slice(start, end);
 
-test('link understanding downloads and uploads real video bytes instead of forwarding a temporary CDN URL', () => {
+test('link understanding supports both direct URL and validated upload submission modes', () => {
+  assert.match(linkTask, /video_submission_mode == "url"/);
+  assert.match(linkTask, /understand_public_url/);
   assert.match(linkTask, /download_douyin_auto/);
   assert.match(linkTask, /download_douyin\(/);
   assert.match(linkTask, /compress_video_for_inline_analysis/);
+  assert.match(linkTask, /probe_video_metadata/);
   assert.match(linkTask, /understand_uploaded_file/);
-  assert.doesNotMatch(linkTask, /understand_public_url/);
 });
 
 test('temporary source and compressed video copies are cleaned after analysis', () => {

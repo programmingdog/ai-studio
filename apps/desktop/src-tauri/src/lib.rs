@@ -5,7 +5,6 @@ mod background;
 mod character_state_policy;
 mod commands;
 mod credit_confirmation;
-mod workflow_credit;
 mod database;
 mod douyin_tasks;
 mod guided_idea;
@@ -13,17 +12,18 @@ mod jobs;
 mod logging;
 mod long_idea;
 mod media_tools;
-mod platform_session;
 mod platform_media;
 mod platform_script_analysis;
+mod platform_session;
 mod platform_video_understanding;
 mod project;
-mod shot_policy;
 mod script_tasks;
+mod shot_policy;
 mod story_policy;
 mod tray;
 mod video_remix;
 mod worker;
+mod workflow_credit;
 
 use tauri::Manager;
 
@@ -33,7 +33,10 @@ pub fn run() {
     #[cfg(debug_assertions)]
     let updater_public_key = option_env!("AIVS_UPDATER_PUBLIC_KEY");
     #[cfg(not(debug_assertions))]
-    let updater_public_key = Some(env!("AIVS_UPDATER_PUBLIC_KEY", "AIVS_UPDATER_PUBLIC_KEY is required for release builds"));
+    let updater_public_key = Some(env!(
+        "AIVS_UPDATER_PUBLIC_KEY",
+        "AIVS_UPDATER_PUBLIC_KEY is required for release builds"
+    ));
     if let Some(public_key) = updater_public_key {
         updater = updater.pubkey(public_key);
     }
@@ -66,6 +69,10 @@ pub fn run() {
             commands::delete_asset_library,
             commands::load_project,
             commands::save_text_file,
+            commands::save_png_file,
+            commands::list_promotion_posters,
+            commands::import_promotion_poster,
+            commands::read_promotion_poster_data_url,
             commands::import_project_reference_image,
             logging::list_application_logs,
             commands::develop_idea,

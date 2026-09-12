@@ -31,7 +31,7 @@ test('media quote includes resolution price, seconds and model multiplier', asyn
   assert.equal((await gateway.quote({ providerModelId: 'image', payload: { resolution: '2K' } })).credits, 12);
   gateway.target = async () => target('VIDEO_GENERATION');
   const quote = await gateway.quote({ providerModelId: 'video', payload: { resolution: '1080P', seconds: 7.5 } });
-  assert.equal(quote.credits, 37.5);
+  assert.equal(quote.credits, 38);
   assert.equal(quote.seconds, 7.5);
   assert.equal(quote.resolution, '1080P');
   await assert.rejects(gateway.quote({ providerModelId: 'video', payload: { resolution: '1080P' } }), /seconds|duration/);
@@ -276,6 +276,18 @@ test('empty video understanding result releases the hold instead of charging a f
   await assert.rejects(
     state.gateway.create('user', { idempotencyKey: 'video-empty', providerModelId: 'model-1', payload: { prompt: '分析视频' }, expectedCredits: 4 }),
     /没有返回可用的视频解析结果/,
+  );
+  assert.equal(state.released.length, 1);
+  assert.equal(state.settled.length, 0);
+});
+
+test('provider no-data-blocks response is translated into an actionable video error', async () => {
+  const state = taskHarness();
+  state.gateway.target = async () => target('VIDEO_UNDERSTANDING');
+  state.gateway.call = async () => ({ ok: true, status: 200, value: { success: false, message: 'Did not get any data blocks' } });
+  await assert.rejects(
+    state.gateway.create('user', { idempotencyKey: 'video-no-data', providerModelId: 'model-1', payload: { prompt: '分析视频' }, expectedCredits: 4 }),
+    /视频理解模型未读取到有效视频数据/,
   );
   assert.equal(state.released.length, 1);
   assert.equal(state.settled.length, 0);

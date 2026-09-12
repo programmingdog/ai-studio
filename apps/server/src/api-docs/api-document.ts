@@ -230,11 +230,12 @@ const schemas: Record<string, JsonSchema> = {
     },
   },
   DistributionConfig: {
-    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "minimum_withdrawal_fen", "invitation_reward_credits", "invitation_anti_abuse_enabled", "invitation_daily_reward_limit", "invitation_monthly_reward_limit", "invite_page_base_url", "windows_download_enabled", "windows_download_url", "macos_download_enabled", "macos_download_url", "revision"],
+    type: "object", required: ["enabled", "direct_rate_bps", "indirect_rate_bps", "commission_notice", "minimum_withdrawal_fen", "invitation_reward_credits", "invitation_anti_abuse_enabled", "invitation_daily_reward_limit", "invitation_monthly_reward_limit", "invite_page_base_url", "windows_download_enabled", "windows_download_url", "macos_download_enabled", "macos_download_url", "revision"],
     properties: {
       enabled: { type: "boolean", default: false },
       direct_rate_bps: { type: "integer", minimum: 0, maximum: 10000, description: "基点，1000=10%；与间接比例合计不超过10000" },
       indirect_rate_bps: { type: "integer", minimum: 0, maximum: 10000 },
+      commission_notice: { type: "string", maxLength: 1000, description: "客户端分润与提现页面展示的自定义提示" },
       minimum_withdrawal_fen: { type: "integer", minimum: 1, maximum: 1000000000, default: 10000, description: "人民币分" },
       invitation_reward_credits: { type: "integer", minimum: 0, maximum: 100000, default: 20 },
       invitation_anti_abuse_enabled: { type: "boolean", default: false, description: "开启后注册只创建待确认奖励，首笔真实支付后按日/月人数限额发放；关闭时注册成功立即发放" },
@@ -270,7 +271,7 @@ const schemas: Record<string, JsonSchema> = {
   ReferralSummary: {
     type: "object", properties: {
       invite_code: { type: "string" }, invitation_url: { type: "string", format: "uri", description: "带 invite_code 查询参数的独立下载页链接" }, invited_count: { type: "integer" }, reward_credits: { type: "integer" }, invitation_reward_credits: { type: "integer" }, invitation_anti_abuse_enabled: { type: "boolean" },
-      enabled: { type: "boolean" }, direct_rate_bps: { type: "integer" }, indirect_rate_bps: { type: "integer" }, minimum_withdrawal_fen: { type: "integer" },
+      enabled: { type: "boolean" }, direct_rate_bps: { type: "integer" }, indirect_rate_bps: { type: "integer" }, commission_notice: { type: "string" }, minimum_withdrawal_fen: { type: "integer" },
       available_fen: { type: "integer" }, frozen_fen: { type: "integer" }, earned_fen: { type: "integer" }, paid_fen: { type: "integer" },
       withdrawal_open: { type: "boolean" }, timezone: { type: "string", example: "Asia/Shanghai" }, server_time: { type: "string", format: "date-time" }, next_open_at: { type: "string", format: "date-time" },
     },
@@ -284,8 +285,8 @@ const schemas: Record<string, JsonSchema> = {
     },
   },
   ReferralRecordPage: {
-    type: "object", properties: { items: { type: "array", items: { type: "object", additionalProperties: true } }, page: { type: "integer" }, has_more: { type: "boolean" } },
-    description: "每页最多50条。金额字段以分计（数据库BIGINT可能为字符串）；提现状态为PENDING/APPROVED/PROCESSING/REJECTED/PAID，邀请奖励状态为PENDING_PAYMENT/REWARDED/LIMITED。列表不包含收款实名、账号、收款码、密文或请求摘要。",
+    type: "object", properties: { items: { type: "array", items: { type: "object", additionalProperties: true } }, page: { type: "integer" }, page_size: { type: "integer" }, total: { type: "integer" }, total_pages: { type: "integer" }, has_more: { type: "boolean" } },
+    description: "个人中心每页10条，管理后台每页50条。金额字段以分计（数据库BIGINT可能为字符串）；提现状态为PENDING/APPROVED/PROCESSING/REJECTED/PAID，邀请奖励状态为PENDING_PAYMENT/REWARDED/LIMITED。列表不包含收款实名、账号、收款码、密文或请求摘要。",
   },
   RegistrationCaptchaRequest: {
     type: "object", required: ["email"],
@@ -621,7 +622,7 @@ const schemas: Record<string, JsonSchema> = {
       capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "IMAGE_GENERATION", "VIDEO_GENERATION"] },
       api_protocol: { type: "string" }, generation_endpoint: { type: "string" }, query_endpoint: { type: "string", nullable: true },
       credit_cost: { type: "integer", minimum: 0, description: "文本/理解/图片按次，视频生成按秒" },
-      credit_multiplier: { type: "number", minimum: 0.000001, maximum: 1000, default: 1, description: "该模型独立系数；最终消耗积分=消耗积分数×模型系数" },
+      credit_multiplier: { type: "number", minimum: 0.000001, maximum: 1000, default: 1, description: "该模型独立系数；模型单价=消耗积分数×模型系数，带小数时向上取整；视频总价再按时长计算并向上取整" },
       max_reference_images: { type: "integer", minimum: 0 }, supports_reference_video: { type: "boolean" },
       supports_real_person: { type: "boolean", default: false }, supports_async_tasks: { type: "boolean" },
       sort_order: { type: "integer" }, description: { type: "string" }, status: { type: "string", enum: ["ACTIVE", "DISABLED"] },
@@ -790,17 +791,17 @@ export function createApiDocument(): OpenAPIObject {
       get: operation({ id: "referralSummary", tag: "邀请与分润", summary: "当前用户邀请码、余额和周五提现窗口", security: true, success: ref("ReferralSummary") }),
     },
     "/referrals/me/subordinates": {
-      get: operation({ id: "userReferralSubordinates", tag: "邀请与分润", summary: "分页读取当前用户的直接或间接下级及其累计消费额", description: "消费额只累计状态为 PAID 的支付订单，并优先使用支付渠道确认的实付金额；邮箱和手机号仅返回脱敏文本。", security: true, parameters: [query("level", "下级层级，1直接/2间接", { type: "integer", enum: [1, 2], default: 1 }), query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })] }),
+      get: operation({ id: "userReferralSubordinates", tag: "邀请与分润", summary: "分页读取当前用户的直接或间接下级及其累计消费额", description: "每页固定10条。消费额只累计已确认的图片生成、视频生成积分消耗，并按 1 积分 = 0.01 元换算；邮箱和手机号仅返回脱敏文本。", security: true, parameters: [query("level", "下级层级，1直接/2间接", { type: "integer", enum: [1, 2], default: 1 }), query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })] }),
     },
     "/referrals/me/{kind}": {
-      get: operation({ id: "userReferralRecords", tag: "邀请与分润", summary: "当前用户的邀请、分润、提现或打款记录", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })], success: ref("ReferralRecordPage") }),
+      get: operation({ id: "userReferralRecords", tag: "邀请与分润", summary: "当前用户的邀请、分润、提现或打款记录", description: "每页固定10条。", security: true, parameters: [{ name: "kind", in: "path", required: true, schema: { type: "string", enum: ["rewards", "commissions", "withdrawals", "payouts"] } }, query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000 })], success: ref("ReferralRecordPage") }),
     },
     "/referrals/withdrawals": {
       post: operation({ id: "applyWithdrawal", tag: "邀请与分润", summary: "提交提现申请并冻结余额", description: "每周五北京时间开放。关闭分销不影响已有余额提现。重复请求不会重复冻结；审核驳回释放冻结。不会自动转账。", security: true, body: ref("WithdrawalRequest") }),
     },
     "/admin/distribution/config": {
       get: operation({ id: "distributionConfig", tag: "管理分销", summary: "读取分销与邀请配置（configs.manage）", security: true, success: ref("DistributionConfig") }),
-      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。不重算历史分润。邀请积分奖励与分销开关独立；防刷开启后新奖励待首笔真实支付确认并受北京时间日/月人数上限约束。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
+      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。仅按图片/视频生成成功后的积分消耗计提，1积分按人民币1分计算；充值、文本和视频理解等消耗不参与。不重算历史分润。邀请积分奖励与分销开关独立；防刷开启后新奖励待首笔真实支付确认并受北京时间日/月人数上限约束。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
     },
     "/admin/distribution/downloads": {
       get: operation({ id: "softwareDownloadConfig", tag: "管理配置", summary: "读取注册成功页的软件下载安装地址（configs.manage）", security: true, success: ref("SoftwareDownloadConfig") }),
@@ -831,11 +832,11 @@ export function createApiDocument(): OpenAPIObject {
       get: operation({ id: "creditBalance", tag: "用户积分", summary: "读取积分余额、占用与可用余额", security: true, success: ref("CreditBalance") }),
     },
     "/credits/purchases": {
-      get: operation({ id: "listCreditPurchases", tag: "用户积分", summary: "读取当前用户最近 100 条积分购买记录", security: true }),
+      get: operation({ id: "listCreditPurchases", tag: "用户积分", summary: "分页读取当前用户的积分购买记录", description: "每页固定返回 10 条。", security: true, parameters: [query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000, default: 1 })] }),
       post: operation({ id: "createCreditPurchase", tag: "用户积分", summary: "创建微信 Native 支付订单", description: "同一用户的 idempotency_key 唯一；成功返回可生成二维码的 code_url。", security: true, body: ref("CreditPurchaseRequest") }),
     },
     "/credits/consumptions": {
-      get: operation({ id: "listCreditConsumptions", tag: "用户积分", summary: "读取当前用户最近 100 条积分消耗记录", security: true }),
+      get: operation({ id: "listCreditConsumptions", tag: "用户积分", summary: "分页读取当前用户的积分消耗记录", description: "每页固定返回 10 条。", security: true, parameters: [query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000, default: 1 })] }),
     },
     "/credits/purchases/{purchaseId}": {
       get: operation({ id: "creditPurchase", tag: "用户积分", summary: "查询积分购买及支付状态", security: true, parameters: [pathId("purchaseId", "积分购买记录 ID")] }),

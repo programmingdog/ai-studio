@@ -155,6 +155,37 @@ class FromScriptWorkflowTests(unittest.TestCase):
         self.assertIn("匆忙焦急", result["shots"][0]["emotion"])
         self.assertIn("场景锁定", result["shots"][0]["image_prompt"])
 
+    def test_fixed_storyboard_mode_keeps_every_generated_shot_at_the_selected_duration(self):
+        result = analyze_script({
+            "script_text": STRUCTURED_STORYBOARD,
+            "creation_spec": {
+                "project_name": "固定时长分镜",
+                "aspect_ratio": "9:16",
+                "target_duration": 22,
+                "storyboard_fixed_seconds": 10,
+            },
+        }, lambda *_: None)
+
+        self.assertEqual([shot["duration"] for shot in result["shots"]], [10.0, 10.0, 10.0])
+        self.assertEqual(result["shots"][-1]["source_time_range"], {"start": 20.0, "end": 22.0})
+        self.assertEqual(result["metadata"]["storyboard_fixed_seconds"], 10.0)
+
+    def test_fixed_duration_declarations_survive_txt_export_and_reimport(self):
+        declared = STRUCTURED_STORYBOARD.replace(
+            "第1段（0～10秒）",
+            "第1段（0～10秒）\n生成时长：10秒",
+        ).replace(
+            "第2段（10～22秒）",
+            "第2段（10～22秒）\n生成时长：10秒",
+        )
+        result = analyze_script({
+            "script_text": declared,
+            "creation_spec": {"project_name": "重新导入固定分镜"},
+        }, lambda *_: None)
+
+        self.assertTrue(all(shot["duration"] == 10.0 for shot in result["shots"]))
+        self.assertEqual(result["metadata"]["storyboard_fixed_seconds"], 10.0)
+
     def test_parses_minute_second_headings_without_falling_back_to_plain_script(self):
         timecoded = STRUCTURED_STORYBOARD.replace(
             "第1段（0～10秒）",

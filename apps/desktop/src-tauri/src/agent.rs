@@ -177,13 +177,17 @@ async fn run_agent_loop(
     let mut action = None;
 
     for _ in 0..8 {
-        let payload = crate::platform_media::text_completion("Agent 文本规划（每轮调用分别计费）", json!({
-            "messages": messages,
-            "tools": agent_tools(),
-            "tool_choice": "auto",
-            "temperature": 0.2,
-            "stream": false
-        })).await?;
+        let payload = crate::platform_media::text_completion(
+            "Agent 文本规划（每轮调用分别计费）",
+            json!({
+                "messages": messages,
+                "tools": agent_tools(),
+                "tool_choice": "auto",
+                "temperature": 0.2,
+                "stream": false
+            }),
+        )
+        .await?;
         let message = payload
             .pointer("/choices/0/message")
             .cloned()
@@ -363,11 +367,20 @@ async fn create_douyin_project(
         (Some(width), Some(height)) if width > height => "16:9",
         _ => "9:16",
     };
+    let fixed_seconds = if args.analysis_mode == "fixed" {
+        Some(match args.fixed_seconds.unwrap_or(10) {
+            6 => 6,
+            15 => 15,
+            _ => 10,
+        })
+    } else {
+        None
+    };
     let prompt = match args.analysis_mode.as_str() {
         "detailed" => format!("{}\n\n【分镜时长硬性规则】每个分镜必须小于或等于15秒，优先按10秒整数边界切分；输出前逐段校验，超过15秒必须拆分。\n\n【分镜内部局部时间轴硬性规则】分镜标题保留原视频全局时间；每个分镜的“画面”子时间段必须独立从0秒开始，最后结束于该分镜自身时长。后续分镜不得在画面或生成提示词中沿用原片全局秒数。", config.video_storyboard_detailed_prompt),
         "fixed" => {
-            let seconds = match args.fixed_seconds.unwrap_or(10) { 6 => 6, 15 => 15, _ => 10 };
-            format!("{}\n\n【固定分镜时长规则（最高优先级）】除最后一段外，每段必须严格为{seconds}秒，从0秒开始连续切分；最后一段按真实剩余时长输出，时间轴不得重叠、遗漏或虚构内容。", config.video_storyboard_prompt)
+            let seconds = fixed_seconds.unwrap_or(10);
+            format!("{}\n\n【固定分镜时长规则（最高优先级）】从0秒开始按每段最多{seconds}秒连续定位原视频，最后一段标题结束于原视频真实结尾。每段标题下一行必须输出“生成时长：{seconds}秒”；每一个分镜的生成时长都必须严格为{seconds}秒，最后一个分镜也不例外。原视频最后剩余内容不足{seconds}秒时，保持最后一个有意义的画面状态直至满{seconds}秒，不得新增剧情、台词、人物或动作。", config.video_storyboard_prompt)
         }
         _ => config.video_storyboard_prompt.clone(),
     };
@@ -419,7 +432,8 @@ async fn create_douyin_project(
         "visual_style": "使用视频理解提取的画风",
         "target_platform": resolved.get("platform").and_then(Value::as_str).unwrap_or("VIDEO_PLATFORM"),
         "language": "zh-CN",
-        "creation_mode": "DIRECTOR"
+        "creation_mode": "DIRECTOR",
+        "storyboard_fixed_seconds": fixed_seconds
     });
     agent_store::update_run(
         app,

@@ -4,11 +4,14 @@ import { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { DatabaseService } from "../database/database.service";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { EnvironmentService } from "../config/environment.service";
-import { requiredString } from "../common/input";
+import { optionalString, requiredString } from "../common/input";
 import { commissionFen, generateInviteCode, integer, inviteCode, publicUrl, receiptImage, withdrawalWindow } from "./referral-rules";
 
 const withdrawalColumns = "id, user_id, amount_fen, status, review_note, reviewed_at, processing_by, processing_at, paid_at, created_at";
-type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_enabled: boolean; windows_download_url: string; macos_download_enabled: boolean; macos_download_url: string; revision: number; updated_at?: unknown };
+type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; commission_notice: string; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_enabled: boolean; windows_download_url: string; macos_download_enabled: boolean; macos_download_url: string; revision: number; updated_at?: unknown };
+const USER_RECORD_PAGE_SIZE = 10;
+const ADMIN_RECORD_PAGE_SIZE = 50;
+const COMMISSIONABLE_CAPABILITIES = new Set(["IMAGE_GENERATION", "VIDEO_GENERATION"]);
 
 function chinaRewardPeriodKeys(now = new Date()) {
   const shifted = new Date(now.getTime() + 8 * 3600_000);
@@ -29,7 +32,7 @@ export class ReferralsService {
   }
 
   private configValue(row: RowDataPacket): Config {
-    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invitation_anti_abuse_enabled: Boolean(row.invitation_anti_abuse_enabled), invitation_daily_reward_limit: Number(row.invitation_daily_reward_limit ?? 20), invitation_monthly_reward_limit: Number(row.invitation_monthly_reward_limit ?? 200), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_enabled: Boolean(Number(row.windows_download_enabled)), windows_download_url: row.windows_download_url || "", macos_download_enabled: Boolean(Number(row.macos_download_enabled)), macos_download_url: row.macos_download_url || "", revision: Number(row.revision), updated_at: row.updated_at };
+    return { enabled: Boolean(row.enabled), direct_rate_bps: Number(row.direct_rate_bps), indirect_rate_bps: Number(row.indirect_rate_bps), commission_notice: String(row.commission_notice || ""), minimum_withdrawal_fen: Number(row.minimum_withdrawal_fen), invitation_reward_credits: Number(row.invitation_reward_credits), invitation_anti_abuse_enabled: Boolean(row.invitation_anti_abuse_enabled), invitation_daily_reward_limit: Number(row.invitation_daily_reward_limit ?? 20), invitation_monthly_reward_limit: Number(row.invitation_monthly_reward_limit ?? 200), invite_page_base_url: row.invite_page_base_url || `${this.environment.values.adminOrigin.split(",")[0]!.replace(/\/$/, "")}/invite`, windows_download_enabled: Boolean(Number(row.windows_download_enabled)), windows_download_url: row.windows_download_url || "", macos_download_enabled: Boolean(Number(row.macos_download_enabled)), macos_download_url: row.macos_download_url || "", revision: Number(row.revision), updated_at: row.updated_at };
   }
   async config(connection?: PoolConnection): Promise<Config> {
     const rows = connection ? (await connection.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1"))[0] : await this.db.query<RowDataPacket[]>("SELECT * FROM distribution_configs WHERE id = 1");
@@ -40,6 +43,7 @@ export class ReferralsService {
     if (typeof input.enabled !== "boolean") throw new BadRequestException("分销开关必须为布尔值");
     const enabled = input.enabled;
     const direct = integer(input.direct_rate_bps, "直接分润比例", 0, 10000), indirect = integer(input.indirect_rate_bps, "间接分润比例", 0, 10000);
+    const commissionNotice = optionalString(input, "commission_notice", 1000) || "";
     if (direct + indirect > 10000 || (input.enabled && direct + indirect === 0)) throw new BadRequestException("分润比例合计不得超过 100%，启用时不能都为零");
     const minimum = integer(input.minimum_withdrawal_fen, "最低提现金额（分）", 1);
     const reward = integer(input.invitation_reward_credits, "邀请奖励积分", 0, 100000);
@@ -55,8 +59,8 @@ export class ReferralsService {
     await this.db.transaction(async c => {
       const [rows] = await c.query<RowDataPacket[]>("SELECT revision FROM distribution_configs WHERE id = 1 FOR UPDATE");
       if (Number(rows[0]?.revision) !== input.revision) throw new ConflictException("配置已更新，请重新读取");
-      await c.execute("UPDATE distribution_configs SET enabled = ?, direct_rate_bps = ?, indirect_rate_bps = ?, minimum_withdrawal_fen = ?, invitation_reward_credits = ?, invitation_anti_abuse_enabled = ?, invitation_daily_reward_limit = ?, invitation_monthly_reward_limit = ?, invite_page_base_url = ?, windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1", [enabled, direct, indirect, minimum, reward, antiAbuse, dailyLimit, monthlyLimit, base, windows, macos, adminId]);
-      await this.audit(c, adminId, "distribution.config", "1", { enabled: input.enabled, direct_rate_bps: direct, indirect_rate_bps: indirect, minimum_withdrawal_fen: minimum, invitation_reward_credits: reward, invitation_anti_abuse_enabled: antiAbuse, invitation_daily_reward_limit: dailyLimit, invitation_monthly_reward_limit: monthlyLimit, invite_page_base_url: base, windows_download_url: windows, macos_download_url: macos, revision: Number(input.revision) + 1 });
+      await c.execute("UPDATE distribution_configs SET enabled = ?, direct_rate_bps = ?, indirect_rate_bps = ?, commission_notice = ?, minimum_withdrawal_fen = ?, invitation_reward_credits = ?, invitation_anti_abuse_enabled = ?, invitation_daily_reward_limit = ?, invitation_monthly_reward_limit = ?, invite_page_base_url = ?, windows_download_url = ?, macos_download_url = ?, revision = revision + 1, updated_by = ? WHERE id = 1", [enabled, direct, indirect, commissionNotice, minimum, reward, antiAbuse, dailyLimit, monthlyLimit, base, windows, macos, adminId]);
+      await this.audit(c, adminId, "distribution.config", "1", { enabled: input.enabled, direct_rate_bps: direct, indirect_rate_bps: indirect, commission_notice: commissionNotice, minimum_withdrawal_fen: minimum, invitation_reward_credits: reward, invitation_anti_abuse_enabled: antiAbuse, invitation_daily_reward_limit: dailyLimit, invitation_monthly_reward_limit: monthlyLimit, invite_page_base_url: base, windows_download_url: windows, macos_download_url: macos, revision: Number(input.revision) + 1 });
     });
     return this.config();
   }
@@ -216,21 +220,24 @@ export class ReferralsService {
     const [count] = await this.db.query<RowDataPacket[]>("SELECT COUNT(*) AS invited_count, COALESCE(SUM(CASE WHEN status = 'REWARDED' THEN credits ELSE 0 END), 0) AS reward_credits FROM referral_rewards WHERE inviter_id = ?", [userId]);
     const invitationUrl = new URL(this.downloadPageUrl());
     invitationUrl.searchParams.set("invite_code", code);
-    return { invite_code: code, invitation_url: invitationUrl.toString(), invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, invitation_anti_abuse_enabled: config.invitation_anti_abuse_enabled, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
+    return { invite_code: code, invitation_url: invitationUrl.toString(), invited_count: Number(count?.invited_count || 0), reward_credits: Number(count?.reward_credits || 0), invitation_reward_credits: config.invitation_reward_credits, invitation_anti_abuse_enabled: config.invitation_anti_abuse_enabled, enabled: config.enabled, direct_rate_bps: config.direct_rate_bps, indirect_rate_bps: config.indirect_rate_bps, commission_notice: config.commission_notice, minimum_withdrawal_fen: config.minimum_withdrawal_fen, available_fen: Number(wallet?.available_fen || 0), frozen_fen: Number(wallet?.frozen_fen || 0), earned_fen: Number(wallet?.earned_fen || 0), paid_fen: Number(wallet?.paid_fen || 0), ...withdrawalWindow() };
   }
 
   async subordinates(userId: string, rawLevel?: string, rawPage?: string) {
     const level = integer(rawLevel === undefined ? 1 : Number(rawLevel), "下级层级", 1, 2);
     const page = integer(rawPage === undefined ? 1 : Number(rawPage), "页码", 1, 100000);
-    const offset = (page - 1) * 50;
+    const offset = (page - 1) * USER_RECORD_PAGE_SIZE;
     const joins = level === 1 ? "" : " INNER JOIN users p ON p.id = u.pid";
     const scope = level === 1
       ? "u.pid = ? AND u.id <> u.pid"
       : "p.pid = ? AND p.id <> p.pid AND u.id <> p.pid AND u.id <> p.id";
     const spending = ` LEFT JOIN (
-      SELECT po.user_id, SUM(COALESCE(po.payer_paid_amount_fen, po.amount_fen)) AS consumption_fen,
-             COUNT(*) AS paid_order_count, MAX(po.paid_at) AS last_paid_at
-      FROM payment_orders po WHERE po.status = 'PAID' GROUP BY po.user_id
+      SELECT ccr.user_id, SUM(FLOOR(ccr.credits_consumed)) AS consumption_fen,
+             COUNT(*) AS generation_count, MAX(ccr.occurred_at) AS last_paid_at
+      FROM credit_consumption_records ccr
+      INNER JOIN provider_models pm ON pm.id = ccr.provider_model_id
+      WHERE ccr.status = 'CONFIRMED' AND pm.capability IN ('IMAGE_GENERATION', 'VIDEO_GENERATION')
+      GROUP BY ccr.user_id
     ) spend ON spend.user_id = u.id`;
     const [totals] = await this.db.query<RowDataPacket[]>(
       `SELECT COUNT(*) AS total, COALESCE(SUM(spend.consumption_fen), 0) AS total_consumption_fen FROM users u${joins}${spending} WHERE ${scope}`,
@@ -238,8 +245,8 @@ export class ReferralsService {
     );
     const rows = await this.db.query<RowDataPacket[]>(
       `SELECT u.id, u.display_name, u.email, u.phone, u.status, u.created_at, ${level === 2 ? "p.display_name" : "NULL"} AS parent_display_name,
-              COALESCE(spend.consumption_fen, 0) AS consumption_fen, COALESCE(spend.paid_order_count, 0) AS paid_order_count, spend.last_paid_at
-       FROM users u${joins}${spending} WHERE ${scope} ORDER BY u.created_at DESC, u.id DESC LIMIT 51 OFFSET ${offset}`,
+              COALESCE(spend.consumption_fen, 0) AS consumption_fen, COALESCE(spend.generation_count, 0) AS generation_count, spend.last_paid_at
+       FROM users u${joins}${spending} WHERE ${scope} ORDER BY u.created_at DESC, u.id DESC LIMIT ${USER_RECORD_PAGE_SIZE + 1} OFFSET ${offset}`,
       [userId],
     );
     const maskedAccount = (row: RowDataPacket) => {
@@ -255,18 +262,19 @@ export class ReferralsService {
     return {
       level,
       page,
-      page_size: 50,
+      page_size: USER_RECORD_PAGE_SIZE,
       total: Number(totals?.total || 0),
+      total_pages: Math.ceil(Number(totals?.total || 0) / USER_RECORD_PAGE_SIZE),
       total_consumption_fen: Number(totals?.total_consumption_fen || 0),
-      has_more: rows.length > 50,
-      items: rows.slice(0, 50).map(row => ({
+      has_more: rows.length > USER_RECORD_PAGE_SIZE,
+      items: rows.slice(0, USER_RECORD_PAGE_SIZE).map(row => ({
         id: row.id,
         display_name: row.display_name,
         account: maskedAccount(row),
         status: row.status,
         parent_display_name: row.parent_display_name || null,
         consumption_fen: Number(row.consumption_fen || 0),
-        paid_order_count: Number(row.paid_order_count || 0),
+        generation_count: Number(row.generation_count || 0),
         last_paid_at: row.last_paid_at || null,
         created_at: row.created_at,
       })),
@@ -285,30 +293,40 @@ export class ReferralsService {
     await c.execute("INSERT INTO commission_wallet_entries (id, user_id, event_type, reference_id, available_delta_fen, frozen_delta_fen) VALUES (?, ?, ?, ?, ?, ?)", [randomUUID(), user, event, reference, available, frozen]);
   }
 
-  /** Payment row must already be locked; commission and credited package commit together. */
+  /** Payment is used only to qualify invitation rewards; package purchases never create commission. */
   async settlePayment(c: PoolConnection, orderId: string, payerId: string, paidAmountFen: number) {
     integer(paidAmountFen, "实付金额", 0, Number.MAX_SAFE_INTEGER);
-    const [existing] = await c.query<RowDataPacket[]>("SELECT payment_order_id FROM distribution_settlements WHERE payment_order_id = ?", [orderId]);
+    await this.qualifyInvitationReward(c, payerId, orderId, paidAmountFen);
+  }
+
+  /** The consumption row and commission must commit atomically with a successful image/video task. */
+  async settleGenerationConsumption(c: PoolConnection, consumptionRecordId: string, taskId: string, consumerId: string, capability: string, creditsConsumed: number) {
+    if (!COMMISSIONABLE_CAPABILITIES.has(capability)) return;
+    if (!Number.isFinite(creditsConsumed) || creditsConsumed < 0 || creditsConsumed > Number.MAX_SAFE_INTEGER) throw new BadRequestException("生成任务消耗积分无效");
+    const baseAmountFen = Math.floor(creditsConsumed); // 1 credit = ¥0.01 = 1 fen.
+    const [existing] = await c.query<RowDataPacket[]>("SELECT consumption_record_id FROM distribution_consumption_settlements WHERE consumption_record_id = ?", [consumptionRecordId]);
     if (existing.length) return;
     const config = await this.config(c);
-    await c.execute("INSERT INTO distribution_settlements (payment_order_id, payer_id, paid_amount_fen, enabled, direct_rate_bps, indirect_rate_bps, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?)", [orderId, payerId, paidAmountFen, config.enabled, config.direct_rate_bps, config.indirect_rate_bps, config.revision]);
-    await this.qualifyInvitationReward(c, payerId, orderId, paidAmountFen);
-    if (!config.enabled || paidAmountFen === 0) return;
-    const [rows] = await c.query<RowDataPacket[]>("SELECT p.id AS direct_id, p.status AS direct_status, gp.id AS indirect_id, gp.status AS indirect_status FROM users u LEFT JOIN users p ON p.id = u.pid LEFT JOIN users gp ON gp.id = p.pid WHERE u.id = ?", [payerId]);
+    await c.execute(
+      "INSERT INTO distribution_consumption_settlements (consumption_record_id, task_id, consumer_id, capability, credits_consumed, base_amount_fen, enabled, direct_rate_bps, indirect_rate_bps, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [consumptionRecordId, taskId, consumerId, capability, creditsConsumed, baseAmountFen, config.enabled, config.direct_rate_bps, config.indirect_rate_bps, config.revision],
+    );
+    if (!config.enabled || baseAmountFen === 0) return;
+    const [rows] = await c.query<RowDataPacket[]>("SELECT p.id AS direct_id, p.status AS direct_status, gp.id AS indirect_id, gp.status AS indirect_status FROM users u LEFT JOIN users p ON p.id = u.pid LEFT JOIN users gp ON gp.id = p.pid WHERE u.id = ?", [consumerId]);
     const chain = rows[0];
     if (!chain) return;
-    const seen = new Set([payerId]);
-    // Stable wallet lock order prevents cross-level payment/withdrawal deadlocks.
+    const seen = new Set([consumerId]);
+    // Stable wallet lock order prevents cross-level generation/withdrawal deadlocks.
     const recipients = [{ id: chain.direct_id, status: chain.direct_status, level: 1, rate: config.direct_rate_bps }, { id: chain.indirect_id, status: chain.indirect_status, level: 2, rate: config.indirect_rate_bps }]
       .filter(item => { if (!item.id || seen.has(String(item.id))) return false; seen.add(String(item.id)); return item.status === "ACTIVE"; }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
     for (const item of recipients) {
-      const amount = commissionFen(paidAmountFen, item.rate);
+      const amount = commissionFen(baseAmountFen, item.rate);
       if (!amount) continue;
       await this.wallet(c, String(item.id));
       const id = randomUUID();
-      await c.execute("INSERT INTO commission_records (id, payment_order_id, beneficiary_id, payer_id, level, base_amount_fen, rate_bps, amount_fen, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, orderId, item.id, payerId, item.level, paidAmountFen, item.rate, amount, config.revision]);
+      await c.execute("INSERT INTO commission_records (id, payment_order_id, consumption_record_id, beneficiary_id, payer_id, source_capability, source_credits, level, base_amount_fen, rate_bps, amount_fen, config_revision) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, consumptionRecordId, item.id, consumerId, capability, creditsConsumed, item.level, baseAmountFen, item.rate, amount, config.revision]);
       await c.execute("UPDATE commission_wallets SET available_fen = available_fen + ?, earned_fen = earned_fen + ? WHERE user_id = ?", [amount, amount, item.id]);
-      await this.entry(c, String(item.id), "COMMISSION", id, amount, 0);
+      await this.entry(c, String(item.id), "GENERATION_COMMISSION", id, amount, 0);
     }
   }
 
@@ -419,7 +437,8 @@ export class ReferralsService {
   async records(kind: string, userId?: string, rawPage?: string, status?: string, includeLoginNames = false) {
     const page = rawPage === undefined ? 1 : Number(rawPage);
     integer(page, "页码", 1, 100000);
-    const offset = (page - 1) * 50;
+    const pageSize = includeLoginNames ? ADMIN_RECORD_PAGE_SIZE : USER_RECORD_PAGE_SIZE;
+    const offset = (page - 1) * pageSize;
     const table = kind === "commissions" ? "commission_records" : kind === "withdrawals" ? "withdrawal_applications" : kind === "payouts" ? "manual_payout_records" : kind === "rewards" ? "referral_rewards" : "";
     if (!table) throw new BadRequestException("记录类型无效");
     const tableAlias = includeLoginNames
@@ -453,10 +472,12 @@ export class ReferralsService {
         ? `${table} ${tableAlias} LEFT JOIN users record_user ON record_user.id = ${owner}`
         : table;
     const rows = await this.db.query<RowDataPacket[]>(
-      `SELECT ${columns} FROM ${source}${where} ORDER BY ${columnPrefix}created_at DESC, ${columnPrefix}id DESC LIMIT 51 OFFSET ${offset}`,
+      `SELECT ${columns} FROM ${source}${where} ORDER BY ${columnPrefix}created_at DESC, ${columnPrefix}id DESC LIMIT ${pageSize + 1} OFFSET ${offset}`,
       parameters,
     );
-    return { items: rows.slice(0, 50), page, has_more: rows.length > 50 };
+    const totals = await this.db.query<RowDataPacket[]>(`SELECT COUNT(*) AS total FROM ${source}${where}`, parameters);
+    const total = Number(totals[0]?.total || 0);
+    return { items: rows.slice(0, pageSize), page, page_size: pageSize, total, total_pages: Math.ceil(total / pageSize), has_more: rows.length > pageSize };
   }
   private audit(c: PoolConnection, admin: string, action: string, id: string, detail: unknown) {
     return c.execute("INSERT INTO audit_logs (id, admin_user_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, 'distribution', ?, ?)", [randomUUID(), admin, action, id, JSON.stringify(detail)]);

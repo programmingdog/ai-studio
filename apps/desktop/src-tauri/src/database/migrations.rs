@@ -7,15 +7,24 @@ fn is_current(connection: &Connection) -> Result<bool, String> {
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
         [], |row| row.get(0),
     ).map_err(|e| e.to_string())?;
-    if !exists { return Ok(false); }
-    connection.query_row("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
-        [CURRENT_VERSION], |row| row.get(0)).map_err(|e| e.to_string())
+    if !exists {
+        return Ok(false);
+    }
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
+            [CURRENT_VERSION],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
 }
 
 pub fn migrate(connection: &Connection) -> Result<(), String> {
     // Normal reads must not rebuild triggers. Lock before inspecting/upgrading
     // the schema so other connections/processes cannot interleave DROP/CREATE.
-    if is_current(connection)? { return Ok(()); }
+    if is_current(connection)? {
+        return Ok(());
+    }
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     if !is_current(&transaction)? {
@@ -468,17 +477,32 @@ mod tests {
     fn reopening_current_schema_does_not_rebuild_triggers() {
         let connection = Connection::open_in_memory().unwrap();
         migrate(&connection).unwrap();
-        let version: i64 = connection.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
-        for _ in 0..20 { migrate(&connection).unwrap(); }
-        assert_eq!(connection.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), version);
+        let version: i64 = connection
+            .query_row("PRAGMA schema_version", [], |r| r.get(0))
+            .unwrap();
+        for _ in 0..20 {
+            migrate(&connection).unwrap();
+        }
+        assert_eq!(
+            connection
+                .query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
     }
 
     #[test]
     fn concurrent_upgrade_and_task_updates_are_atomic() {
-        let root = std::env::temp_dir().join(format!("aivs-concurrent-db-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("aivs-concurrent-db-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let connection = crate::database::open(&root).unwrap();
-        connection.execute("DELETE FROM schema_migrations WHERE version=?1", [CURRENT_VERSION]).unwrap();
+        connection
+            .execute(
+                "DELETE FROM schema_migrations WHERE version=?1",
+                [CURRENT_VERSION],
+            )
+            .unwrap();
         drop(connection);
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
         let threads: Vec<_> = (0..8).map(|n| {
@@ -499,7 +523,9 @@ mod tests {
                 }
             })
         }).collect();
-        for thread in threads { thread.join().unwrap(); }
+        for thread in threads {
+            thread.join().unwrap();
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

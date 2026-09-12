@@ -12,7 +12,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const testModule = { exports: {} };
 new Function('exports', 'require', 'module', '__filename', '__dirname', compiled)(testModule.exports, require, testModule, sourcePath, path.dirname(sourcePath));
-const { addManualShot } = testModule.exports;
+const { addManualShot, deleteStoryboardShot, moveStoryboardShot } = testModule.exports;
 
 function project() {
   return {
@@ -53,8 +53,27 @@ test('manual shot creates a sequence when the scene has none', () => {
   assert.equal(result.canonical.shots[0].sequence_id, 'SEQ_001');
 });
 
+test('deleting a shot selects its neighbor and rebuilds sequence ordering', () => {
+  const withTwoShots = addManualShot(project(), 'A-001').canonical;
+  const result = deleteStoryboardShot(withTwoShots, 'A-001');
+  assert.equal(result.nextShotId, 'SHOT_001');
+  assert.deepEqual(result.canonical.shots.map((shot) => shot.id), ['SHOT_001']);
+  assert.deepEqual(result.canonical.sequences[0].shot_ids, ['SHOT_001']);
+});
+
+test('moving a shot updates both global and sequence ordering while keeping ids stable', () => {
+  const first = addManualShot(project(), 'A-001').canonical;
+  const second = addManualShot(first, 'SHOT_001').canonical;
+  const moved = moveStoryboardShot(second, 'SHOT_002', 'up');
+  assert.deepEqual(moved.shots.map((shot) => shot.id), ['A-001', 'SHOT_002', 'SHOT_001']);
+  assert.deepEqual(moved.sequences[0].shot_ids, ['A-001', 'SHOT_002', 'SHOT_001']);
+});
+
 test('storyboard page exposes the manual add control', () => {
   const app = fs.readFileSync(path.join(__dirname, '../src/App.tsx'), 'utf8');
   assert.match(app, /onClick=\{createManualShot\}/);
   assert.match(app, /<Plus size=\{14\} \/>添加分镜/);
+  assert.match(app, /title="删除分镜"/);
+  assert.match(app, /title="上移分镜"/);
+  assert.match(app, /title="下移分镜"/);
 });

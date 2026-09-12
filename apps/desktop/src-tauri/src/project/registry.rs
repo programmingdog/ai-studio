@@ -26,6 +26,18 @@ pub struct ProjectRecord {
     pub is_example: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+struct ProjectStats {
+    scenes: i64,
+    characters: i64,
+    props: i64,
+    shots: i64,
+    generated_scenes: i64,
+    generated_characters: i64,
+    generated_props: i64,
+    generated_shots: i64,
+}
+
 pub fn list(app: &AppHandle) -> Result<Value, String> {
     let user_id = crate::platform_session::current_user_id()?;
     let mut records = read_registry(app)?;
@@ -43,7 +55,66 @@ pub fn list(app: &AppHandle) -> Result<Value, String> {
             .then_with(|| right.updated_at.cmp(&left.updated_at))
     });
     write_registry(app, &records)?;
-    serde_json::to_value(records).map_err(|error| error.to_string())
+    let items = records
+        .iter()
+        .map(|record| {
+            let mut value = serde_json::to_value(record).map_err(|error| error.to_string())?;
+            value["stats"] = serde_json::to_value(
+                read_project_stats(Path::new(&record.project_path)).unwrap_or_default(),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(value)
+        })
+        .collect::<Result<Vec<Value>, String>>()?;
+    Ok(Value::Array(items))
+}
+
+fn read_project_stats(project_path: &Path) -> Result<ProjectStats, String> {
+    let connection = database::open(project_path)?;
+    connection
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM scenes),
+                (SELECT COUNT(*) FROM characters),
+                (SELECT COUNT(*) FROM props),
+                (SELECT COUNT(*) FROM shots),
+                (SELECT COUNT(*) FROM scenes AS scene WHERE EXISTS (
+                    SELECT 1 FROM generation_records AS record
+                    WHERE record.media_type = 'image' AND record.target_type = 'scene' AND record.target_id = scene.id
+                    AND record.status = 'COMPLETED' AND record.result_relative_path IS NOT NULL
+                )),
+                (SELECT COUNT(*) FROM characters AS character WHERE EXISTS (
+                    SELECT 1 FROM generation_records AS record
+                    LEFT JOIN character_states AS state ON record.target_type = 'character_state' AND state.id = record.target_id
+                    WHERE record.media_type = 'image' AND record.status = 'COMPLETED' AND record.result_relative_path IS NOT NULL
+                    AND ((record.target_type = 'character' AND record.target_id = character.id)
+                        OR (record.target_type = 'character_state' AND state.character_id = character.id))
+                )),
+                (SELECT COUNT(*) FROM props AS prop WHERE EXISTS (
+                    SELECT 1 FROM generation_records AS record
+                    WHERE record.media_type = 'image' AND record.target_type = 'prop' AND record.target_id = prop.id
+                    AND record.status = 'COMPLETED' AND record.result_relative_path IS NOT NULL
+                )),
+                (SELECT COUNT(*) FROM shots AS shot WHERE EXISTS (
+                    SELECT 1 FROM generation_records AS record
+                    WHERE record.media_type = 'video' AND record.target_type = 'shot' AND record.target_id = shot.id
+                    AND record.status = 'COMPLETED' AND record.result_relative_path IS NOT NULL
+                ))",
+            [],
+            |row| {
+                Ok(ProjectStats {
+                    scenes: row.get(0)?,
+                    characters: row.get(1)?,
+                    props: row.get(2)?,
+                    shots: row.get(3)?,
+                    generated_scenes: row.get(4)?,
+                    generated_characters: row.get(5)?,
+                    generated_props: row.get(6)?,
+                    generated_shots: row.get(7)?,
+                })
+            },
+        )
+        .map_err(|error| format!("读取项目统计失败：{error}"))
 }
 
 pub fn register(app: &AppHandle, bundle: &Value, is_example: bool) -> Result<(), String> {

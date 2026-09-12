@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 require("reflect-metadata");
-const { multiplyCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } = require("../dist/common/model-credit");
+const { multiplyCredits, roundedModelCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } = require("../dist/common/model-credit");
 const { ModelGatewayService } = require("../dist/gateway/model-gateway.service");
 const { ClientConfigService } = require("../dist/client-config/client-config.service");
 const { AdminService } = require("../dist/admin/admin.service");
@@ -36,6 +36,13 @@ test("multiplication preserves fractional credits without floating point artifac
   assert.throws(() => multiplyCredits(Infinity, 1));
 });
 
+test("billable model prices round fractional credits upward", () => {
+  assert.equal(roundedModelCredits(3, 1.5), 5);
+  assert.equal(roundedModelCredits(1, 0.5), 1);
+  assert.equal(roundedModelCredits(10, 0.3), 3);
+  assert.equal(roundedModelCredits(0, 1.5), 0);
+});
+
 test("gateway charges each model's own factor; media uses resolution prices and video seconds", async () => {
   const service = new ModelGatewayService({ query: async () => [{ credit_cost: 4 }] }, {});
   assert.equal(await service.estimatedCredits(model("TEXT_GENERATION", 2), {}), 20);
@@ -57,7 +64,8 @@ test("client prices and gateway charges agree for every independently configured
   assert.equal(result[3].resolution_prices[0].base_credit_cost, 7);
   assert.equal(result[3].credit_multiplier, 3);
   const gateway = new ModelGatewayService({ query: async () => [{ credit_cost: 7 }] }, {});
-  assert.equal(await gateway.estimatedCredits(model("VIDEO_GENERATION", 3), { resolution: "1080p", duration: 2.5 }), 52.5);
+  assert.equal(await gateway.estimatedCredits(model("VIDEO_GENERATION", 3), { resolution: "1080p", duration: 2.5 }), 53);
+  assert.equal(await gateway.estimatedCredits(model("VIDEO_GENERATION", 0.5), { resolution: "1080p", duration: 2.5 }), 10);
   assert.equal(priceRows[0].credit_cost, 4);
 });
 
@@ -73,18 +81,36 @@ test("admin catalog keeps editable base costs distinct from per-model final pric
   assert.equal(result[0].resolution_prices[0].final_credit_cost, 6);
 });
 
+test("admin display, client catalog and gateway agree on a fractional resolution price", async () => {
+  const row = model("IMAGE_GENERATION", 1.1);
+  const price = { provider_model_id: "m1", resolution: "2K", credit_cost: 4 };
+  const db = { query: async (sql) => sql.includes("FROM provider_model_resolution_prices") ? [price] : [row] };
+  const admin = (await new AdminService(db, {}, {}).listProviderModels("p1"))[0];
+  const client = (await new ClientConfigService(db).models())[0];
+  const gateway = new ModelGatewayService({ query: async () => [price] }, {});
+  assert.equal(admin.resolution_prices[0].final_credit_cost, 5);
+  assert.equal(client.resolution_prices[0].credit_cost, 5);
+  assert.equal(await gateway.estimatedCredits(row, { resolution: "2K" }), 5);
+});
+
 test("settlement uses the locked final estimate even if the model factor later changes", async () => {
-  const writes = [];
+  const writes = [], commissions = [];
   const connection = { query: async (sql) => {
-    if (sql.includes("FROM ai_tasks")) return [[{ id: "task", user_id: "user", estimated_credits: "12.500000", provider_model_id: "m1", logical_model_code: "demo" }]];
+    if (sql.includes("FROM ai_tasks")) return [[{ id: "task", user_id: "user", estimated_credits: "12.500000", provider_model_id: "m1", logical_model_code: "demo", capability: "IMAGE_GENERATION" }]];
     if (sql.includes("FROM credit_holds")) return [[{ status: "ACTIVE" }]];
     if (sql.includes("FROM ledger_accounts")) return [[{ id: "account" }]];
     throw new Error("Unexpected query");
   }, execute: async (sql, args) => { writes.push({ sql, args }); } };
-  const service = new ModelGatewayService({ transaction: async (fn) => fn(connection) }, {});
+  const referrals = { settleGenerationConsumption: async (...args) => commissions.push(args) };
+  const service = new ModelGatewayService({ transaction: async (fn) => fn(connection) }, {}, undefined, undefined, referrals);
   await service.settle("task", {});
   assert.equal(writes.find(({ sql }) => sql.includes("INSERT INTO ledger_entries")).args[3], -12.5);
   assert.equal(writes.find(({ sql }) => sql.startsWith("UPDATE ai_tasks")).args[0], 12.5);
+  const consumption = writes.find(({ sql }) => sql.includes("INSERT INTO credit_consumption_records"));
+  assert.match(consumption.sql, /UTC_TIMESTAMP\(3\)/);
+  assert.equal(commissions.length, 1);
+  assert.deepEqual(commissions[0].slice(1), [consumption.args[0], "task", "user", "IMAGE_GENERATION", 12.5]);
+  assert.equal(commissions[0][0], connection);
 });
 
 test("insufficient balance for the model-multiplied cost blocks submission", async () => {

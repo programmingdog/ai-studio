@@ -33,3 +33,8 @@ export function multiplyCredits(base: number, multiplier: number): number {
   if (result > 1_000_000_000_000n * precision) throw new ServiceUnavailableException("最终积分消耗超过上限");
   return Number(result) / Number(precision);
 }
+
+/** A configured model's billable unit price must be a whole credit. */
+export function roundedModelCredits(base: number, multiplier: number): number {
+  return Math.ceil(multiplyCredits(base, multiplier));
+}

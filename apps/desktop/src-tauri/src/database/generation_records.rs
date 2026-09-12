@@ -9,6 +9,7 @@ pub const STATUS_REMOTE_PROCESSING: &str = "REMOTE_PROCESSING";
 pub const STATUS_DOWNLOADING: &str = "DOWNLOADING";
 pub const STATUS_COMPLETED: &str = "COMPLETED";
 pub const STATUS_FAILED: &str = "FAILED";
+pub const STATUS_CANCELLED: &str = "CANCELLED";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationRecord {
@@ -117,7 +118,7 @@ pub fn list_unfinished_videos(connection: &Connection) -> Result<Vec<GenerationR
     let mut statement = connection
         .prepare(&format!(
             "SELECT {COLUMNS} FROM generation_records WHERE media_type = 'video'
-         AND (status NOT IN ('COMPLETED', 'FAILED')
+         AND (status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
            OR (status = 'FAILED' AND (error_json LIKE '%PLATFORM_LOGIN_REQUIRED%' OR error_json LIKE '%登录已过期%')))
          ORDER BY created_at"
         ))
@@ -139,7 +140,7 @@ pub fn has_unfinished_video(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM generation_records WHERE project_id = ?1
          AND media_type = 'video' AND target_type = 'shot' AND target_id = ?2
-         AND status NOT IN ('COMPLETED', 'FAILED'))",
+         AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED'))",
             params![project_id, shot_id],
             |row| row.get(0),
         )
@@ -152,7 +153,7 @@ pub fn mark_running(connection: &Connection, id: &str) -> Result<(), String> {
         .execute(
             "UPDATE generation_records SET status = ?1, progress = .1,
          started_at = COALESCE(started_at, ?2), updated_at = ?2,
-         retry_count = retry_count + 1, error_json = NULL WHERE id = ?3",
+         retry_count = retry_count + 1, error_json = NULL WHERE id = ?3 AND status != 'CANCELLED'",
             params![STATUS_RUNNING, now, id],
         )
         .map_err(|error| error.to_string())?;
@@ -192,15 +193,29 @@ pub fn mark_downloading(connection: &Connection, id: &str) -> Result<(), String>
     update_state(connection, id, STATUS_DOWNLOADING, 0.8, None)
 }
 
-pub fn mark_auth_required(connection: &Connection, id: &str, remote_id: Option<&str>, message: &str) -> Result<(), String> {
+pub fn mark_auth_required(
+    connection: &Connection,
+    id: &str,
+    remote_id: Option<&str>,
+    message: &str,
+) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    let error_value = serde_json::from_str::<Value>(message).unwrap_or_else(|_| json!({"code":"PLATFORM_LOGIN_REQUIRED","message":message}));
-    connection.execute(
-        "UPDATE generation_records SET status = ?1, progress = MAX(progress, .35),
+    let error_value = serde_json::from_str::<Value>(message)
+        .unwrap_or_else(|_| json!({"code":"PLATFORM_LOGIN_REQUIRED","message":message}));
+    connection
+        .execute(
+            "UPDATE generation_records SET status = ?1, progress = MAX(progress, .35),
          remote_task_id = COALESCE(?2, remote_task_id), error_json = ?3,
-         updated_at = ?4, finished_at = NULL WHERE id = ?5",
-        params![STATUS_REMOTE_PROCESSING, remote_id, error_value.to_string(), now, id],
-    ).map_err(|error| error.to_string())?;
+         updated_at = ?4, finished_at = NULL WHERE id = ?5 AND status != 'CANCELLED'",
+            params![
+                STATUS_REMOTE_PROCESSING,
+                remote_id,
+                error_value.to_string(),
+                now,
+                id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -225,7 +240,7 @@ fn update_state(
     connection
         .execute(
             "UPDATE generation_records SET status = ?1, progress = ?2,
-         remote_task_id = COALESCE(?3, remote_task_id), updated_at = ?4 WHERE id = ?5",
+         remote_task_id = COALESCE(?3, remote_task_id), updated_at = ?4 WHERE id = ?5 AND status != 'CANCELLED'",
             params![status, progress, remote_id, now, id],
         )
         .map_err(|error| error.to_string())?;
@@ -244,6 +259,9 @@ pub fn complete_video(
         .map_err(|error| error.to_string())?;
     let record =
         get_in_transaction(&transaction, id)?.ok_or_else(|| format!("找不到视频生成流水：{id}"))?;
+    if record.status == STATUS_CANCELLED {
+        return Err("视频任务已停止，忽略旧任务返回的结果".to_owned());
+    }
     let now = Utc::now().to_rfc3339();
     let result = json!({"relative_path": relative_path, "absolute_path": absolute_path, "mime_type": mime_type});
     transaction
@@ -336,10 +354,22 @@ pub fn fail(connection: &Connection, id: &str, message: &str) -> Result<(), Stri
     connection
         .execute(
             "UPDATE generation_records SET status = ?1, error_json = ?2,
-         updated_at = ?3, finished_at = ?3 WHERE id = ?4",
+         updated_at = ?3, finished_at = ?3 WHERE id = ?4 AND status != 'CANCELLED'",
             params![STATUS_FAILED, error_value.to_string(), now, id],
         )
         .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn cancel_video(connection: &Connection, id: &str) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let changed = connection.execute(
+        "UPDATE generation_records SET status = ?1, updated_at = ?2, finished_at = ?2,
+         error_json = ?3 WHERE id = ?4 AND media_type = 'video' AND target_type = 'shot'
+         AND status IN ('PENDING', 'RUNNING', 'REMOTE_PROCESSING', 'DOWNLOADING')",
+        params![STATUS_CANCELLED, now, json!({"message":"任务已停止，新的分镜视频任务将接替它"}).to_string(), id],
+    ).map_err(|error| error.to_string())?;
+    if changed != 1 { return Err("原分镜视频任务已结束，请刷新后重试".to_owned()); }
     Ok(())
 }
 
@@ -494,6 +524,44 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_video_cannot_replace_new_shot_result() {
+        let mut connection = database();
+        let input = || NewGenerationRecord {
+            project_id: "P_TEST", media_type: "video", target_type: "shot", target_id: "A-001",
+            base_url: "https://example.com", model: "video-model", protocol: "platform",
+            prompt: "测试视频提示词", aspect_ratio: "9:16",
+        };
+        let old = create(&connection, input()).unwrap();
+        assert!(has_unfinished_video(&connection, "P_TEST", "A-001").unwrap());
+        cancel_video(&connection, &old.id).unwrap();
+        assert!(!has_unfinished_video(&connection, "P_TEST", "A-001").unwrap());
+        assert!(list_unfinished_videos(&connection).unwrap().is_empty());
+        let new = create(&connection, input()).unwrap();
+        complete_video(&mut connection, &new.id, "shots/videos/new.mp4", "C:/test/new.mp4", "video/mp4").unwrap();
+        assert!(complete_video(&mut connection, &old.id, "shots/videos/old.mp4", "C:/test/old.mp4", "video/mp4").is_err());
+        fail(&connection, &old.id, "late error").unwrap();
+        assert_eq!(get(&connection, &old.id).unwrap().unwrap().status, STATUS_CANCELLED);
+        let shot: String = connection.query_row("SELECT data_json FROM shots WHERE id = 'A-001'", [], |row| row.get(0)).unwrap();
+        let shot: Value = serde_json::from_str(&shot).unwrap();
+        assert_eq!(shot.pointer("/video_assets/0").and_then(Value::as_str), Some("shots/videos/new.mp4"));
+    }
+
+    #[test]
+    fn failed_replacement_rolls_back_original_cancellation() {
+        let mut connection = database();
+        let old = create(&connection, NewGenerationRecord {
+            project_id: "P_TEST", media_type: "video", target_type: "shot", target_id: "A-001",
+            base_url: "https://example.com", model: "video-model", protocol: "platform",
+            prompt: "测试视频提示词", aspect_ratio: "9:16",
+        }).unwrap();
+        let transaction = connection.transaction().unwrap();
+        cancel_video(&transaction, &old.id).unwrap();
+        drop(transaction);
+        assert_eq!(get(&connection, &old.id).unwrap().unwrap().status, STATUS_PENDING);
+        assert!(has_unfinished_video(&connection, "P_TEST", "A-001").unwrap());
+    }
+
+    #[test]
     fn persists_composed_project_video_without_attaching_it_to_a_shot() {
         let mut connection = database();
         let record = create(
@@ -606,7 +674,10 @@ mod tests {
         assert_eq!(waiting.status, STATUS_REMOTE_PROCESSING);
         assert_eq!(waiting.remote_task_id.as_deref(), Some("REMOTE_ORIGINAL"));
         assert_eq!(
-            waiting.error.as_ref().and_then(|value| value["code"].as_str()),
+            waiting
+                .error
+                .as_ref()
+                .and_then(|value| value["code"].as_str()),
             Some("PLATFORM_LOGIN_REQUIRED")
         );
         assert!(list_unfinished_videos(&connection)

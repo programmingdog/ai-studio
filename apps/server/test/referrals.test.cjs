@@ -29,6 +29,37 @@ test('commission uses integer fen, floors sub-fen, and never rounds via floating
   for (const amount of [-1, 1.1, Infinity, NaN, '100', Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => rules.commissionFen(amount, 1000));
   assert.throws(() => rules.commissionFen(100, 10001));
 });
+test('recharge only qualifies invitation rewards and never creates commission', async () => {
+  const qualified = [], writes = [];
+  const service = new ReferralsService({}, {}, {});
+  service.qualifyInvitationReward = async (...args) => qualified.push(args);
+  await service.settlePayment({ execute: async (...args) => writes.push(args) }, 'payment-1', 'child', 1000);
+  assert.equal(qualified.length, 1);
+  assert.equal(writes.some(([sql]) => /commission_records|commission_wallets|distribution_settlements/.test(sql)), false);
+});
+test('only image and video credit consumption creates two-level commission at one fen per credit', async () => {
+  const writes = [];
+  const connection = {
+    async query(sql) {
+      if (sql.includes('distribution_consumption_settlements')) return [[]];
+      if (sql.includes('FROM users u')) return [[{ direct_id: 'direct', direct_status: 'ACTIVE', indirect_id: 'indirect', indirect_status: 'ACTIVE' }]];
+      if (sql.includes('commission_wallets')) return [[{ user_id: 'wallet' }]];
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async execute(sql, args) { writes.push([sql, args]); },
+  };
+  const service = new ReferralsService({}, {}, {});
+  service.config = async () => ({ enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, revision: 7 });
+  await service.settleGenerationConsumption(connection, 'consumption-image', 'task-image', 'child', 'IMAGE_GENERATION', 10);
+  const commissions = writes.filter(([sql]) => sql.startsWith('INSERT INTO commission_records'));
+  assert.equal(commissions.length, 1);
+  assert.deepEqual(commissions[0][1].slice(1), ['consumption-image', 'direct', 'child', 'IMAGE_GENERATION', 10, 1, 10, 1000, 1, 7]);
+  const beforeText = writes.length;
+  await service.settleGenerationConsumption(connection, 'consumption-text', 'task-text', 'child', 'TEXT_GENERATION', 1000);
+  assert.equal(writes.length, beforeText);
+  await service.settleGenerationConsumption(connection, 'consumption-video', 'task-video', 'child', 'VIDEO_GENERATION', 100);
+  assert.equal(writes.filter(([sql]) => sql.startsWith('INSERT INTO commission_records')).length, 3);
+});
 test('withdrawal opens exactly Friday 00:00 through 23:59:59 China time', () => {
   assert.equal(rules.withdrawalWindow(new Date('2026-09-03T15:59:59.999Z')).withdrawal_open, false);
   assert.equal(rules.withdrawalWindow(new Date('2026-09-03T16:00:00Z')).withdrawal_open, true);
@@ -70,10 +101,10 @@ test('admin config, audit and payout actions require distinct server permissions
 });
 test('record pagination is bounded, allowlisted, ownership-filtered and excludes payee secrets', async () => {
   const calls = [];
-  const service = new ReferralsService({ query: async (sql, args) => { calls.push([sql, args]); return Array.from({ length: 51 }, (_, i) => ({ id: String(i) })); } }, {}, {});
+  const service = new ReferralsService({ query: async (sql, args) => { calls.push([sql, args]); return sql.startsWith('SELECT COUNT') ? [{ total: 25 }] : Array.from({ length: 11 }, (_, i) => ({ id: String(i) })); } }, {}, {});
   const result = await service.records('withdrawals', 'my-user', '2', 'PROCESSING');
-  assert.equal(result.items.length, 50); assert.equal(result.has_more, true);
-  assert.match(calls[0][0], /user_id = \? AND status = \?/); assert.match(calls[0][0], /OFFSET 50$/);
+  assert.equal(result.items.length, 10); assert.equal(result.page_size, 10); assert.equal(result.total, 25); assert.equal(result.total_pages, 3); assert.equal(result.has_more, true);
+  assert.match(calls[0][0], /user_id = \? AND status = \?/); assert.match(calls[0][0], /LIMIT 11 OFFSET 10$/);
   assert.doesNotMatch(calls[0][0], /payee_ciphertext|request_hash|SELECT \*/); assert.deepEqual(calls[0][1], ['my-user', 'PROCESSING']);
   for (const page of ['0', '-1', '1.5', 'Infinity', '100001', '1; DROP TABLE users']) await assert.rejects(service.records('withdrawals', 'my-user', page));
   await assert.rejects(service.records('users')); await assert.rejects(service.records('withdrawals', 'my-user', '1', 'INVALID'));
@@ -121,20 +152,20 @@ test('admin commission, withdrawal and payout records include the corresponding 
     assert.doesNotMatch(calls[0][0], /login_name|JOIN users/);
   }
 });
-test('subordinate pages separate two levels and include only aggregate paid consumption with masked accounts', async () => {
+test('subordinate pages separate two levels and include only aggregate generation consumption with masked accounts', async () => {
   const calls = [];
   const database = { async query(sql, args) {
     calls.push([sql, args]);
     if (sql.startsWith('SELECT COUNT')) return [{ total: 1, total_consumption_fen: 12345 }];
-    return [{ id: 'child', display_name: '下级', email: 'child@example.invalid', phone: null, status: 'ACTIVE', parent_display_name: '直属用户', consumption_fen: 12345, paid_order_count: 2, last_paid_at: '2026-09-04', created_at: '2026-09-01' }];
+    return [{ id: 'child', display_name: '下级', email: 'child@example.invalid', phone: null, status: 'ACTIVE', parent_display_name: '直属用户', consumption_fen: 12345, generation_count: 2, last_paid_at: '2026-09-04', created_at: '2026-09-01' }];
   } };
   const service = new ReferralsService(database, {}, {});
   const direct = await service.subordinates('current-user', '1', '1');
   assert.equal(direct.items[0].account, 'ch***@example.invalid'); assert.equal(direct.items[0].consumption_fen, 12345); assert.equal(direct.total_consumption_fen, 12345);
-  assert.match(calls[1][0], /u\.pid = \?/); assert.match(calls[1][0], /po\.status = 'PAID'/); assert.match(calls[1][0], /payer_paid_amount_fen/);
+  assert.match(calls[1][0], /u\.pid = \?/); assert.match(calls[1][0], /ccr\.status = 'CONFIRMED'/); assert.match(calls[1][0], /IMAGE_GENERATION.*VIDEO_GENERATION/); assert.doesNotMatch(calls[1][0], /payment_orders/);
   calls.length = 0;
   const indirect = await service.subordinates('current-user', '2', '2');
-  assert.equal(indirect.level, 2); assert.match(calls[1][0], /INNER JOIN users p ON p\.id = u\.pid/); assert.match(calls[1][0], /OFFSET 50$/);
+  assert.equal(indirect.level, 2); assert.equal(indirect.page_size, 10); assert.match(calls[1][0], /INNER JOIN users p ON p\.id = u\.pid/); assert.match(calls[1][0], /LIMIT 11 OFFSET 10$/);
   for (const level of ['0', '3', '1.5', 'x']) await assert.rejects(service.subordinates('current-user', level, '1'));
 });
 test('invite collision retries and already assigned codes are stable', async () => {

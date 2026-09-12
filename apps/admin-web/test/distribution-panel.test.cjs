@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { componentHarness, flush } = require('../../../tests/support/react-hooks.cjs');
 const file = path.join(__dirname, '../components/DistributionPanel.tsx');
-const base = { enabled: false, direct_rate_bps: 1000, indirect_rate_bps: 500, minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invitation_anti_abuse_enabled: true, invitation_daily_reward_limit: 20, invitation_monthly_reward_limit: 200, invite_page_base_url: 'https://example.invalid/invite', windows_download_url: '', macos_download_url: '', revision: 2 };
+const base = { enabled: false, direct_rate_bps: 1000, indirect_rate_bps: 500, commission_notice: '仅图片和视频生成参与分润', minimum_withdrawal_fen: 10000, invitation_reward_credits: 20, invitation_anti_abuse_enabled: true, invitation_daily_reward_limit: 20, invitation_monthly_reward_limit: 200, invite_page_base_url: 'https://example.invalid/invite', windows_download_url: '', macos_download_url: '', revision: 2 };
 test('config converts percentages and yuan to integers and preserves optimistic revision', async () => {
   const calls = [];
   const h = componentHarness(file, 'DistributionConfigPanel', { token: 'test-token' }, { '@/lib/api': { async apiRequest(...args) { calls.push(args); return { ...base }; } } });
@@ -13,6 +13,7 @@ test('config converts percentages and yuan to integers and preserves optimistic 
   await h.nodes().find(x => x.type === 'form').props.onSubmit({ preventDefault() {} });
   const body = JSON.parse(calls[1][1].body);
   assert.equal(body.direct_rate_bps, 1234); assert.equal(body.indirect_rate_bps, 567); assert.equal(body.minimum_withdrawal_fen, 8899); assert.equal(body.revision, 2);
+  assert.equal(body.commission_notice, base.commission_notice);
   assert.equal(body.invitation_anti_abuse_enabled, true); assert.equal(body.invitation_daily_reward_limit, 20); assert.equal(body.invitation_monthly_reward_limit, 200);
   h.edit(decimal()[0], '1.234'); await h.nodes().find(x => x.type === 'form').props.onSubmit({ preventDefault() {} });
   assert.equal(calls.length, 2);
@@ -24,6 +25,17 @@ test('anti-abuse switch explains both reward strategies and exposes daily and mo
   const checkbox = h.nodes().find(node => node.type === 'input' && node.props.type === 'checkbox');
   h.edit(checkbox, false);
   assert.ok(h.nodes().some(node => h.text(node).includes('注册成功立即发放')));
+});
+test('commission notice is editable and generation-only commission rules are explained', async () => {
+  const calls = [];
+  const h = componentHarness(file, 'DistributionConfigPanel', { token: 'test-token' }, { '@/lib/api': { async apiRequest(...args) { calls.push(args); return { ...base }; } } });
+  await h.ready();
+  const notice = h.nodes().find(node => node.type === 'textarea' && node.props.maxLength === 1000);
+  assert.equal(notice.props.value, base.commission_notice);
+  h.edit(notice, '自定义分润说明');
+  await h.nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+  assert.equal(JSON.parse(calls[1][1].body).commission_notice, '自定义分润说明');
+  assert.ok(h.nodes().some(node => h.text(node).includes('只计算图片生成和视频生成')));
 });
 test('reward records show inviter and invited user login names', async () => {
   const row = {

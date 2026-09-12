@@ -6,7 +6,7 @@ const file = path.join(__dirname, '../src/components/ReferralPanel.tsx');
 const base = { withdrawal_open: true, next_open_at: '2026-09-10T16:00:00Z', minimum_withdrawal_fen: 10000, available_fen: 20000 };
 const prepare = async (summary = base, api = async () => ({ id: 'test' })) => {
   const calls = [];
-  const h = componentHarness(file, 'WithdrawalForm', { summary }, { '../services/platform': { async applyReferralWithdrawal(input) { calls.push(input); return api(input); } } });
+  const h = componentHarness(file, 'WithdrawalForm', { summary }, { '../services/platform': { async applyReferralWithdrawal(input) { calls.push(input); return api(input); } }, './RecordPagination': { RecordPagination: () => null } });
   const inputs = () => h.nodes().filter(x => x.type === 'input');
   h.edit(inputs()[0], '123.45'); h.edit(inputs()[1], '测试用户'); h.edit(inputs()[2], 'test@example.invalid');
   const previous = global.FileReader;
@@ -42,11 +42,22 @@ test('changing to invalid or oversized receipt clears previous valid image', asy
   h.inputs()[3].props.onChange({ target: { files: [{ type: 'image/png', size: 2 * 1024 * 1024 + 1 }] } }); h.render();
   assert.equal(h.nodes().some(x => x.type === 'img'), false);
 });
-test('referral center exposes subordinate tab with direct, indirect and paid-consumption details', () => {
+test('referral records are grouped into dedicated tabs with duplicated pagination', () => {
   const source = require('node:fs').readFileSync(file, 'utf8');
-  assert.match(source, /\["subordinates", "下级用户"\]/);
+  const account = require('node:fs').readFileSync(path.join(__dirname, '../src/components/AccountCenterModal.tsx'), 'utf8');
+  assert.match(account, />分润记录<\/button>/); assert.match(account, />提现记录<\/button>/); assert.match(account, />邀请记录<\/button>/);
+  assert.match(source, /提现申请.*打款记录/);
+  assert.match(source, /邀请奖励.*下级用户/);
   assert.match(source, /getReferralSubordinates\(level, page\)/);
   assert.match(source, /直接下级/); assert.match(source, /间接下级/);
   assert.match(source, /money\(user\.consumption_fen\)/);
-  assert.match(source, /user\.paid_order_count/);
+  assert.match(source, /user\.generation_count/);
+  assert.ok((source.match(/position="top"/g) || []).length >= 2);
+  assert.ok((source.match(/position="bottom"/g) || []).length >= 2);
+});
+test('client referral overview renders the administrator commission notice and generation-only rule', () => {
+  const source = require('node:fs').readFileSync(file, 'utf8');
+  assert.match(source, /summary\.data\.commission_notice/);
+  assert.match(source, /仅对下级图片、视频生成的实际积分消耗计提/);
+  assert.match(source, /充值和其他模型消耗不参与分润/);
 });

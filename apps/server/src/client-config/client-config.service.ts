@@ -2,7 +2,7 @@ import { Inject, Injectable, ServiceUnavailableException } from "@nestjs/common"
 import { RowDataPacket } from "mysql2";
 import { parseStoredJson } from "../common/input";
 import { DatabaseService } from "../database/database.service";
-import { multiplyCredits, storedModelCreditMultiplier } from "../common/model-credit";
+import { roundedModelCredits, storedModelCreditMultiplier } from "../common/model-credit";
 import { supportsMediaResolution } from "../gateway/media-resolution";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
 import { wagaMediaParams, wagaProfiles } from "../gateway/waga-media";
@@ -116,7 +116,7 @@ export class ClientConfigService {
         ...row,
         base_credit_cost: Number(row.credit_cost),
         credit_multiplier: creditMultiplier,
-        credit_cost: multiplyCredits(Number(row.credit_cost), creditMultiplier),
+        credit_cost: roundedModelCredits(Number(row.credit_cost), creditMultiplier),
         billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
         max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
         generation_notice: row.model_code === "viduq3" ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
@@ -142,7 +142,7 @@ export class ClientConfigService {
           config: parseStoredJson<Record<string, unknown>>(row.config_json) || {}, protocol: row.api_protocol || "",
           capability: row.capability, modelCode: row.model_code,
         })).map((price) => ({ resolution: String(price.resolution), label: wagaProfiles[row.model_code]?.resolution === false ? "固定输出" : undefined,
-          base_credit_cost: Number(price.credit_cost), credit_cost: multiplyCredits(Number(price.credit_cost), creditMultiplier) })),
+          base_credit_cost: Number(price.credit_cost), credit_cost: roundedModelCredits(Number(price.credit_cost), creditMultiplier) })),
       };
     });
   }

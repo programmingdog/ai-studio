@@ -19,6 +19,8 @@ export interface CreationSpec {
   creative_type_prompt?: string;
   /** Preferred episode generation unit for the guided idea workflow. */
   long_form_chunk_seconds?: 60 | 90;
+  /** Enforce one generated shot duration for video parsing/understanding projects. */
+  storyboard_fixed_seconds?: 6 | 10 | 15;
 }
 
 export type IdeaDevelopmentStage = "outline_review" | "episodes_review" | "assets_review" | "storyboards" | "storyboards_review" | "completed" | "failed";
@@ -224,6 +226,16 @@ export interface ProjectSummary {
 
 export interface ProjectListItem extends ProjectSummary {
   is_example: boolean;
+  stats?: {
+    scenes: number;
+    characters: number;
+    props: number;
+    shots: number;
+    generated_scenes: number;
+    generated_characters: number;
+    generated_props: number;
+    generated_shots: number;
+  };
 }
 
 export type AssetLibraryType = "scene" | "character" | "prop";
@@ -438,7 +450,8 @@ export type ImageGenerationTaskStatus =
   | "REMOTE_PROCESSING"
   | "DOWNLOADING"
   | "COMPLETED"
-  | "FAILED";
+  | "FAILED"
+  | "CANCELLED";
 
 export interface ImageGenerationTask {
   id: string;
@@ -580,6 +593,7 @@ export interface ApplicationLogListResult {
 
 export interface CreateShotVideoGenerationInput {
   workflow_credit_id?: string;
+  replace_record_id?: string;
   project_path: string;
   project_id: string;
   shot_id: string;
@@ -654,6 +668,7 @@ export interface DouyinStoryboardInput {
 }
 
 export type DouyinUnderstandingTaskStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+export type VideoSubmissionMode = "url" | "upload";
 
 export interface DouyinUnderstandingTask {
   id: string;
@@ -684,6 +699,7 @@ export interface CreateDouyinUnderstandingTaskInput extends DouyinStoryboardInpu
   video_info: DouyinVideoInfo;
   mode: DouyinUnderstandingTask["mode"];
   fixed_seconds?: number;
+  video_submission_mode: VideoSubmissionMode;
 }
 
 export interface SaveLocalVideoUnderstandingTaskInput {

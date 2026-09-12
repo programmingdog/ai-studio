@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
-import { CheckCircle2, CircleUserRound, Clock3, Coins, CreditCard, LoaderCircle, LogOut, Save, X } from "lucide-react";
+import { BadgeDollarSign, CheckCircle2, CircleUserRound, Clock3, Coins, CreditCard, History, LoaderCircle, LogOut, ReceiptText, Save, UsersRound, WalletCards, X } from "lucide-react";
 import { UnifiedAuthPanel } from "./UnifiedAuthPanel";
-import { InvitationCard, ReferralPanel } from "./ReferralPanel";
+import { InvitationCard, ReferralCommissionRecords, ReferralInvitationRecords, ReferralPanel, ReferralWithdrawalRecords } from "./ReferralPanel";
+import { RecordPagination } from "./RecordPagination";
 import {
   clearInvalidPlatformSession, createCreditPurchase, getCreditBalance, getCreditPurchase,
   getPlatformUser, listCreditConsumptions, listCreditPackages, listCreditPurchases,
@@ -28,13 +29,16 @@ function countdownText(seconds: number | null): string {
   return [hours, minutes, remainder].slice(hours ? 0 : 1).map(value => String(value).padStart(2, "0")).join(":");
 }
 
-export function AccountCenterModal({ onClose, required = false, initialSection = "account", purchaseFlow = false, forceReauthentication = false, onCreditsPurchased, onReauthenticated }: { onClose: () => void; required?: boolean; initialSection?: "account" | "credits"; purchaseFlow?: boolean; forceReauthentication?: boolean; onCreditsPurchased?: () => void; onReauthenticated?: () => void }) {
+type AccountSection = "account" | "credits" | "purchases" | "consumptions" | "referrals" | "commissions" | "withdrawals" | "invitations";
+type RecordRow = { id: string; title: string; amount: string; status: string; time?: string };
+
+export function AccountCenterModal({ onClose, required = false, initialSection = "account", purchaseFlow = false, forceReauthentication = false, onCreditsPurchased, onReauthenticated }: { onClose: () => void; required?: boolean; initialSection?: AccountSection; purchaseFlow?: boolean; forceReauthentication?: boolean; onCreditsPurchased?: () => void; onReauthenticated?: () => void }) {
   const { productName } = useProductBrand();
   const queryClient = useQueryClient();
   const session = useQuery({ queryKey: ["platform-session"], queryFn: loadPlatformSession, staleTime: Infinity });
   const loggedIn = Boolean(session.data) && !forceReauthentication;
   const user = useQuery({ queryKey: ["platform-user"], queryFn: getPlatformUser, enabled: loggedIn, retry: false });
-  const [section, setSection] = useState<"account" | "credits" | "referrals">(initialSection);
+  const [section, setSection] = useState<AccountSection>(initialSection);
   useEffect(() => {
     if (forceReauthentication) return;
     if (!(user.error instanceof PlatformApiError) || user.error.status !== 401) return;
@@ -53,9 +57,9 @@ export function AccountCenterModal({ onClose, required = false, initialSection =
     <section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-center-title">
       <header><div><span className="eyebrow">PLATFORM ACCOUNT</span><h2 id="account-center-title">{forceReauthentication ? "登录已过期，请重新登录" : loggedIn ? "账户与积分中心" : `登录 ${productName}`}</h2><p>{forceReauthentication ? "为了账户安全，请重新输入账号密码。已提交的生成任务会保留，登录后继续查询，不会重新生成。" : loggedIn ? "管理账户资料、积分和微信支付订单。" : "必须先登录；项目、资产和处理记录会按账户隔离保存。"}</p></div>{!required && <button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button>}</header>
       {session.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在读取安全登录会话…</div> : !loggedIn ? <UnifiedAuthPanel onAuthenticated={acceptLogin} forcePasswordEntry={forceReauthentication} initialEmail={forceReauthentication ? user.data?.email ?? undefined : undefined} /> : <>
-        <nav className="account-tabs"><button className={section === "account" ? "active" : ""} onClick={() => setSection("account")}><CircleUserRound size={16} />账户资料</button><button className={section === "credits" ? "active" : ""} onClick={() => setSection("credits")}><Coins size={16} />积分与购买</button><button className={section === "referrals" ? "active" : ""} onClick={() => setSection("referrals")}><CreditCard size={16} />分润与提现</button></nav>
+        <nav className="account-tabs"><button className={section === "account" ? "active" : ""} onClick={() => setSection("account")}><CircleUserRound size={16} />账户资料</button><button className={section === "credits" ? "active" : ""} onClick={() => setSection("credits")}><Coins size={16} />积分与购买</button><button className={section === "purchases" ? "active" : ""} onClick={() => setSection("purchases")}><ReceiptText size={16} />购买记录</button><button className={section === "consumptions" ? "active" : ""} onClick={() => setSection("consumptions")}><History size={16} />消耗记录</button><button className={section === "referrals" ? "active" : ""} onClick={() => setSection("referrals")}><CreditCard size={16} />分润与提现</button><button className={section === "commissions" ? "active" : ""} onClick={() => setSection("commissions")}><BadgeDollarSign size={16} />分润记录</button><button className={section === "withdrawals" ? "active" : ""} onClick={() => setSection("withdrawals")}><WalletCards size={16} />提现记录</button><button className={section === "invitations" ? "active" : ""} onClick={() => setSection("invitations")}><UsersRound size={16} />邀请记录</button></nav>
         <div className="account-body">
-          {section === "account" ? <ProfilePanel user={user.data} loading={user.isLoading} error={user.error} onSaved={(next) => queryClient.setQueryData(["platform-user"], next)} onLogout={() => logout.mutate()} loggingOut={logout.isPending} /> : section === "credits" ? <CreditsPanel onPurchased={onCreditsPurchased} purchaseFlow={purchaseFlow} /> : <ReferralPanel key={user.data?.id} userId={user.data?.id} />}
+          {section === "account" ? <ProfilePanel user={user.data} loading={user.isLoading} error={user.error} onSaved={(next) => queryClient.setQueryData(["platform-user"], next)} onLogout={() => logout.mutate()} loggingOut={logout.isPending} /> : section === "credits" ? <CreditsPanel onPurchased={onCreditsPurchased} purchaseFlow={purchaseFlow} /> : section === "purchases" ? <PurchaseRecordsPanel /> : section === "consumptions" ? <ConsumptionRecordsPanel /> : section === "referrals" ? <ReferralPanel key={user.data?.id} userId={user.data?.id} /> : section === "commissions" ? <ReferralCommissionRecords userId={user.data?.id} /> : section === "withdrawals" ? <ReferralWithdrawalRecords userId={user.data?.id} /> : <ReferralInvitationRecords userId={user.data?.id} />}
         </div>
       </>}
     </section>
@@ -82,8 +86,6 @@ function CreditsPanel({ onPurchased, purchaseFlow = false }: { onPurchased?: () 
   const queryClient = useQueryClient();
   const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance });
   const packages = useQuery({ queryKey: ["credit-packages"], queryFn: listCreditPackages });
-  const purchases = useQuery({ queryKey: ["credit-purchases"], queryFn: listCreditPurchases });
-  const consumptions = useQuery({ queryKey: ["credit-consumptions"], queryFn: listCreditConsumptions });
   const [activePurchase, setActivePurchase] = useState<PlatformPurchase | null>(null);
   const purchase = useMutation({ mutationFn: createCreditPurchase, onSuccess: (result, packageId) => {
     const selectedPackage = packages.data?.find(item => item.id === packageId);
@@ -108,13 +110,35 @@ function CreditsPanel({ onPurchased, purchaseFlow = false }: { onPurchased?: () 
   return <div className="credits-panel"><div className="balance-grid"><article><span>积分余额</span><strong>{balance.data?.balance ?? "—"}</strong></article><article><span>正在使用的积分</span><strong>{balance.data?.held ?? "—"}</strong></article><article className="available"><span>可用积分</span><strong>{balance.data?.available ?? "—"}</strong></article></div>
     <section className="platform-section"><header><div><strong>积分套餐</strong><span>赠送积分额外到账，不抵扣套餐售价；微信支付成功后自动到账。</span></div></header><div className="package-grid">{packages.data?.map((item) => <article key={item.id}><span>{item.name}</span><strong>{item.base_credits}<small> 积分</small></strong><p>{item.description}</p>{item.bonus_credits > 0 && <em>额外赠送 {item.bonus_credits}，支付后实得 {item.total_credits}</em>}<button className="primary-button" onClick={() => purchase.mutate(item.id)} disabled={purchase.isPending}><CreditCard size={15} />{money(item.price_fen)} 购买</button></article>)}</div>{purchase.error && <div className="error-banner">{message(purchase.error)}</div>}</section>
     {activePurchase && createPortal(<PaymentDialog purchase={activePurchase} purchaseFlow={purchaseFlow} onClose={() => { const paid = activePurchase.status === "PAID"; setActivePurchase(null); if (paid) onPurchased?.(); }} />, document.body)}
-    <div className="records-columns"><RecordList title="购买记录" loading={purchases.isLoading} rows={(purchases.data || []).map((item) => ({ id: item.id, title: item.package_name_snapshot || "积分套餐", amount: `+${item.credits_granted || 0} 积分`, status: item.status, time: item.purchased_at || item.created_at }))} /><RecordList title="消耗记录" loading={consumptions.isLoading} rows={(consumptions.data || []).map((item) => ({ id: item.id, title: item.model_alias || item.description || item.category, amount: `-${item.credits_consumed} 积分`, status: item.status, time: item.occurred_at }))} /></div>
   </div>;
 }
 
-function RecordList({ title, loading, rows }: { title: string; loading: boolean; rows: Array<{ id: string; title: string; amount: string; status: string; time?: string }> }) {
+function PurchaseRecordsPanel() {
+  const [page, setPage] = useState(1);
+  const purchases = useQuery({ queryKey: ["credit-purchases", page], queryFn: () => listCreditPurchases(page) });
+  const rows = (purchases.data?.items || []).map((item) => ({ id: item.id, title: item.package_name_snapshot || "积分套餐", amount: `+${item.credits_granted || 0} 积分`, status: item.status, time: item.purchased_at || item.created_at }));
+  return <RecordHistoryPanel title="购买记录" description="查看积分套餐购买、支付状态和到账时间。" page={page} total={purchases.data?.total || 0} totalPages={purchases.data?.total_pages || 0} loading={purchases.isLoading} fetching={purchases.isFetching} error={purchases.error} rows={rows} onPageChange={setPage} />;
+}
+
+function ConsumptionRecordsPanel() {
+  const [page, setPage] = useState(1);
+  const consumptions = useQuery({ queryKey: ["credit-consumptions", page], queryFn: () => listCreditConsumptions(page) });
+  const rows = (consumptions.data?.items || []).map((item) => ({ id: item.id, title: item.model_alias || item.description || item.category, amount: `-${item.credits_consumed} 积分`, status: item.status, time: item.occurred_at }));
+  return <RecordHistoryPanel title="消耗记录" description="查看各项生成任务的积分消耗明细。" page={page} total={consumptions.data?.total || 0} totalPages={consumptions.data?.total_pages || 0} loading={consumptions.isLoading} fetching={consumptions.isFetching} error={consumptions.error} rows={rows} onPageChange={setPage} />;
+}
+
+function RecordHistoryPanel({ title, description, page, total, totalPages, loading, fetching, error, rows, onPageChange }: { title: string; description: string; page: number; total: number; totalPages: number; loading: boolean; fetching: boolean; error: unknown; rows: RecordRow[]; onPageChange: (page: number) => void }) {
+  return <section className="record-history-panel">
+    <header className="record-history-heading"><div><strong>{title}</strong><span>{description}</span></div>{fetching && !loading && <span className="record-refreshing"><LoaderCircle className="spin" size={14} />正在刷新</span>}</header>
+    <RecordPagination page={page} total={total} totalPages={totalPages} disabled={fetching} onPageChange={onPageChange} position="top" />
+    {error ? <div className="error-banner">{message(error)}</div> : <RecordList title={title} total={total} loading={loading} rows={rows} />}
+    <RecordPagination page={page} total={total} totalPages={totalPages} disabled={fetching} onPageChange={onPageChange} position="bottom" />
+  </section>;
+}
+
+function RecordList({ title, total, loading, rows }: { title: string; total: number; loading: boolean; rows: RecordRow[] }) {
   const { locale } = useI18n();
-  return <section className="record-list"><header><strong>{title}</strong><span>{rows.length} 条</span></header>{loading ? <div className="account-loading"><LoaderCircle className="spin" /></div> : rows.length ? rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{date(row.time)}</small></div><div><b>{row.amount}</b><span className={`platform-status ${taskTone(row.status)}`}>{localizedStatusLabel(row.status, locale)}</span></div></article>) : <div className="account-empty">暂无记录</div>}</section>;
+  return <section className="record-list"><header><strong>{title}</strong><span>共 {total} 条</span></header>{loading ? <div className="account-loading"><LoaderCircle className="spin" /></div> : rows.length ? rows.map((row) => <article key={row.id}><div><strong>{row.title}</strong><small>{date(row.time)}</small></div><div><b>{row.amount}</b><span className={`platform-status ${taskTone(row.status)}`}>{localizedStatusLabel(row.status, locale)}</span></div></article>) : <div className="account-empty">暂无记录</div>}</section>;
 }
 
 function PaymentDialog({ purchase, onClose, purchaseFlow = false }: { purchase: PlatformPurchase; onClose: () => void; purchaseFlow?: boolean }) {

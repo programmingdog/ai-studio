@@ -9,13 +9,24 @@ pub mod model_catalog;
 pub mod repository;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex, OnceLock}, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
 fn initialization_lock(project_path: &Path) -> Result<Arc<Mutex<()>>, String> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
     let path = project_path.canonicalize().map_err(|e| e.to_string())?;
-    let mut locks = LOCKS.get_or_init(|| Mutex::new(HashMap::new())).lock().map_err(|e| e.to_string())?;
-    Ok(locks.entry(path).or_insert_with(|| Arc::new(Mutex::new(()))).clone())
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|e| e.to_string())?;
+    Ok(locks
+        .entry(path)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
 }
 
 pub fn open(project_path: &Path) -> Result<Connection, String> {
@@ -32,9 +43,13 @@ pub fn open(project_path: &Path) -> Result<Connection, String> {
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(|error| error.to_string())?;
-    let journal: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0)).map_err(|e| e.to_string())?;
+    let journal: String = connection
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
     if !journal.eq_ignore_ascii_case("wal") {
-        connection.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| e.to_string())?;
     }
     connection
         .pragma_update(None, "foreign_keys", "ON")

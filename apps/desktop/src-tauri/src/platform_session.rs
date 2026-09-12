@@ -2,7 +2,10 @@ use keyring::Entry;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::{atomic::{AtomicBool, Ordering}, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
 use tauri::Manager;
 
 const SERVICE: &str = "AI Video Studio Platform Session";
@@ -104,14 +107,27 @@ fn validate(session: &PlatformSession) -> Result<(), String> {
 
 fn expires_soon(session: &PlatformSession) -> bool {
     chrono::DateTime::parse_from_rfc3339(&session.expires_at)
-        .map(|expires_at| expires_at.timestamp() <= chrono::Utc::now().timestamp() + SESSION_REFRESH_EARLY_SECONDS)
+        .map(|expires_at| {
+            expires_at.timestamp() <= chrono::Utc::now().timestamp() + SESSION_REFRESH_EARLY_SECONDS
+        })
         .unwrap_or(true)
 }
 
 fn refresh_error(status: StatusCode, body: &str) -> String {
     let value = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
-    let message = value.get("message")
-        .and_then(|message| message.as_str().map(str::to_owned).or_else(|| message.as_array().map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("；"))))
+    let message = value
+        .get("message")
+        .and_then(|message| {
+            message.as_str().map(str::to_owned).or_else(|| {
+                message.as_array().map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("；")
+                })
+            })
+        })
         .filter(|message| !message.trim().is_empty())
         .unwrap_or_else(|| format!("刷新平台登录会话失败：HTTP {}", status.as_u16()));
     json!({
@@ -121,9 +137,16 @@ fn refresh_error(status: StatusCode, body: &str) -> String {
     }).to_string()
 }
 
-async fn refresh_locked(api_base: &str, rejected_access_token: &str, force: bool) -> Result<PlatformSession, String> {
+async fn refresh_locked(
+    api_base: &str,
+    rejected_access_token: &str,
+    force: bool,
+) -> Result<PlatformSession, String> {
     let api_base = crate::platform_media::refresh_api_base_url(api_base)?;
-    let _guard = SESSION_REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+    let _guard = SESSION_REFRESH_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     let current = read_platform_session()?.ok_or_else(|| "请先登录平台账户".to_owned())?;
     // A concurrent browser/Rust request may already have rotated the one-time
     // refresh token. Always reuse that newer session instead of rotating again.
@@ -141,16 +164,28 @@ async fn refresh_locked(api_base: &str, rejected_access_token: &str, force: bool
         .await
         .map_err(|error| format!("无法连接平台登录刷新接口：{error}"))?;
     let status = response.status();
-    let body = response.text().await.map_err(|error| format!("读取平台登录刷新响应失败：{error}"))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取平台登录刷新响应失败：{error}"))?;
     if !status.is_success() {
         if status == StatusCode::UNAUTHORIZED {
             let _ = delete_platform_session();
         }
         return Err(refresh_error(status, &body));
     }
-    let value = serde_json::from_str::<Value>(&body).map_err(|error| format!("平台登录刷新响应格式无效：{error}"))?;
-    let access_token = value.get("access_token").and_then(Value::as_str).unwrap_or("").to_owned();
-    let refresh_token = value.get("refresh_token").and_then(Value::as_str).unwrap_or("").to_owned();
+    let value = serde_json::from_str::<Value>(&body)
+        .map_err(|error| format!("平台登录刷新响应格式无效：{error}"))?;
+    let access_token = value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let refresh_token = value
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     let expires_in = value.get("expires_in").and_then(Value::as_i64).unwrap_or(0);
     if access_token.is_empty() || refresh_token.is_empty() || expires_in < 60 {
         return Err("平台登录刷新响应缺少有效令牌".to_owned());
@@ -159,7 +194,11 @@ async fn refresh_locked(api_base: &str, rejected_access_token: &str, force: bool
         access_token,
         refresh_token,
         expires_at: (chrono::Utc::now() + chrono::Duration::seconds(expires_in)).to_rfc3339(),
-        user_id: value.pointer("/user/id").and_then(Value::as_str).map(str::to_owned).or(current.user_id),
+        user_id: value
+            .pointer("/user/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or(current.user_id),
     };
     write_platform_session(session.clone())?;
     Ok(session)
@@ -171,11 +210,18 @@ pub(crate) async fn valid_access_token(api_base: &str) -> Result<String, String>
         return Ok(session.access_token);
     }
     let rejected = session.access_token.clone();
-    Ok(refresh_locked(api_base, &rejected, false).await?.access_token)
+    Ok(refresh_locked(api_base, &rejected, false)
+        .await?
+        .access_token)
 }
 
-pub(crate) async fn refresh_after_unauthorized(api_base: &str, rejected_access_token: &str) -> Result<String, String> {
-    Ok(refresh_locked(api_base, rejected_access_token, true).await?.access_token)
+pub(crate) async fn refresh_after_unauthorized(
+    api_base: &str,
+    rejected_access_token: &str,
+) -> Result<String, String> {
+    Ok(refresh_locked(api_base, rejected_access_token, true)
+        .await?
+        .access_token)
 }
 
 #[cfg(not(test))]
@@ -496,7 +542,11 @@ mod tests {
 
     #[test]
     fn refreshes_one_day_before_expiry_but_not_earlier() {
-        assert!(expires_soon(&session(chrono::Utc::now() + chrono::Duration::hours(23))));
-        assert!(!expires_soon(&session(chrono::Utc::now() + chrono::Duration::hours(25))));
+        assert!(expires_soon(&session(
+            chrono::Utc::now() + chrono::Duration::hours(23)
+        )));
+        assert!(!expires_soon(&session(
+            chrono::Utc::now() + chrono::Duration::hours(25)
+        )));
     }
 }

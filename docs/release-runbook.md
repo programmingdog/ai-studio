@@ -233,8 +233,8 @@ version = "0.2.1"
 ```powershell
 Set-Location C:\code\AIVideoStudio
 
-(Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
-(Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+(Get-Content -LiteralPath apps/desktop/package.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
+(Get-Content -LiteralPath apps/desktop/src-tauri/tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
 Select-String apps/desktop/src-tauri/Cargo.toml -Pattern '^version\s*=' | Select-Object -First 1
 ```
 

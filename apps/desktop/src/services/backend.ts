@@ -230,7 +230,20 @@ export async function listProjects(): Promise<ProjectListItem[]> {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (!stored) return [];
   const bundle = JSON.parse(stored) as ProjectBundle;
-  return [{ ...bundle.project, is_example: false }];
+  return [{
+    ...bundle.project,
+    is_example: false,
+    stats: {
+      scenes: bundle.canonical?.scenes.length ?? 0,
+      characters: bundle.canonical?.characters.length ?? 0,
+      props: bundle.canonical?.props?.length ?? 0,
+      shots: bundle.canonical?.shots.length ?? 0,
+      generated_scenes: 0,
+      generated_characters: 0,
+      generated_props: 0,
+      generated_shots: 0,
+    },
+  }];
 }
 
 export async function deleteProject(projectId: string): Promise<DeleteProjectResult> {
@@ -294,6 +307,26 @@ export async function saveTextAsTxt(content: string, defaultName: string): Promi
   return invoke<string>("save_text_file", { outputPath, content });
 }
 
+export async function savePromotionPoster(dataUrl: string, posterLabel: string | number): Promise<string | undefined> {
+  const safeLabel = String(posterLabel).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 60) || "自定义";
+  const filename = `逐梦帧推广海报-${safeLabel}.png`;
+  if (!isTauri()) {
+    const anchor = document.createElement("a");
+    anchor.href = dataUrl;
+    anchor.download = filename;
+    anchor.click();
+    return filename;
+  }
+  const selected = await saveDialog({
+    title: "保存推广海报",
+    defaultPath: filename,
+    filters: [{ name: "PNG 图片", extensions: ["png"] }],
+  });
+  if (typeof selected !== "string") return undefined;
+  const outputPath = selected.toLowerCase().endsWith(".png") ? selected : `${selected}.png`;
+  return invoke<string>("save_png_file", { outputPath, dataUrl });
+}
+
 export async function downloadDouyinVideo(
   shareText: string,
   outputPath: string,
@@ -337,6 +370,37 @@ export async function chooseProjectImage(): Promise<string | undefined> {
     filters: [{ name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp"] }],
   });
   return typeof selected === "string" ? selected : undefined;
+}
+
+export type PromotionPosterFile = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export async function listPromotionPosters(): Promise<PromotionPosterFile[]> {
+  if (!isTauri()) return [];
+  return invoke<PromotionPosterFile[]>("list_promotion_posters");
+}
+
+export async function choosePromotionPosterFile(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  const selected = await openDialog({
+    multiple: false,
+    title: "添加自定义推广海报",
+    filters: [{ name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp"] }],
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
+export async function importPromotionPoster(sourcePath: string): Promise<PromotionPosterFile> {
+  if (!isTauri()) throw new Error("添加自定义海报仅支持桌面应用");
+  return invoke<PromotionPosterFile>("import_promotion_poster", { sourcePath });
+}
+
+export async function readPromotionPosterDataUrl(posterPath: string): Promise<string> {
+  if (!isTauri()) throw new Error("读取自定义海报仅支持桌面应用");
+  return invoke<string>("read_promotion_poster_data_url", { posterPath });
 }
 
 export async function importProjectReferenceImage(

@@ -58,7 +58,13 @@ pub fn load_bundle(connection: &Connection) -> Result<Value, String> {
             "SELECT data_json FROM shots WHERE project_id = ?1 ORDER BY shot_order",
             project_id,
         )?;
-        hydrate_shot_character_states(connection, project_id, &characters, &mut shots, faithful_script)?;
+        hydrate_shot_character_states(
+            connection,
+            project_id,
+            &characters,
+            &mut shots,
+            faithful_script,
+        )?;
         let mut canonical = json!({
             "story": story,
             "episodes": super::episodes::list(connection, project_id)?,
@@ -351,13 +357,19 @@ pub fn save_canonical(
         let mut character = character.clone();
         let character_id = text(&character, "id");
         let states = if faithful_script {
-            character.get("states").and_then(Value::as_array).cloned().unwrap_or_default()
-        } else { character_states(&character) }
-            .into_iter()
-            .map(|state| {
-                merge_completed_image_assets(&transaction, project_id, "character_state", &state)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            character
+                .get("states")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            character_states(&character)
+        }
+        .into_iter()
+        .map(|state| {
+            merge_completed_image_assets(&transaction, project_id, "character_state", &state)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
         character["states"] = Value::Array(states.clone());
         let character =
             merge_completed_image_assets(&transaction, project_id, "character", &character)?;
@@ -671,7 +683,11 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
         .ok_or_else(|| format!("canonical.{key} must be an array"))
 }
 fn optional_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
-    value.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 fn text(value: &Value, key: &str) -> String {
     value
@@ -771,8 +787,14 @@ mod tests {
             canonical["shots"][0]["character_state_ids"]["CHAR_002"],
             "CHAR_002_STATE_001"
         );
-        assert_eq!(canonical["characters"][0]["states"][0]["description"], "原文一");
-        assert_eq!(canonical["characters"][1]["states"][0]["description"], "原文二");
+        assert_eq!(
+            canonical["characters"][0]["states"][0]["description"],
+            "原文一"
+        );
+        assert_eq!(
+            canonical["characters"][1]["states"][0]["description"],
+            "原文二"
+        );
 
         let normalized_once = canonical.clone();
         ensure_unique_character_state_ids(&mut canonical).unwrap();
@@ -795,7 +817,10 @@ mod tests {
         ensure_unique_character_state_ids(&mut canonical).unwrap();
 
         assert_eq!(canonical["characters"][0]["states"][0]["name"], "雨中状态");
-        assert_eq!(canonical["characters"][0]["states"][0]["description"], "雨中状态");
+        assert_eq!(
+            canonical["characters"][0]["states"][0]["description"],
+            "雨中状态"
+        );
         assert_eq!(
             canonical["characters"][0]["states"][0]["id"],
             "CHAR_001_STATE_001"
@@ -873,10 +898,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(
-            shot_state_ids,
-            vec!["STATE_001", "CHAR_002_STATE_001"]
-        );
+        assert_eq!(shot_state_ids, vec!["STATE_001", "CHAR_002_STATE_001"]);
     }
 
     #[test]
@@ -923,6 +945,9 @@ mod tests {
 
         assert_eq!(bundle["canonical"]["props"][0]["name"], "青铜钥匙");
         assert_eq!(bundle["canonical"]["props"][0]["style"], "蒸汽朋克");
-        assert_eq!(bundle["canonical"]["shots"][0]["prop_ids"], json!(["PROP_001"]));
+        assert_eq!(
+            bundle["canonical"]["shots"][0]["prop_ids"],
+            json!(["PROP_001"])
+        );
     }
 }

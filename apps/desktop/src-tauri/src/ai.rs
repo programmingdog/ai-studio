@@ -17,6 +17,7 @@ use std::{
 };
 use tauri::Manager;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
 use tokio_util::io::ReaderStream;
 
 const CREDENTIAL_SERVICE: &str = "studio.aivideo.desktop";
@@ -230,6 +231,8 @@ pub struct GenerationReferenceAssetInput {
 #[derive(Debug, Deserialize)]
 pub struct CreateShotVideoGenerationInput {
     workflow_credit_id: Option<String>,
+    #[serde(default)]
+    replace_record_id: Option<String>,
     project_path: String,
     project_id: String,
     shot_id: String,
@@ -325,6 +328,11 @@ fn active_video_tasks() -> &'static Mutex<HashSet<String>> {
     ACTIVE_VIDEO_TASKS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn video_stop_signals() -> &'static Mutex<HashMap<String, watch::Sender<bool>>> {
+    static SIGNALS: OnceLock<Mutex<HashMap<String, watch::Sender<bool>>>> = OnceLock::new();
+    SIGNALS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn configured_video_limiter(concurrency: usize) -> Option<Arc<tokio::sync::Semaphore>> {
     (concurrency > 0).then(|| Arc::new(tokio::sync::Semaphore::new(concurrency)))
 }
@@ -349,17 +357,31 @@ fn text_ai_client() -> Result<Client, String> {
 
 async fn video_task_limiter(api_base: Option<&str>) -> Option<Arc<tokio::sync::Semaphore>> {
     if let Some(base) = api_base {
-        if let Some(limiter) = PLATFORM_VIDEO_TASK_LIMITER.get() { return limiter.clone(); }
-        let concurrency = crate::platform_media::recommended_video_concurrency(base).await.unwrap_or(4);
+        if let Some(limiter) = PLATFORM_VIDEO_TASK_LIMITER.get() {
+            return limiter.clone();
+        }
+        let concurrency = crate::platform_media::recommended_video_concurrency(base)
+            .await
+            .unwrap_or(4);
         let configured = configured_video_limiter(concurrency);
-        let limiter = PLATFORM_VIDEO_TASK_LIMITER.get_or_init(|| configured).clone();
-        crate::logging::info("ai.video.concurrency_configured",json!({"concurrency":concurrency,
-            "unlimited":concurrency==0,"source":"server_or_fallback"}));
+        let limiter = PLATFORM_VIDEO_TASK_LIMITER
+            .get_or_init(|| configured)
+            .clone();
+        crate::logging::info(
+            "ai.video.concurrency_configured",
+            json!({"concurrency":concurrency,
+            "unlimited":concurrency==0,"source":"server_or_fallback"}),
+        );
         return limiter;
     }
     let concurrency = 4;
-    let limiter = VIDEO_TASK_LIMITER.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(concurrency))).clone();
-    crate::logging::info("ai.video.concurrency_configured",json!({"concurrency":concurrency,"source":"fallback"}));
+    let limiter = VIDEO_TASK_LIMITER
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(concurrency)))
+        .clone();
+    crate::logging::info(
+        "ai.video.concurrency_configured",
+        json!({"concurrency":concurrency,"source":"fallback"}),
+    );
     Some(limiter)
 }
 
@@ -631,17 +653,22 @@ async fn openai_json_completion(
         "idea_long_segment" => "长篇分段剧情生成",
         _ => "文本生成 / 创意开发（每次调用单独确认）",
     };
-    let response = crate::platform_media::text_completion(operation, json!({
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.35,
-        "stream": false
-    })).await?;
+    let response = crate::platform_media::text_completion(
+        operation,
+        json!({
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.35,
+            "stream": false
+        }),
+    )
+    .await?;
     // A successful upstream request is charged even if its content fails local
     // validation. Any correction is a new, separately confirmed paid request.
-    let content = extract_openai_completion_content(&response.to_string()).or_else(|_| generated_text(&response))?;
+    let content = extract_openai_completion_content(&response.to_string())
+        .or_else(|_| generated_text(&response))?;
     extract_json_object(&content)
 }
 
@@ -1180,10 +1207,8 @@ fn settings_view(
     model_catalog: Vec<crate::database::model_catalog::AiModelCatalogItem>,
 ) -> Result<AiSettingsView, String> {
     let default_generation_assets_directory = default_generation_assets_directory(app)?;
-    let generation_assets_directory = generation_assets_directory(
-        app,
-        settings.generation_assets_directory.as_deref(),
-    )?;
+    let generation_assets_directory =
+        generation_assets_directory(app, settings.generation_assets_directory.as_deref())?;
     let prompt_overrides = settings.prompt_overrides.clone().unwrap_or_default();
     let api_key = load_api_key()?;
     let api_key_mask = api_key.as_ref().map(|key| {
@@ -1744,27 +1769,62 @@ pub(crate) async fn analyze_video_path(
     path: &Path,
     prompt: &str,
 ) -> Result<VideoUnderstandingResult, String> {
-    if prompt.trim().chars().count() < 10 { return Err(error("VIDEO_PROMPT_REQUIRED", "请输入至少10个字符的视频分析提示词", false)); }
-    let metadata = tokio::fs::metadata(path).await.map_err(|e| error("VIDEO_READ_ERROR", e.to_string(), false))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_VIDEO_SIZE || mime_type(path).is_none() {
-        return Err(error("VIDEO_FILE_INVALID", "视频为空、格式不支持或超过2GB", false));
+    if prompt.trim().chars().count() < 10 {
+        return Err(error(
+            "VIDEO_PROMPT_REQUIRED",
+            "请输入至少10个字符的视频分析提示词",
+            false,
+        ));
     }
-    let directory = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("video-understanding-temp");
-    tokio::fs::create_dir_all(&directory).await.map_err(|e| e.to_string())?;
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| error("VIDEO_READ_ERROR", e.to_string(), false))?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_VIDEO_SIZE
+        || mime_type(path).is_none()
+    {
+        return Err(error(
+            "VIDEO_FILE_INVALID",
+            "视频为空、格式不支持或超过2GB",
+            false,
+        ));
+    }
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("video-understanding-temp");
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|e| e.to_string())?;
     let compressed = directory.join(format!("{}-platform.mp4", uuid::Uuid::new_v4()));
     let source = path.to_owned();
     let destination = compressed.clone();
     let compression = tauri::async_runtime::spawn_blocking(move || {
-        crate::media_tools::compress_video_for_inline_analysis(&source, &destination, LINGKE_INLINE_TARGET)
-    }).await.map_err(|e| e.to_string())?;
+        crate::media_tools::compress_video_for_inline_analysis(
+            &source,
+            &destination,
+            LINGKE_INLINE_TARGET,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     if let Err(e) = compression {
         let _ = tokio::fs::remove_file(&compressed).await;
         return Err(e);
     }
     let result = crate::platform_video_understanding::understand_uploaded_file(
-        None, &compressed, prompt,
-        path.file_name().and_then(|v| v.to_str()).unwrap_or("video").to_owned(), metadata.len()
-    ).await;
+        None,
+        &compressed,
+        prompt,
+        path.file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("video")
+            .to_owned(),
+        metadata.len(),
+    )
+    .await;
     let _ = tokio::fs::remove_file(&compressed).await;
     result
 }
@@ -2293,7 +2353,8 @@ pub async fn generate_project_image(
         ));
     }
     let settings = load_file(&app)?;
-    let api_key = load_api_key()?.ok_or_else(|| error("AI_API_KEY_REQUIRED", "请先在系统设置中保存 API Key", false))?;
+    let api_key = load_api_key()?
+        .ok_or_else(|| error("AI_API_KEY_REQUIRED", "请先在系统设置中保存 API Key", false))?;
     let client = Client::builder()
         .timeout(Duration::from_secs(5 * 60))
         .build()
@@ -2526,9 +2587,21 @@ fn compressed_reference_jpeg(
 ) -> Result<ReferenceImage, String> {
     let decoded = image::ImageReader::new(Cursor::new(&original.bytes))
         .with_guessed_format()
-        .map_err(|source_error| error("AI_VIDEO_REFERENCE_COMPRESS_FAILED", format!("无法识别参考图 {}：{source_error}", original.label), false))?
+        .map_err(|source_error| {
+            error(
+                "AI_VIDEO_REFERENCE_COMPRESS_FAILED",
+                format!("无法识别参考图 {}：{source_error}", original.label),
+                false,
+            )
+        })?
         .decode()
-        .map_err(|source_error| error("AI_VIDEO_REFERENCE_COMPRESS_FAILED", format!("无法解码参考图 {}：{source_error}", original.label), false))?;
+        .map_err(|source_error| {
+            error(
+                "AI_VIDEO_REFERENCE_COMPRESS_FAILED",
+                format!("无法解码参考图 {}：{source_error}", original.label),
+                false,
+            )
+        })?;
     let (width, height) = image::GenericImageView::dimensions(&decoded);
     let resized = if width.max(height) > max_edge {
         decoded.resize(max_edge, max_edge, image::imageops::FilterType::Lanczos3)
@@ -2540,13 +2613,20 @@ fn compressed_reference_jpeg(
     for (target, source) in rgb.pixels_mut().zip(rgba.pixels()) {
         let alpha = u16::from(source[3]);
         for channel in 0..3 {
-            target[channel] = ((u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+            target[channel] =
+                ((u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
         }
     }
     let mut output = Cursor::new(Vec::new());
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality)
         .encode_image(&image::DynamicImage::ImageRgb8(rgb))
-        .map_err(|source_error| error("AI_VIDEO_REFERENCE_COMPRESS_FAILED", format!("无法压缩参考图 {}：{source_error}", original.label), false))?;
+        .map_err(|source_error| {
+            error(
+                "AI_VIDEO_REFERENCE_COMPRESS_FAILED",
+                format!("无法压缩参考图 {}：{source_error}", original.label),
+                false,
+            )
+        })?;
     let bytes = output.into_inner();
     let data_url = format!("data:image/jpeg;base64,{}", BASE64.encode(&bytes));
     Ok(ReferenceImage {
@@ -2567,11 +2647,16 @@ fn platform_video_payload(
     version: Option<&str>,
     references: &[ReferenceImage],
 ) -> Value {
-    let reference_images = references.iter().map(|reference| json!({
-        "data_url": reference.data_url,
-        "label": reference.label,
-        "type": reference.kind,
-    })).collect::<Vec<_>>();
+    let reference_images = references
+        .iter()
+        .map(|reference| {
+            json!({
+                "data_url": reference.data_url,
+                "label": reference.label,
+                "type": reference.kind,
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
@@ -2599,11 +2684,17 @@ fn platform_video_url_payload(
     references: &[ReferenceImage],
     urls: &[String],
 ) -> Value {
-    let reference_images = references.iter().zip(urls).map(|(reference, url)| json!({
-        "url": url,
-        "label": reference.label,
-        "type": reference.kind,
-    })).collect::<Vec<_>>();
+    let reference_images = references
+        .iter()
+        .zip(urls)
+        .map(|(reference, url)| {
+            json!({
+                "url": url,
+                "label": reference.label,
+                "type": reference.kind,
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
         "prompt": prompt,
         "aspect_ratio": aspect_ratio,
@@ -2623,8 +2714,14 @@ fn platform_video_url_payload(
 }
 
 fn platform_video_requires_upload(references: &[ReferenceImage], inline_payload: &Value) -> bool {
-    references.iter().map(|reference| reference.bytes.len()).sum::<usize>() > PLATFORM_VIDEO_INLINE_REFERENCE_TOTAL_BYTES
-        || serde_json::to_vec(inline_payload).map_or(true, |bytes| bytes.len() > PLATFORM_VIDEO_REQUEST_TARGET_BYTES)
+    references
+        .iter()
+        .map(|reference| reference.bytes.len())
+        .sum::<usize>()
+        > PLATFORM_VIDEO_INLINE_REFERENCE_TOTAL_BYTES
+        || serde_json::to_vec(inline_payload).map_or(true, |bytes| {
+            bytes.len() > PLATFORM_VIDEO_REQUEST_TARGET_BYTES
+        })
 }
 
 async fn prepare_platform_video_request(
@@ -2639,25 +2736,47 @@ async fn prepare_platform_video_request(
     // Apply only the provider's per-file limit first. If the aggregate is too
     // large, preserve image quality and use temporary URLs for the whole set.
     let inline_payload = fit_platform_video_request_to_limits(
-        prompt, aspect_ratio, duration, resolution, version, references,
-        usize::MAX, PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
+        prompt,
+        aspect_ratio,
+        duration,
+        resolution,
+        version,
+        references,
+        usize::MAX,
+        PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
     )?;
-    if !platform_video_requires_upload(references, &inline_payload) { return Ok(inline_payload); }
-    crate::logging::debug("ai.video.references_server_upload", json!({
-        "reference_count": references.len(),
-        "decoded_bytes": references.iter().map(|reference| reference.bytes.len()).sum::<usize>(),
-        "inline_request_bytes": serde_json::to_vec(&inline_payload).map(|bytes| bytes.len()).unwrap_or(0),
-    }));
+    if !platform_video_requires_upload(references, &inline_payload) {
+        return Ok(inline_payload);
+    }
+    crate::logging::debug(
+        "ai.video.references_server_upload",
+        json!({
+            "reference_count": references.len(),
+            "decoded_bytes": references.iter().map(|reference| reference.bytes.len()).sum::<usize>(),
+            "inline_request_bytes": serde_json::to_vec(&inline_payload).map(|bytes| bytes.len()).unwrap_or(0),
+        }),
+    );
     let mut urls = Vec::with_capacity(references.len());
     for reference in references.iter() {
-        urls.push(crate::platform_media::upload_reference_image(
-            api_base,
-            reference.bytes.clone(),
-            &reference.mime_type,
-            &reference.filename,
-        ).await?);
+        urls.push(
+            crate::platform_media::upload_reference_image(
+                api_base,
+                reference.bytes.clone(),
+                &reference.mime_type,
+                &reference.filename,
+            )
+            .await?,
+        );
     }
-    Ok(platform_video_url_payload(prompt, aspect_ratio, duration, resolution, version, references, &urls))
+    Ok(platform_video_url_payload(
+        prompt,
+        aspect_ratio,
+        duration,
+        resolution,
+        version,
+        references,
+        &urls,
+    ))
 }
 
 fn fit_platform_video_request_to_limit(
@@ -2669,7 +2788,16 @@ fn fit_platform_video_request_to_limit(
     references: &mut [ReferenceImage],
     target_bytes: usize,
 ) -> Result<Value, String> {
-    fit_platform_video_request_to_limits(prompt,aspect_ratio,duration,resolution,version,references,target_bytes,PLATFORM_VIDEO_REFERENCE_TARGET_BYTES)
+    fit_platform_video_request_to_limits(
+        prompt,
+        aspect_ratio,
+        duration,
+        resolution,
+        version,
+        references,
+        target_bytes,
+        PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
+    )
 }
 
 fn fit_platform_video_request_to_limits(
@@ -2684,25 +2812,63 @@ fn fit_platform_video_request_to_limits(
 ) -> Result<Value, String> {
     let mut individually_compressed = 0usize;
     for reference in references.iter_mut() {
-        if reference.bytes.len() <= reference_target_bytes { continue; }
+        if reference.bytes.len() <= reference_target_bytes {
+            continue;
+        }
         let original = reference.clone();
         let mut fitted = None;
-        for (max_edge,quality) in [(2048,85),(1920,82),(1600,78),(1280,72),(1024,65),(768,60),(512,55)] {
-            let compressed=compressed_reference_jpeg(&original,max_edge,quality)?;
-            if compressed.bytes.len() <= reference_target_bytes { fitted=Some(compressed); break; }
+        for (max_edge, quality) in [
+            (2048, 85),
+            (1920, 82),
+            (1600, 78),
+            (1280, 72),
+            (1024, 65),
+            (768, 60),
+            (512, 55),
+        ] {
+            let compressed = compressed_reference_jpeg(&original, max_edge, quality)?;
+            if compressed.bytes.len() <= reference_target_bytes {
+                fitted = Some(compressed);
+                break;
+            }
         }
-        *reference=fitted.ok_or_else(||error("AI_VIDEO_REFERENCE_TOO_LARGE",
-            format!("参考图 {} 自动压缩后仍超过单张 {:.1}MB 安全线，请更换或手动压缩后重试",original.label,reference_target_bytes as f64/1_000_000.0),false))?;
-        individually_compressed+=1;
+        *reference = fitted.ok_or_else(|| {
+            error(
+                "AI_VIDEO_REFERENCE_TOO_LARGE",
+                format!(
+                    "参考图 {} 自动压缩后仍超过单张 {:.1}MB 安全线，请更换或手动压缩后重试",
+                    original.label,
+                    reference_target_bytes as f64 / 1_000_000.0
+                ),
+                false,
+            )
+        })?;
+        individually_compressed += 1;
     }
-    let mut payload = platform_video_payload(prompt, aspect_ratio, duration, resolution, version, references);
+    let mut payload = platform_video_payload(
+        prompt,
+        aspect_ratio,
+        duration,
+        resolution,
+        version,
+        references,
+    );
     let mut request_bytes = serde_json::to_vec(&payload).map_err(|serialize_error| {
-        error("AI_VIDEO_REQUEST_INVALID", format!("无法序列化视频生成请求：{serialize_error}"), false)
+        error(
+            "AI_VIDEO_REQUEST_INVALID",
+            format!("无法序列化视频生成请求：{serialize_error}"),
+            false,
+        )
     })?;
     if request_bytes.len() <= target_bytes {
-        if individually_compressed>0 { crate::logging::debug("ai.video.references_compressed",json!({
+        if individually_compressed > 0 {
+            crate::logging::debug(
+                "ai.video.references_compressed",
+                json!({
             "request_bytes":request_bytes.len(),"reference_count":references.len(),"individually_compressed":individually_compressed,
-            "per_reference_target_bytes":reference_target_bytes,"request_target_bytes":target_bytes})); }
+            "per_reference_target_bytes":reference_target_bytes,"request_target_bytes":target_bytes}),
+            );
+        }
         return Ok(payload);
     }
 
@@ -2716,23 +2882,41 @@ fn fit_platform_video_request_to_limits(
                 *reference = original.clone();
             }
         }
-        payload = platform_video_payload(prompt, aspect_ratio, duration, resolution, version, references);
+        payload = platform_video_payload(
+            prompt,
+            aspect_ratio,
+            duration,
+            resolution,
+            version,
+            references,
+        );
         request_bytes = serde_json::to_vec(&payload).map_err(|serialize_error| {
-            error("AI_VIDEO_REQUEST_INVALID", format!("无法序列化视频生成请求：{serialize_error}"), false)
+            error(
+                "AI_VIDEO_REQUEST_INVALID",
+                format!("无法序列化视频生成请求：{serialize_error}"),
+                false,
+            )
         })?;
         if request_bytes.len() <= target_bytes {
-            crate::logging::debug("ai.video.references_compressed", json!({
-                "request_bytes": request_bytes.len(),
-                "reference_count": references.len(),
-                "max_edge": max_edge,
-                "jpeg_quality": quality,
-            }));
+            crate::logging::debug(
+                "ai.video.references_compressed",
+                json!({
+                    "request_bytes": request_bytes.len(),
+                    "reference_count": references.len(),
+                    "max_edge": max_edge,
+                    "jpeg_quality": quality,
+                }),
+            );
             return Ok(payload);
         }
     }
     Err(error(
         "AI_VIDEO_REFERENCE_TOO_LARGE",
-        format!("参考图自动压缩后请求体仍有约 {:.1}MB，无法低于 {:.1}MB 安全线，请减少参考图后重试", request_bytes.len() as f64 / 1_000_000.0, target_bytes as f64 / 1_000_000.0),
+        format!(
+            "参考图自动压缩后请求体仍有约 {:.1}MB，无法低于 {:.1}MB 安全线，请减少参考图后重试",
+            request_bytes.len() as f64 / 1_000_000.0,
+            target_bytes as f64 / 1_000_000.0
+        ),
         false,
     ))
 }
@@ -2770,21 +2954,47 @@ async fn persist_image_failure(project_root: &Path, task_id: &str, message: &str
             let connection = crate::database::open(project_root)?;
             let record = crate::database::generation_records::get(&connection, task_id)?;
             let message = if let Some(record) = record {
-                if let Some(grant) = record.result.as_ref().and_then(|v| v.get("workflow_credit_id")).and_then(Value::as_str) {
-                    crate::workflow_credit::failure_message(project_root, grant, &format!("image:{}:{}", record.target_type, record.target_id), task_id, message)
-                } else { message.to_owned() }
-            } else { message.to_owned() };
+                if let Some(grant) = record
+                    .result
+                    .as_ref()
+                    .and_then(|v| v.get("workflow_credit_id"))
+                    .and_then(Value::as_str)
+                {
+                    crate::workflow_credit::failure_message(
+                        project_root,
+                        grant,
+                        &format!("image:{}:{}", record.target_type, record.target_id),
+                        task_id,
+                        message,
+                    )
+                } else {
+                    message.to_owned()
+                }
+            } else {
+                message.to_owned()
+            };
             crate::database::image_tasks::fail(&connection, task_id, &message)
         })();
         match result {
             Ok(()) => return,
-            Err(persistence_error) => crate::logging::error("ai.image.failure_state_retry", json!({"task_id":task_id,"error":persistence_error})),
+            Err(persistence_error) => crate::logging::error(
+                "ai.image.failure_state_retry",
+                json!({"task_id":task_id,"error":persistence_error}),
+            ),
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    crate::logging::critical("ai.image.failure_state_not_saved", json!({"project_path":project_root,"task_id":task_id,"error":message}));
+    crate::logging::critical(
+        "ai.image.failure_state_not_saved",
+        json!({"project_path":project_root,"task_id":task_id,"error":message}),
+    );
     if let Ok(mut failures) = unsaved_image_failures().lock() {
-        failures.insert(task_id.to_owned(), crate::workflow_credit::error("任务已停止，但状态暂时无法保存。不会重新提交或重复扣分，请检查本地存储。"));
+        failures.insert(
+            task_id.to_owned(),
+            crate::workflow_credit::error(
+                "任务已停止，但状态暂时无法保存。不会重新提交或重复扣分，请检查本地存储。",
+            ),
+        );
     }
 }
 
@@ -2808,7 +3018,9 @@ async fn execute_image_task(
     if task.status == crate::database::image_tasks::STATUS_FAILED {
         let base = crate::platform_media::api_base_url(&task.base_url)?;
         let cached = crate::workflow_credit::receipt(project_root, task_id, &base)?;
-        if !cached.is_some_and(|r| r.response.is_some()) { return Ok(()); }
+        if !cached.is_some_and(|r| r.response.is_some()) {
+            return Ok(());
+        }
     }
     if !matches!(
         task.target_type.as_str(),
@@ -2825,7 +3037,13 @@ async fn execute_image_task(
     drop(connection);
     let references = load_reference_images(project_root, &reference_assets)?;
 
-    if task.protocol != "platform" { return Err(error("PLATFORM_MEDIA_MODEL_REQUIRED", "旧版生图方式已停用，请重新选择生成方案，确认积分后再开始", false)); }
+    if task.protocol != "platform" {
+        return Err(error(
+            "PLATFORM_MEDIA_MODEL_REQUIRED",
+            "旧版生图方式已停用，请重新选择生成方案，确认积分后再开始",
+            false,
+        ));
+    }
     let api_key = String::new();
     let client = Client::builder()
         .timeout(Duration::from_secs(5 * 60))
@@ -2834,16 +3052,64 @@ async fn execute_image_task(
     let prompt = task.prompt.trim();
     let image = match task.protocol.as_str() {
         "platform" => {
-            let metadata = generation_record.as_ref().and_then(|record| record.result.as_ref()).cloned().unwrap_or_else(|| json!({}));
-            let provider_model_id = metadata.get("provider_model_id").and_then(Value::as_str).ok_or_else(|| error("PLATFORM_MEDIA_MODEL_REQUIRED", "生图任务缺少服务端模型编号", false))?;
-            let resolution = metadata.get("resolution").and_then(Value::as_str).ok_or_else(|| error("PLATFORM_MEDIA_RESOLUTION_REQUIRED", "生图任务缺少分辨率", false))?;
+            let metadata = generation_record
+                .as_ref()
+                .and_then(|record| record.result.as_ref())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let provider_model_id = metadata
+                .get("provider_model_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    error(
+                        "PLATFORM_MEDIA_MODEL_REQUIRED",
+                        "生图任务缺少服务端模型编号",
+                        false,
+                    )
+                })?;
+            let resolution = metadata
+                .get("resolution")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    error(
+                        "PLATFORM_MEDIA_RESOLUTION_REQUIRED",
+                        "生图任务缺少分辨率",
+                        false,
+                    )
+                })?;
             let reference_images = references.iter().map(|reference| json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})).collect::<Vec<_>>();
-            let operation = format!("{} · {}", match task.target_type.as_str() { "character" | "character_state" => "角色图生成", "scene" => "场景图生成", "prop" => "道具图生成", _ => "分镜图生成" }, task.target_id);
-            let value = crate::platform_media::generate(&task.base_url, provider_model_id, task_id, json!({
-                "prompt": prompt, "aspect_ratio": task.aspect_ratio, "resolution": resolution,
-                "reference_images": reference_images,
-                "params": {"aspect_ratio": task.aspect_ratio, "resolution": resolution}
-            }), &operation, metadata.get("workflow_credit_id").and_then(Value::as_str).map(|id| (project_root, id, format!("image:{}:{}", task.target_type, task.target_id)))).await?;
+            let operation = format!(
+                "{} · {}",
+                match task.target_type.as_str() {
+                    "character" | "character_state" => "角色图生成",
+                    "scene" => "场景图生成",
+                    "prop" => "道具图生成",
+                    _ => "分镜图生成",
+                },
+                task.target_id
+            );
+            let value = crate::platform_media::generate(
+                &task.base_url,
+                provider_model_id,
+                task_id,
+                json!({
+                    "prompt": prompt, "aspect_ratio": task.aspect_ratio, "resolution": resolution,
+                    "reference_images": reference_images,
+                    "params": {"aspect_ratio": task.aspect_ratio, "resolution": resolution}
+                }),
+                &operation,
+                metadata
+                    .get("workflow_credit_id")
+                    .and_then(Value::as_str)
+                    .map(|id| {
+                        (
+                            project_root,
+                            id,
+                            format!("image:{}:{}", task.target_type, task.target_id),
+                        )
+                    }),
+            )
+            .await?;
             platform_image_result(&client, &value).await?
         }
         "openai" => {
@@ -2955,22 +3221,12 @@ async fn persist_image_result(
         .await
         .map_err(|e| error("AI_IMAGE_WRITE_ERROR", e.to_string(), true))?;
     let extension = image_extension(&image.mime_type);
-    let filename = format!(
-        "{}_{}.{}",
-        task.target_id,
-        task.id,
-        extension
-    );
+    let filename = format!("{}_{}.{}", task.target_id, task.id, extension);
     let absolute_path = target_dir.join(filename);
     tokio::fs::write(&absolute_path, &image.bytes)
         .await
         .map_err(|e| error("AI_IMAGE_WRITE_ERROR", e.to_string(), true))?;
-    archive_generated_asset_without_failing_task(
-        app,
-        &task.project_id,
-        "images",
-        &absolute_path,
-    );
+    archive_generated_asset_without_failing_task(app, &task.project_id, "images", &absolute_path);
     let relative_path = relative_dir
         .join(absolute_path.file_name().unwrap_or_default())
         .to_string_lossy()
@@ -3012,8 +3268,15 @@ pub fn create_image_generation_tasks(
         validate_image_task_item(item)?;
         load_reference_images(&project_root, &item.reference_assets)?;
     }
-    if input.provider_model_id.trim().is_empty() || input.model_alias.trim().is_empty() || input.resolution.trim().is_empty() {
-        return Err(error("PLATFORM_MEDIA_MODEL_REQUIRED", "请选择服务端生图模型和分辨率", false));
+    if input.provider_model_id.trim().is_empty()
+        || input.model_alias.trim().is_empty()
+        || input.resolution.trim().is_empty()
+    {
+        return Err(error(
+            "PLATFORM_MEDIA_MODEL_REQUIRED",
+            "请选择服务端生图模型和分辨率",
+            false,
+        ));
     }
     let connection = crate::database::open(&project_root)?;
     let actual_project_id: String = connection
@@ -3074,8 +3337,13 @@ pub async fn list_image_generation_tasks(
         if let Ok(mut failures) = unsaved_image_failures().lock() {
             for task in &mut tasks {
                 if let Some(message) = failures.get(&task.id).cloned() {
-                    if task.status == crate::database::image_tasks::STATUS_COMPLETED { failures.remove(&task.id); continue; }
-                    if crate::database::image_tasks::fail(&connection, &task.id, &message).is_ok() { failures.remove(&task.id); }
+                    if task.status == crate::database::image_tasks::STATUS_COMPLETED {
+                        failures.remove(&task.id);
+                        continue;
+                    }
+                    if crate::database::image_tasks::fail(&connection, &task.id, &message).is_ok() {
+                        failures.remove(&task.id);
+                    }
                     task.status = crate::database::image_tasks::STATUS_FAILED.to_owned();
                     task.error = serde_json::from_str(&message).ok();
                     task.updated_at = Utc::now().to_rfc3339();
@@ -3108,10 +3376,16 @@ pub(crate) fn resume_project_image_tasks(
     // A completed provider response can be saved again without new generation,
     // even if the original workflow was stopped after a local storage error.
     for id in crate::workflow_credit::recoverable_images(project_root)? {
-        if let Some(task) = crate::database::image_tasks::get(&connection, &id)? { tasks.push(task); }
+        if let Some(task) = crate::database::image_tasks::get(&connection, &id)? {
+            tasks.push(task);
+        }
     }
     for task in &tasks {
-        if let Some(message) = unsaved_image_failures().lock().ok().and_then(|failures| failures.get(&task.id).cloned()) {
+        if let Some(message) = unsaved_image_failures()
+            .lock()
+            .ok()
+            .and_then(|failures| failures.get(&task.id).cloned())
+        {
             crate::database::image_tasks::fail(&connection, &task.id, &message)?;
             continue;
         }
@@ -3139,15 +3413,26 @@ fn media_result_url(value: &Value) -> Option<String> {
 }
 
 fn find_media_value<'a>(value: &'a Value, keys: &[&str], depth: usize) -> Option<&'a str> {
-    if depth > 7 { return None; }
+    if depth > 7 {
+        return None;
+    }
     match value {
         Value::Object(map) => {
             for key in keys {
-                if let Some(found) = map.get(*key).and_then(Value::as_str).filter(|item| !item.trim().is_empty()) { return Some(found); }
+                if let Some(found) = map
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .filter(|item| !item.trim().is_empty())
+                {
+                    return Some(found);
+                }
             }
-            map.values().find_map(|child| find_media_value(child, keys, depth + 1))
+            map.values()
+                .find_map(|child| find_media_value(child, keys, depth + 1))
         }
-        Value::Array(items) => items.iter().find_map(|child| find_media_value(child, keys, depth + 1)),
+        Value::Array(items) => items
+            .iter()
+            .find_map(|child| find_media_value(child, keys, depth + 1)),
         _ => None,
     }
 }
@@ -3159,10 +3444,16 @@ async fn platform_image_result(client: &Client, value: &Value) -> Result<ImageBy
         }
     }
     if let Some(url) = find_media_value(value, &["result_url", "image_url", "url"], 0) {
-        if url.starts_with("data:image/") { return decode_image_base64(url, None); }
+        if url.starts_with("data:image/") {
+            return decode_image_base64(url, None);
+        }
         return download_generated_image(client, url).await;
     }
-    Err(error("AI_IMAGE_RESPONSE_INVALID", "服务端生图结果中没有找到图片", true))
+    Err(error(
+        "AI_IMAGE_RESPONSE_INVALID",
+        "服务端生图结果中没有找到图片",
+        true,
+    ))
 }
 
 fn append_generation_log(project_root: &Path, event: &str, details: Value) {
@@ -3228,7 +3519,11 @@ fn ordered_video_references(references: &[ReferenceImage]) -> Vec<&ReferenceImag
                 .iter()
                 .filter(|reference| reference.kind == "character"),
         )
-        .chain(references.iter().filter(|reference| reference.kind == "prop"))
+        .chain(
+            references
+                .iter()
+                .filter(|reference| reference.kind == "prop"),
+        )
         .chain(references.iter().filter(|reference| {
             !matches!(
                 reference.kind.as_str(),
@@ -3717,6 +4012,12 @@ async fn download_video_result(
     );
     let absolute_path = target_dir.join(filename);
     let temporary_path = absolute_path.with_extension(format!("{extension}.part"));
+    // Cancellation drops the download future. Keep its partial file from being left behind.
+    struct PartialDownload(PathBuf);
+    impl Drop for PartialDownload {
+        fn drop(&mut self) { let _ = fs::remove_file(&self.0); }
+    }
+    let _partial_download = PartialDownload(temporary_path.clone());
     let mut file = tokio::fs::File::create(&temporary_path)
         .await
         .map_err(|e| error("AI_VIDEO_WRITE_ERROR", e.to_string(), true))?;
@@ -3746,12 +4047,6 @@ async fn download_video_result(
     tokio::fs::rename(&temporary_path, &absolute_path)
         .await
         .map_err(|e| error("AI_VIDEO_WRITE_ERROR", e.to_string(), true))?;
-    archive_generated_asset_without_failing_task(
-        app,
-        &record.project_id,
-        "videos",
-        &absolute_path,
-    );
     let relative_path = relative_dir
         .join(absolute_path.file_name().unwrap_or_default())
         .to_string_lossy()
@@ -3763,7 +4058,9 @@ async fn download_video_result(
         &relative_path,
         &absolute_path.to_string_lossy(),
         &mime_type,
-    )
+    )?;
+    archive_generated_asset_without_failing_task(app, &record.project_id, "videos", &absolute_path);
+    Ok(())
 }
 
 fn platform_login_required_value(value: &Value) -> bool {
@@ -3771,30 +4068,45 @@ fn platform_login_required_value(value: &Value) -> bool {
         return true;
     }
     value.get("message").is_some_and(|message| match message {
-        Value::String(text) => text.contains("PLATFORM_LOGIN_REQUIRED") || text.contains("登录已过期"),
+        Value::String(text) => {
+            text.contains("PLATFORM_LOGIN_REQUIRED") || text.contains("登录已过期")
+        }
         nested => platform_login_required_value(nested),
     })
 }
 
 fn platform_login_required_error(message: &str) -> bool {
-    serde_json::from_str::<Value>(message).ok().is_some_and(|value| platform_login_required_value(&value))
+    serde_json::from_str::<Value>(message)
+        .ok()
+        .is_some_and(|value| platform_login_required_value(&value))
         || message.contains("PLATFORM_LOGIN_REQUIRED")
         || message.contains("登录已过期")
 }
 
 fn login_error_remote_task_id(message: &str) -> Option<String> {
     fn find(value: &Value) -> Option<String> {
-        if let Some(id) = value.get("remote_task_id").and_then(Value::as_str) { return Some(id.to_owned()); }
+        if let Some(id) = value.get("remote_task_id").and_then(Value::as_str) {
+            return Some(id.to_owned());
+        }
         match value.get("message") {
-            Some(Value::String(text)) => serde_json::from_str::<Value>(text).ok().and_then(|nested| find(&nested)),
+            Some(Value::String(text)) => serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|nested| find(&nested)),
             Some(nested) => find(nested),
             None => None,
         }
     }
-    serde_json::from_str::<Value>(message).ok().and_then(|value| find(&value))
+    serde_json::from_str::<Value>(message)
+        .ok()
+        .and_then(|value| find(&value))
 }
 
-fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: String, api_base: String) {
+fn spawn_video_task(
+    app: tauri::AppHandle,
+    project_root: PathBuf,
+    record_id: String,
+    api_base: String,
+) {
     let should_spawn = active_video_tasks()
         .lock()
         .map(|mut active| active.insert(record_id.clone()))
@@ -3802,14 +4114,23 @@ fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: Str
     if !should_spawn {
         return;
     }
+    let (stop_sender, mut stop_receiver) = watch::channel(false);
+    if let Ok(mut signals) = video_stop_signals().lock() {
+        signals.insert(record_id.clone(), stop_sender);
+    }
     tauri::async_runtime::spawn(async move {
-        let permit = match video_task_limiter(Some(&api_base)).await {
-            Some(limiter) => limiter.acquire_owned().await.map(Some),
-            None => Ok(None),
-        };
-        let result = match permit {
-            Ok(_permit) => execute_video_task(&app, &project_root, &record_id).await,
-            Err(error) => Err(format!("视频生成并发队列不可用：{error}")),
+        let result = tokio::select! {
+            _ = stop_receiver.changed() => Ok(()),
+            result = async {
+                let permit = match video_task_limiter(Some(&api_base)).await {
+                    Some(limiter) => limiter.acquire_owned().await.map(Some),
+                    None => Ok(None),
+                };
+                match permit {
+                    Ok(_permit) => execute_video_task(&app, &project_root, &record_id).await,
+                    Err(error) => Err(format!("视频生成并发队列不可用：{error}")),
+                }
+            } => result,
         };
         if let Err(message) = result {
             crate::logging::error(
@@ -3824,14 +4145,26 @@ fn spawn_video_task(app: tauri::AppHandle, project_root: PathBuf, record_id: Str
             if let Ok(connection) = crate::database::open(&project_root) {
                 if platform_login_required_error(&message) {
                     let remote_task_id = login_error_remote_task_id(&message);
-                    let _ = crate::database::generation_records::mark_auth_required(&connection, &record_id, remote_task_id.as_deref(), &message);
+                    let _ = crate::database::generation_records::mark_auth_required(
+                        &connection,
+                        &record_id,
+                        remote_task_id.as_deref(),
+                        &message,
+                    );
                 } else {
-                    let _ = crate::database::generation_records::fail(&connection, &record_id, &message);
+                    let _ = crate::database::generation_records::fail(
+                        &connection,
+                        &record_id,
+                        &message,
+                    );
                 }
             }
         }
         if let Ok(mut active) = active_video_tasks().lock() {
             active.remove(&record_id);
+        }
+        if let Ok(mut signals) = video_stop_signals().lock() {
+            signals.remove(&record_id);
         }
     });
 }
@@ -3862,14 +4195,25 @@ async fn execute_video_task(
         .and_then(Value::as_str);
     let reference_assets = reference_inputs(record.result.as_ref());
     if record.status == crate::database::generation_records::STATUS_COMPLETED
+        || record.status == crate::database::generation_records::STATUS_CANCELLED
         || (record.status == crate::database::generation_records::STATUS_FAILED
-            && !record.error.as_ref().is_some_and(platform_login_required_value)) {
+            && !record
+                .error
+                .as_ref()
+                .is_some_and(platform_login_required_value))
+    {
         return Ok(());
     }
     crate::database::generation_records::mark_running(&connection, record_id)?;
     drop(connection);
     let mut references = load_reference_images(project_root, &reference_assets)?;
-    if record.protocol != "platform" { return Err(error("PLATFORM_MEDIA_MODEL_REQUIRED", "旧版视频生成方式已停用，请重新选择生成方案，确认积分后再开始", false)); }
+    if record.protocol != "platform" {
+        return Err(error(
+            "PLATFORM_MEDIA_MODEL_REQUIRED",
+            "旧版视频生成方式已停用，请重新选择生成方案，确认积分后再开始",
+            false,
+        ));
+    }
     let api_key = String::new();
     let client = Client::builder()
         .timeout(Duration::from_secs(10 * 60))
@@ -3879,12 +4223,31 @@ async fn execute_video_task(
         .map_err(|e| error("AI_CLIENT_ERROR", e.to_string(), false))?;
     let result_url = if record.protocol == "platform" {
         let metadata = record.result.as_ref().cloned().unwrap_or_else(|| json!({}));
-        let provider_model_id = metadata.get("provider_model_id").and_then(Value::as_str).ok_or_else(|| error("PLATFORM_MEDIA_MODEL_REQUIRED", "视频任务缺少服务端模型编号", false))?;
-        let resolution = resolution.ok_or_else(|| error("PLATFORM_MEDIA_RESOLUTION_REQUIRED", "视频任务缺少分辨率", false))?;
+        let provider_model_id = metadata
+            .get("provider_model_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                error(
+                    "PLATFORM_MEDIA_MODEL_REQUIRED",
+                    "视频任务缺少服务端模型编号",
+                    false,
+                )
+            })?;
+        let resolution = resolution.ok_or_else(|| {
+            error(
+                "PLATFORM_MEDIA_RESOLUTION_REQUIRED",
+                "视频任务缺少分辨率",
+                false,
+            )
+        })?;
         let operation = format!("分镜视频生成 · {}", record.target_id);
-        let workflow = metadata.get("workflow_credit_id").and_then(Value::as_str).map(|id| (project_root, id, format!("video:shot:{}", record.target_id)));
+        let workflow = metadata
+            .get("workflow_credit_id")
+            .and_then(Value::as_str)
+            .map(|id| (project_root, id, format!("video:shot:{}", record.target_id)));
         let value = if let Some(remote_task_id) = record.remote_task_id.as_deref() {
-            crate::platform_media::resume(&record.base_url, remote_task_id, record_id, workflow).await?
+            crate::platform_media::resume(&record.base_url, remote_task_id, record_id, workflow)
+                .await?
         } else {
             let payload = prepare_platform_video_request(
                 &record.base_url,
@@ -3894,10 +4257,29 @@ async fn execute_video_task(
                 resolution,
                 version,
                 &mut references,
-            ).await?;
-            crate::platform_media::generate(&record.base_url, provider_model_id, record_id, payload, &operation, workflow).await?
+            )
+            .await?;
+            crate::platform_media::generate(
+                &record.base_url,
+                provider_model_id,
+                record_id,
+                payload,
+                &operation,
+                workflow,
+            )
+            .await?
         };
-        media_result_url(&value).or_else(|| find_media_value(&value, &["video_url", "result_url", "url"], 0).map(str::to_owned)).ok_or_else(|| error("AI_VIDEO_RESPONSE_INVALID", "服务端视频生成结果中没有找到视频地址", true))?
+        media_result_url(&value)
+            .or_else(|| {
+                find_media_value(&value, &["video_url", "result_url", "url"], 0).map(str::to_owned)
+            })
+            .ok_or_else(|| {
+                error(
+                    "AI_VIDEO_RESPONSE_INVALID",
+                    "服务端视频生成结果中没有找到视频地址",
+                    true,
+                )
+            })?
     } else if let Some(remote_id) = record.remote_task_id.as_deref() {
         let connection = crate::database::open(project_root)?;
         crate::database::generation_records::mark_remote_processing(
@@ -4006,11 +4388,27 @@ pub fn create_shot_video_generation(
         ));
     }
     if input.provider_model_id.trim().is_empty() || input.model_alias.trim().is_empty() {
-        return Err(error("PLATFORM_MEDIA_MODEL_REQUIRED", "请选择服务端视频模型", false));
+        return Err(error(
+            "PLATFORM_MEDIA_MODEL_REQUIRED",
+            "请选择服务端视频模型",
+            false,
+        ));
     }
-    let resolution = input.resolution.as_deref().map(str::trim).filter(|value| !value.is_empty()).ok_or_else(|| error("PLATFORM_MEDIA_RESOLUTION_REQUIRED", "请选择视频分辨率", false))?.to_owned();
+    let resolution = input
+        .resolution
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            error(
+                "PLATFORM_MEDIA_RESOLUTION_REQUIRED",
+                "请选择视频分辨率",
+                false,
+            )
+        })?
+        .to_owned();
     let version = input.version.clone();
-    let connection = crate::database::open(&project_root)?;
+    let mut connection = crate::database::open(&project_root)?;
     let actual_project_id: String = connection
         .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))
         .map_err(|e| error("PROJECT_INVALID", e.to_string(), false))?;
@@ -4031,8 +4429,18 @@ pub fn create_shot_video_generation(
             false,
         ));
     }
+    let transaction = connection.transaction().map_err(|error| error.to_string())?;
+    if let Some(replace_id) = input.replace_record_id.as_deref() {
+        let old = crate::database::generation_records::get(&transaction, replace_id)?
+            .ok_or_else(|| error("AI_VIDEO_TASK_NOT_FOUND", "原分镜视频任务不存在", false))?;
+        if old.project_id != input.project_id || old.target_type != "shot"
+            || old.target_id != input.shot_id || old.media_type != "video" {
+            return Err(error("AI_VIDEO_REPLACEMENT_INVALID", "只能替换当前分镜正在执行的视频任务", false));
+        }
+        crate::database::generation_records::cancel_video(&transaction, replace_id)?;
+    }
     if crate::database::generation_records::has_unfinished_video(
-        &connection,
+        &transaction,
         &input.project_id,
         &input.shot_id,
     )? {
@@ -4043,7 +4451,7 @@ pub fn create_shot_video_generation(
         ));
     }
     let record = crate::database::generation_records::create(
-        &connection,
+        &transaction,
         crate::database::generation_records::NewGenerationRecord {
             project_id: &input.project_id,
             media_type: "video",
@@ -4057,12 +4465,23 @@ pub fn create_shot_video_generation(
         },
     )?;
     crate::database::generation_records::set_request_metadata(
-        &connection,
+        &transaction,
         &record.id,
         &json!({"duration": input.duration, "resolution": resolution, "version": version, "reference_assets": reference_assets, "provider_model_id": input.provider_model_id, "workflow_credit_id": input.workflow_credit_id}),
     )?;
+    transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);
-    spawn_video_task(app, project_root, record.id.clone(), record.base_url.clone());
+    if let Some(replace_id) = input.replace_record_id.as_deref() {
+        if let Ok(signals) = video_stop_signals().lock() {
+            if let Some(sender) = signals.get(replace_id) { let _ = sender.send(true); }
+        }
+    }
+    spawn_video_task(
+        app,
+        project_root,
+        record.id.clone(),
+        record.base_url.clone(),
+    );
     Ok(record)
 }
 
@@ -4462,12 +4881,7 @@ fn execute_project_video_composition(
         let _ = fs::remove_file(&partial_path);
     }
     composition_result?;
-    archive_generated_asset_without_failing_task(
-        app,
-        &record.project_id,
-        "videos",
-        &final_path,
-    );
+    archive_generated_asset_without_failing_task(app, &record.project_id, "videos", &final_path);
 
     let relative_path = final_path
         .strip_prefix(project_root)
@@ -4834,9 +5248,18 @@ pub(crate) fn resume_project_video_tasks(
     let records = crate::database::generation_records::list_unfinished_videos(&connection)?;
     for record in &records {
         if record.target_type == "project" {
-            spawn_project_video_composition(app.clone(), project_root.to_path_buf(), record.id.clone());
+            spawn_project_video_composition(
+                app.clone(),
+                project_root.to_path_buf(),
+                record.id.clone(),
+            );
         } else {
-            spawn_video_task(app.clone(), project_root.to_path_buf(), record.id.clone(), record.base_url.clone());
+            spawn_video_task(
+                app.clone(),
+                project_root.to_path_buf(),
+                record.id.clone(),
+                record.base_url.clone(),
+            );
         }
     }
     Ok(records)
@@ -5023,27 +5446,51 @@ mod tests {
             data_url: "data:image/png;base64,unique-reference-data".into(),
         }];
         let payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &references);
-        assert_eq!(payload.pointer("/reference_images/0/data_url"), Some(&json!("data:image/png;base64,unique-reference-data")));
+        assert_eq!(
+            payload.pointer("/reference_images/0/data_url"),
+            Some(&json!("data:image/png;base64,unique-reference-data"))
+        );
         assert!(payload.pointer("/params/reference_images").is_none());
-        assert_eq!(payload.to_string().matches("unique-reference-data").count(), 1);
+        assert_eq!(
+            payload.to_string().matches("unique-reference-data").count(),
+            1
+        );
     }
 
     #[test]
     fn many_references_switch_to_server_urls_before_the_provider_base64_total_limit() {
         let reference = |size| ReferenceImage {
-            label: "参考图".into(), kind: "scene".into(), filename: "scene.png".into(),
-            bytes: vec![1; size], mime_type: "image/png".into(), data_url: "data:image/png;base64,eA==".into(),
+            label: "参考图".into(),
+            kind: "scene".into(),
+            filename: "scene.png".into(),
+            bytes: vec![1; size],
+            mime_type: "image/png".into(),
+            data_url: "data:image/png;base64,eA==".into(),
         };
         let small = vec![reference(1024), reference(2048)];
         let small_payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &small);
         assert!(!platform_video_requires_upload(&small, &small_payload));
-        let large = vec![reference(9_500_000), reference(9_500_000), reference(9_500_000)];
+        let large = vec![
+            reference(9_500_000),
+            reference(9_500_000),
+            reference(9_500_000),
+        ];
         let large_payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &large);
         assert!(platform_video_requires_upload(&large, &large_payload));
-        let urls = vec!["https://api.example/a".into(), "https://api.example/b".into(), "https://api.example/c".into()];
-        let url_payload = platform_video_url_payload("测试提示", "16:9", 10.0, "720p", None, &large, &urls);
-        assert_eq!(url_payload.pointer("/reference_images/1/url"), Some(&json!("https://api.example/b")));
-        assert!(url_payload.pointer("/reference_images/1/data_url").is_none());
+        let urls = vec![
+            "https://api.example/a".into(),
+            "https://api.example/b".into(),
+            "https://api.example/c".into(),
+        ];
+        let url_payload =
+            platform_video_url_payload("测试提示", "16:9", 10.0, "720p", None, &large, &urls);
+        assert_eq!(
+            url_payload.pointer("/reference_images/1/url"),
+            Some(&json!("https://api.example/b"))
+        );
+        assert!(url_payload
+            .pointer("/reference_images/1/data_url")
+            .is_none());
     }
 
     #[test]
@@ -5058,7 +5505,9 @@ mod tests {
             ]);
         }
         let mut encoded = Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgb8(pixels).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
         let bytes = encoded.into_inner();
         let mut references = vec![ReferenceImage {
             label: "高质量参考图".into(),
@@ -5068,9 +5517,27 @@ mod tests {
             mime_type: "image/png".into(),
             bytes,
         }];
-        let original_size = serde_json::to_vec(&platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &references)).unwrap().len();
+        let original_size = serde_json::to_vec(&platform_video_payload(
+            "测试提示",
+            "16:9",
+            10.0,
+            "720p",
+            None,
+            &references,
+        ))
+        .unwrap()
+        .len();
         let target = original_size / 2;
-        let payload = fit_platform_video_request_to_limit("测试提示", "16:9", 10.0, "720p", None, &mut references, target).unwrap();
+        let payload = fit_platform_video_request_to_limit(
+            "测试提示",
+            "16:9",
+            10.0,
+            "720p",
+            None,
+            &mut references,
+            target,
+        )
+        .unwrap();
         assert!(serde_json::to_vec(&payload).unwrap().len() <= target);
         assert_eq!(references[0].mime_type, "image/jpeg");
         assert!(references[0].bytes.len() < original_size);
@@ -5078,20 +5545,54 @@ mod tests {
 
     #[test]
     fn a_single_oversized_reference_is_compressed_even_when_the_total_request_is_allowed() {
-        let mut pixels=image::RgbImage::new(256,256);
-        for (index,pixel) in pixels.pixels_mut().enumerate(){let value=index as u32;*pixel=image::Rgb([
-            value.wrapping_mul(29) as u8,value.wrapping_mul(71).wrapping_add(value/97) as u8,value.wrapping_mul(113) as u8]);}
-        let mut encoded=Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgb8(pixels).write_to(&mut encoded,image::ImageFormat::Png).unwrap();
-        let bytes=encoded.into_inner();
-        let per_reference_limit=bytes.len()/2;
-        let mut references=vec![ReferenceImage{label:"超大单图".into(),kind:"scene".into(),filename:"scene.png".into(),
-            data_url:format!("data:image/png;base64,{}",BASE64.encode(&bytes)),mime_type:"image/png".into(),bytes}];
-        let request_limit=serde_json::to_vec(&platform_video_payload("测试提示","16:9",10.0,"720p",None,&references)).unwrap().len()*2;
-        let payload=fit_platform_video_request_to_limits("测试提示","16:9",10.0,"720p",None,&mut references,request_limit,per_reference_limit).unwrap();
-        assert!(serde_json::to_vec(&payload).unwrap().len()<=request_limit);
-        assert!(references[0].bytes.len()<=per_reference_limit);
-        assert_eq!(references[0].mime_type,"image/jpeg");
+        let mut pixels = image::RgbImage::new(256, 256);
+        for (index, pixel) in pixels.pixels_mut().enumerate() {
+            let value = index as u32;
+            *pixel = image::Rgb([
+                value.wrapping_mul(29) as u8,
+                value.wrapping_mul(71).wrapping_add(value / 97) as u8,
+                value.wrapping_mul(113) as u8,
+            ]);
+        }
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let per_reference_limit = bytes.len() / 2;
+        let mut references = vec![ReferenceImage {
+            label: "超大单图".into(),
+            kind: "scene".into(),
+            filename: "scene.png".into(),
+            data_url: format!("data:image/png;base64,{}", BASE64.encode(&bytes)),
+            mime_type: "image/png".into(),
+            bytes,
+        }];
+        let request_limit = serde_json::to_vec(&platform_video_payload(
+            "测试提示",
+            "16:9",
+            10.0,
+            "720p",
+            None,
+            &references,
+        ))
+        .unwrap()
+        .len()
+            * 2;
+        let payload = fit_platform_video_request_to_limits(
+            "测试提示",
+            "16:9",
+            10.0,
+            "720p",
+            None,
+            &mut references,
+            request_limit,
+            per_reference_limit,
+        )
+        .unwrap();
+        assert!(serde_json::to_vec(&payload).unwrap().len() <= request_limit);
+        assert!(references[0].bytes.len() <= per_reference_limit);
+        assert_eq!(references[0].mime_type, "image/jpeg");
     }
 
     #[test]
@@ -5275,6 +5776,9 @@ mod tests {
     #[test]
     fn zero_video_concurrency_means_unlimited_and_positive_values_are_not_clamped() {
         assert!(configured_video_limiter(0).is_none());
-        assert_eq!(configured_video_limiter(37).unwrap().available_permits(), 37);
+        assert_eq!(
+            configured_video_limiter(37).unwrap().available_permits(),
+            37
+        );
     }
 }

@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf, sync::Arc};
 use tauri::Manager;
@@ -104,9 +105,7 @@ pub async fn load_project(app: tauri::AppHandle, project_path: String) -> Result
     crate::background::run("读取并初始化项目", move || {
         let path = PathBuf::from(project_path);
         if !path.join("project.json").is_file() || !path.join("project.db").is_file() {
-            return Err(
-                "所选目录不是有效的逐梦帧项目（缺少 project.json 或 project.db）".into(),
-            );
+            return Err("所选目录不是有效的逐梦帧项目（缺少 project.json 或 project.db）".into());
         }
         let connection = database::open(&path)?;
         let bundle = database::repository::load_bundle(&connection)?;
@@ -140,6 +139,182 @@ pub fn save_text_file(output_path: String, content: String) -> Result<String, St
     std::fs::write(&path, content.as_bytes())
         .map_err(|error| format!("保存 TXT 文件失败：{error}"))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn save_png_file(output_path: String, data_url: String) -> Result<String, String> {
+    let path = PathBuf::from(output_path.trim());
+    if !path.is_absolute()
+        || !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("png"))
+    {
+        return Err("请选择有效的绝对 PNG 保存路径".into());
+    }
+    let parent = path.parent().ok_or("PNG 保存目录无效")?;
+    if !parent.is_dir() {
+        return Err("PNG 保存目录不存在".into());
+    }
+    let encoded = data_url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or("推广海报数据格式无效")?;
+    if encoded.len() > 60 * 1024 * 1024 {
+        return Err("推广海报数据超过 45 MB，无法保存".into());
+    }
+    let bytes = BASE64
+        .decode(encoded)
+        .map_err(|error| format!("推广海报数据解码失败：{error}"))?;
+    if bytes.len() > 45 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("推广海报不是有效的 PNG 图片".into());
+    }
+    std::fs::write(&path, bytes).map_err(|error| format!("保存推广海报失败：{error}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PromotionPosterFile {
+    id: String,
+    name: String,
+    path: String,
+}
+
+fn promotion_poster_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join("promotion-posters"))
+        .map_err(|error| format!("无法定位推广海报目录：{error}"))
+}
+
+fn promotion_poster_format(bytes: &[u8]) -> Result<(&'static str, &'static str), String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Ok(("png", "image/png"))
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Ok(("jpg", "image/jpeg"))
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Ok(("webp", "image/webp"))
+    } else {
+        Err("仅支持 PNG、JPG/JPEG 或 WebP 图片".to_owned())
+    }
+}
+
+fn promotion_poster_file(path: &std::path::Path) -> PromotionPosterFile {
+    let id = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("promotion-poster")
+        .to_owned();
+    let stored_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("自定义海报");
+    let name = stored_stem
+        .split_once('_')
+        .map(|(_, original)| original)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("自定义海报")
+        .to_owned();
+    PromotionPosterFile {
+        id,
+        name,
+        path: path.to_string_lossy().into_owned(),
+    }
+}
+
+#[tauri::command]
+pub fn list_promotion_posters(app: tauri::AppHandle) -> Result<Vec<PromotionPosterFile>, String> {
+    let directory = promotion_poster_directory(&app)?;
+    fs::create_dir_all(&directory).map_err(|error| format!("创建推广海报目录失败：{error}"))?;
+    let mut files = fs::read_dir(&directory)
+        .map_err(|error| format!("读取推广海报目录失败：{error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, promotion_poster_file(&path)))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(files.into_iter().map(|(_, file)| file).collect())
+}
+
+#[tauri::command]
+pub fn import_promotion_poster(
+    app: tauri::AppHandle,
+    source_path: String,
+) -> Result<PromotionPosterFile, String> {
+    let source = fs::canonicalize(PathBuf::from(source_path.trim()))
+        .map_err(|error| format!("无法读取所选海报：{error}"))?;
+    if !source.is_file() {
+        return Err("所选路径不是有效图片文件".to_owned());
+    }
+    let bytes = fs::read(&source).map_err(|error| format!("读取所选海报失败：{error}"))?;
+    if bytes.is_empty() || bytes.len() > 30 * 1024 * 1024 {
+        return Err("推广海报为空或超过 30MB".to_owned());
+    }
+    let (extension, _) = promotion_poster_format(&bytes)?;
+    let image =
+        image::load_from_memory(&bytes).map_err(|error| format!("推广海报图片损坏：{error}"))?;
+    if u64::from(image.width()) * u64::from(image.height()) > 50_000_000 {
+        return Err("推广海报像素尺寸过大，请选择不超过 5000 万像素的图片".to_owned());
+    }
+
+    let original_stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("自定义海报")
+        .trim()
+        .chars()
+        .map(|value| {
+            if value.is_alphanumeric() || matches!(value, '-' | '_') {
+                value
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect::<String>();
+    let safe_stem = if original_stem.is_empty() {
+        "自定义海报"
+    } else {
+        original_stem.as_str()
+    };
+    let directory = promotion_poster_directory(&app)?;
+    fs::create_dir_all(&directory).map_err(|error| format!("创建推广海报目录失败：{error}"))?;
+    let destination = directory.join(format!(
+        "{}_{}.{}",
+        uuid::Uuid::new_v4(),
+        safe_stem,
+        extension
+    ));
+    fs::write(&destination, bytes).map_err(|error| format!("保存自定义推广海报失败：{error}"))?;
+    Ok(promotion_poster_file(&destination))
+}
+
+#[tauri::command]
+pub fn read_promotion_poster_data_url(
+    app: tauri::AppHandle,
+    poster_path: String,
+) -> Result<String, String> {
+    let directory = promotion_poster_directory(&app)?;
+    fs::create_dir_all(&directory).map_err(|error| format!("创建推广海报目录失败：{error}"))?;
+    let trusted_directory =
+        fs::canonicalize(&directory).map_err(|error| format!("无法读取推广海报目录：{error}"))?;
+    let source = fs::canonicalize(PathBuf::from(poster_path.trim()))
+        .map_err(|error| format!("无法读取自定义推广海报：{error}"))?;
+    if !source.starts_with(&trusted_directory) || !source.is_file() {
+        return Err("自定义推广海报路径无效".to_owned());
+    }
+    let bytes = fs::read(&source).map_err(|error| format!("读取自定义推广海报失败：{error}"))?;
+    if bytes.is_empty() || bytes.len() > 30 * 1024 * 1024 {
+        return Err("推广海报为空或超过 30MB".to_owned());
+    }
+    let (_, mime_type) = promotion_poster_format(&bytes)?;
+    Ok(format!("data:{mime_type};base64,{}", BASE64.encode(bytes)))
 }
 
 #[tauri::command]

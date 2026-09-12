@@ -5,7 +5,7 @@ import { AuditService } from "../common/audit.service";
 import { parseStoredJson } from "../common/input";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
-import { multiplyCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } from "../common/model-credit";
+import { roundedModelCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } from "../common/model-credit";
 import { integer } from "../referrals/referral-rules";
 import { isAdminVisibleProviderModel, isDefaultModelCandidate } from "../common/wagaai-text-models";
 
@@ -769,7 +769,7 @@ export class AdminService {
         ...row,
         credit_cost: Number(row.credit_cost),
         credit_multiplier: creditMultiplier,
-        final_credit_cost: multiplyCredits(Number(row.credit_cost), creditMultiplier),
+        final_credit_cost: roundedModelCredits(Number(row.credit_cost), creditMultiplier),
         billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
         max_reference_images: Number(row.max_reference_images),
         supports_reference_video: Boolean(row.supports_reference_video),
@@ -778,7 +778,7 @@ export class AdminService {
         sort_order: Number(row.sort_order),
         parameter_schema_json: parseStoredJson(row.parameter_schema_json),
         config_json: parseStoredJson(row.config_json),
-        resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost), final_credit_cost: multiplyCredits(Number(price.credit_cost), creditMultiplier) })),
+        resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost), final_credit_cost: roundedModelCredits(Number(price.credit_cost), creditMultiplier) })),
       };
     });
   }

@@ -83,3 +83,30 @@ export function addManualShot(model: CanonicalProject, anchorShotId?: string): {
 
   return { canonical: { ...model, sequences, shots }, shotId };
 }
+
+function sequencesWithOrderedShots(model: CanonicalProject, shots: Shot[]): CanonicalProject["sequences"] {
+  return model.sequences.map((sequence) => ({
+    ...sequence,
+    shot_ids: shots.filter((shot) => shot.sequence_id === sequence.id).map((shot) => shot.id),
+  }));
+}
+
+export function deleteStoryboardShot(model: CanonicalProject, shotId: string): { canonical: CanonicalProject; nextShotId: string } {
+  const index = model.shots.findIndex((shot) => shot.id === shotId);
+  if (index < 0) return { canonical: model, nextShotId: model.shots[0]?.id ?? "" };
+  const shots = model.shots.filter((shot) => shot.id !== shotId);
+  const nextShotId = shots[Math.min(index, shots.length - 1)]?.id ?? "";
+  return {
+    canonical: { ...model, sequences: sequencesWithOrderedShots(model, shots), shots },
+    nextShotId,
+  };
+}
+
+export function moveStoryboardShot(model: CanonicalProject, shotId: string, direction: "up" | "down"): CanonicalProject {
+  const index = model.shots.findIndex((shot) => shot.id === shotId);
+  const targetIndex = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || targetIndex < 0 || targetIndex >= model.shots.length) return model;
+  const shots = [...model.shots];
+  [shots[index], shots[targetIndex]] = [shots[targetIndex]!, shots[index]!];
+  return { ...model, sequences: sequencesWithOrderedShots(model, shots), shots };
+}

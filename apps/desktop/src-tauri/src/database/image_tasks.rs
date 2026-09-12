@@ -218,7 +218,9 @@ pub fn complete(
         .map_err(|error| error.to_string())?;
     let task =
         get_in_transaction(&transaction, id)?.ok_or_else(|| format!("找不到生图任务：{id}"))?;
-    if task.status == STATUS_COMPLETED { return Ok(()); }
+    if task.status == STATUS_COMPLETED {
+        return Ok(());
+    }
     let now = Utc::now().to_rfc3339();
     let result = json!({
         "relative_path": relative_path,
@@ -561,9 +563,16 @@ mod tests {
         )
         .unwrap();
         let raw: String = connection
-            .query_row("SELECT data_json FROM props WHERE id='PROP_001'", [], |row| row.get(0))
+            .query_row(
+                "SELECT data_json FROM props WHERE id='PROP_001'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let prop: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(prop.pointer("/reference_assets/0").and_then(Value::as_str), Some("props/PROP_001.png"));
+        assert_eq!(
+            prop.pointer("/reference_assets/0").and_then(Value::as_str),
+            Some("props/PROP_001.png")
+        );
     }
 }

@@ -51,6 +51,20 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
     await c.execute("INSERT INTO credit_package_purchases (id, purchase_no, user_id, package_code_snapshot, package_name_snapshot, base_credits_snapshot, credits_granted, paid_amount_fen, payment_order_id) VALUES (?, ?, ?, 'test', 'test', 100, 100, ?, ?)", [purchase, randomUUID(), payer, amount, id]);
     return { id, trade, purchase, payer, amount };
   };
+  const providerId = randomUUID();
+  const modelIds = new Map();
+  const generation = async (consumer, credits, capability = 'IMAGE_GENERATION') => {
+    let modelId = modelIds.get(capability);
+    if (!modelId) {
+      modelId = randomUUID();
+      modelIds.set(capability, modelId);
+      await c.execute("INSERT INTO provider_models (id, provider_id, model_code, display_name, capability, status) VALUES (?, ?, ?, 'Rollback-only model', ?, 'ACTIVE')", [modelId, providerId, `referral-${capability.toLowerCase()}-${modelId}`, capability]);
+    }
+    const taskId = randomUUID(), consumptionRecordId = randomUUID();
+    await c.execute("INSERT INTO ai_tasks (id, user_id, local_task_id, idempotency_key, request_hash, task_type, logical_model_code, provider_id, provider_model_id, status) VALUES (?, ?, ?, ?, ?, ?, 'rollback-only', ?, ?, 'SUCCEEDED')", [taskId, consumer, randomUUID(), randomUUID(), randomUUID().replaceAll('-', '').repeat(2), capability, providerId, modelId]);
+    await c.execute("INSERT INTO credit_consumption_records (id, consumption_no, user_id, task_id, provider_model_id, credits_consumed, status, occurred_at) VALUES (?, ?, ?, ?, ?, ?, 'CONFIRMED', CURRENT_TIMESTAMP(3))", [consumptionRecordId, randomUUID(), consumer, taskId, modelId, credits]);
+    return { taskId, consumptionRecordId, consumer, credits, capability };
+  };
   const wallet = async id => {
     const [row] = await db.query('SELECT available_fen, frozen_fen, earned_fen, paid_fen FROM commission_wallets WHERE user_id = ?', [id]);
     const wallet = Object.fromEntries(Object.entries(row || { available_fen: 0, frozen_fen: 0, earned_fen: 0, paid_fen: 0 }).map(([key, value]) => [key, Number(value)]));
@@ -62,6 +76,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
   const count = async (table, column, value) => Number((await db.query(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, [value]))[0].n);
   await c.beginTransaction();
   try {
+    await c.execute("INSERT INTO providers (id, code, display_name, adapter_type, base_url, status) VALUES (?, ?, 'Rollback-only provider', 'test', 'https://example.invalid', 'ACTIVE')", [providerId, `referral-${providerId}`]);
     for (const id of [admin, admin2]) await c.execute("INSERT INTO admin_users (id, email, password_hash, display_name) VALUES (?, ?, 'not-a-real-password-hash', 'Rollback test operator')", [id, `${id}@example.invalid`]);
     // The singleton is locked only during this short test, never committed.
     await c.execute('UPDATE distribution_configs SET enabled = 1, direct_rate_bps = 1000, indirect_rate_bps = 500, minimum_withdrawal_fen = 10000, invitation_reward_credits = 20, invitation_anti_abuse_enabled = 0, invitation_daily_reward_limit = 20, invitation_monthly_reward_limit = 200 WHERE id = 1');
@@ -142,45 +157,45 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
         assert.equal(await count('referral_rewards', 'inviter_id', other), 0);
       } finally { await c.query('ROLLBACK TO SAVEPOINT relation_page_fixture'); await c.query('RELEASE SAVEPOINT relation_page_fixture'); }
     });
-    await t.test('10 yuan pays direct 1 yuan and indirect 0.50; no third level', async () => {
-      const purchase = await order(fourth, 1000);
-      await db.transaction(cx => service.settlePayment(cx, purchase.id, fourth, 1000));
-      const rows = await db.query('SELECT beneficiary_id, level, amount_fen FROM commission_records WHERE payment_order_id = ? ORDER BY level', [purchase.id]);
-      assert.deepEqual(rows.map(x => [x.beneficiary_id, x.level, Number(x.amount_fen)]), [[child, 1, 100], [b, 2, 50]]);
+    await t.test('100 image credits use a 1 yuan base and pay two levels; no third level', async () => {
+      const consumed = await generation(fourth, 100);
+      await db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, fourth, consumed.capability, consumed.credits));
+      const rows = await db.query('SELECT beneficiary_id, level, amount_fen FROM commission_records WHERE consumption_record_id = ? ORDER BY level', [consumed.consumptionRecordId]);
+      assert.deepEqual(rows.map(x => [x.beneficiary_id, x.level, Number(x.amount_fen)]), [[child, 1, 10], [b, 2, 5]]);
       assert.equal((await wallet(a)).earned_fen, 0);
-      await db.transaction(cx => service.settlePayment(cx, purchase.id, fourth, 1000));
-      assert.equal(await count('commission_records', 'payment_order_id', purchase.id), 2);
+      await db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, fourth, consumed.capability, consumed.credits));
+      assert.equal(await count('commission_records', 'consumption_record_id', consumed.consumptionRecordId), 2);
     });
     await t.test('ledger failure rolls back wallet, user balance projection, settlement and commission records', async () => {
-      const purchase = await order(); const beforeA = await wallet(a), beforeB = await wallet(b);
+      const consumed = await generation(child, 100000); const beforeA = await wallet(a), beforeB = await wallet(b);
       const execute = c.execute;
       c.execute = function(sql, parameters) {
         if (sql.startsWith('INSERT INTO commission_wallet_entries')) return Promise.reject(Error('simulated wallet ledger failure'));
         return execute.call(this, sql, parameters);
       };
-      try { await assert.rejects(db.transaction(cx => service.settlePayment(cx, purchase.id, child, 100000)), /simulated wallet ledger failure/); }
+      try { await assert.rejects(db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, child, consumed.capability, consumed.credits)), /simulated wallet ledger failure/); }
       finally { c.execute = execute; }
       assert.deepEqual(await wallet(a), beforeA); assert.deepEqual(await wallet(b), beforeB);
-      assert.equal(await count('distribution_settlements', 'payment_order_id', purchase.id), 0);
-      assert.equal(await count('commission_records', 'payment_order_id', purchase.id), 0);
+      assert.equal(await count('distribution_consumption_settlements', 'consumption_record_id', consumed.consumptionRecordId), 0);
+      assert.equal(await count('commission_records', 'consumption_record_id', consumed.consumptionRecordId), 0);
     });
-    await t.test('disabled and zero-paid orders never accrue or backfill on later enable', async () => {
-      const purchase = await order();
+    await t.test('disabled and zero-credit generations never accrue or backfill on later enable', async () => {
+      const consumed = await generation(child, 100000);
       await c.execute('UPDATE distribution_configs SET enabled = 0 WHERE id = 1');
-      await db.transaction(cx => service.settlePayment(cx, purchase.id, child, 100000));
+      await db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, child, consumed.capability, consumed.credits));
       await c.execute('UPDATE distribution_configs SET enabled = 1 WHERE id = 1');
-      await db.transaction(cx => service.settlePayment(cx, purchase.id, child, 100000));
-      assert.equal(await count('commission_records', 'payment_order_id', purchase.id), 0);
-      const free = await order(); await db.transaction(cx => service.settlePayment(cx, free.id, child, 0));
-      assert.equal(await count('commission_records', 'payment_order_id', free.id), 0);
+      await db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, child, consumed.capability, consumed.credits));
+      assert.equal(await count('commission_records', 'consumption_record_id', consumed.consumptionRecordId), 0);
+      const free = await generation(child, 0); await db.transaction(cx => service.settleGenerationConsumption(cx, free.consumptionRecordId, free.taskId, child, free.capability, free.credits));
+      assert.equal(await count('commission_records', 'consumption_record_id', free.consumptionRecordId), 0);
     });
     await t.test('inactive recipient is skipped without shifting levels or paying third ancestor', async () => {
-      const purchase = await order(fourth, 1000);
+      const consumed = await generation(fourth, 100);
       await c.execute("UPDATE users SET status = 'DISABLED' WHERE id = ?", [child]);
       try {
-        await db.transaction(cx => service.settlePayment(cx, purchase.id, fourth, 1000));
-        const rows = await db.query('SELECT beneficiary_id, level, amount_fen FROM commission_records WHERE payment_order_id = ?', [purchase.id]);
-        assert.deepEqual(rows.map(row => [row.beneficiary_id, row.level, Number(row.amount_fen)]), [[b, 2, 50]]);
+        await db.transaction(cx => service.settleGenerationConsumption(cx, consumed.consumptionRecordId, consumed.taskId, fourth, consumed.capability, consumed.credits));
+        const rows = await db.query('SELECT beneficiary_id, level, amount_fen FROM commission_records WHERE consumption_record_id = ?', [consumed.consumptionRecordId]);
+        assert.deepEqual(rows.map(row => [row.beneficiary_id, row.level, Number(row.amount_fen)]), [[b, 2, 5]]);
       } finally { await c.execute("UPDATE users SET status = 'ACTIVE' WHERE id = ?", [child]); }
     });
     await t.test('real signature/decryption callback uses payer_total excluding coupon; duplicate notifications are harmless', async () => {
@@ -202,8 +217,7 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
       await assert.rejects(credits.handleWechatNotification(payload[0], payload[1] + ' '), /签名/);
       await credits.handleWechatNotification(...payload); await credits.handleWechatNotification(...payload);
       await credits.handleWechatNotification(...signed(purchase));
-      const rows = await db.query('SELECT level, amount_fen, base_amount_fen FROM commission_records WHERE payment_order_id = ? ORDER BY level', [purchase.id]);
-      assert.deepEqual(rows.map(x => [x.level, Number(x.amount_fen), Number(x.base_amount_fen)]), [[1, 8000, 80000], [2, 4000, 80000]]);
+      assert.equal(await count('commission_records', 'payment_order_id', purchase.id), 0);
       assert.equal(Number((await db.query('SELECT payer_paid_amount_fen FROM payment_orders WHERE id = ?', [purchase.id]))[0].payer_paid_amount_fen), 80000);
       assert.equal(await count('ledger_transactions', 'reference_id', purchase.purchase), 1);
       const invalid = await order();
@@ -211,22 +225,22 @@ test('referral financial SQL integration (all data rolled back)', { skip: proces
       assert.equal(await count('ledger_transactions', 'reference_id', invalid.purchase), 0);
       const rollback = await order(); const retryPayload = signed(rollback);
       const settling = service.settlePayment;
-      service.settlePayment = async () => { throw Error('simulated commission failure'); };
+      service.settlePayment = async () => { throw Error('simulated invitation qualification failure'); };
       try { await assert.rejects(credits.handleWechatNotification(...retryPayload), /simulated/); } finally { service.settlePayment = settling; }
       assert.equal((await db.query('SELECT status FROM payment_orders WHERE id = ?', [rollback.id]))[0].status, 'CREATED');
       assert.equal(await count('ledger_transactions', 'reference_id', rollback.purchase), 0);
       assert.equal(await count('payment_notifications', 'payment_order_id', rollback.id), 0);
       await credits.handleWechatNotification(...retryPayload);
-      assert.equal(await count('commission_records', 'payment_order_id', rollback.id), 2);
+      assert.equal(await count('commission_records', 'payment_order_id', rollback.id), 0);
     });
-    // Large synthetic real-paid order funds only test beneficiaries; still uncommitted.
-    const funds = await order(child, 10000000); await db.transaction(cx => service.settlePayment(cx, funds.id, child, 10000000));
+    // Large synthetic image generation funds only test beneficiaries; still uncommitted.
+    const funds = await generation(child, 10000000); await db.transaction(cx => service.settleGenerationConsumption(cx, funds.consumptionRecordId, funds.taskId, child, funds.capability, funds.credits));
     await t.test('configuration snapshots and optimistic revision prevent silent overwrite', async () => {
       const before = await service.config();
       const saved = await service.saveConfig(admin, { ...before, direct_rate_bps: 1200 });
       assert.equal(saved.revision, before.revision + 1);
       await assert.rejects(service.saveConfig(admin, before), /重新读取/);
-      assert.equal(Number((await db.query('SELECT direct_rate_bps FROM distribution_settlements WHERE payment_order_id = ?', [funds.id]))[0].direct_rate_bps), 1000);
+      assert.equal(Number((await db.query('SELECT direct_rate_bps FROM distribution_consumption_settlements WHERE consumption_record_id = ?', [funds.consumptionRecordId]))[0].direct_rate_bps), 1000);
     });
     await t.test('server rejects non-Friday, below-minimum and insufficient-balance withdrawals', async () => {
       closed(); await assert.rejects(service.applyWithdrawal(b, input()), /周五/);

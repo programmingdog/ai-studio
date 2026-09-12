@@ -58,6 +58,13 @@ export interface PlatformConsumption {
   id: string; consumption_no: string; task_id: string | null; provider_model_id: string | null; model_alias: string | null;
   model_code: string | null; category: string; credits_consumed: number; status: string; description: string; occurred_at: string;
 }
+export interface PlatformCreditRecordPage<T> {
+  items: T[];
+  page: number;
+  page_size: 10;
+  total: number;
+  total_pages: number;
+}
 export interface WechatQrSession { state: string; login_url: string; expires_at: string; status?: string; requires_follow?: boolean }
 export interface ClientAuthMethods {
   registration_enabled: boolean;
@@ -241,8 +248,8 @@ export const getScriptAnalysisQuote = () =>
   authenticatedRequest<ModelCreditQuote>("/tasks/script-analysis/quote", { method: "POST", body: "{}" });
 export const getMediaCreditQuote = (providerModelId: string, resolution: string, seconds?: number) =>
   authenticatedRequest<ModelCreditQuote>("/tasks/quote", { method: "POST", body: JSON.stringify({ provider_model_id: providerModelId, payload: { resolution, seconds } }) });
-export const listCreditPurchases = () => authenticatedRequest<PlatformPurchase[]>("/credits/purchases");
-export const listCreditConsumptions = () => authenticatedRequest<PlatformConsumption[]>("/credits/consumptions");
+export const listCreditPurchases = (page = 1) => authenticatedRequest<PlatformCreditRecordPage<PlatformPurchase>>(`/credits/purchases?page=${page}`);
+export const listCreditConsumptions = (page = 1) => authenticatedRequest<PlatformCreditRecordPage<PlatformConsumption>>(`/credits/consumptions?page=${page}`);
 export const createCreditPurchase = (packageId: string) => authenticatedRequest<PlatformPurchase>("/credits/purchases", { method: "POST", body: JSON.stringify({ package_id: packageId, idempotency_key: crypto.randomUUID() }) });
 export const getCreditPurchase = (purchaseId: string) => authenticatedRequest<PlatformPurchase>(`/credits/purchases/${encodeURIComponent(purchaseId)}`);
 export const createWechatQrSession = (invite_code?: string) => publicRequest<WechatQrSession>("/auth/wechat/qr-sessions", { method: "POST", body: JSON.stringify({ invite_code }) });
@@ -250,14 +257,14 @@ export const createWechatQrSession = (invite_code?: string) => publicRequest<Wec
 export interface ReferralSummary {
   invite_code: string; invitation_url: string; invited_count: number; reward_credits: number; invitation_reward_credits: number;
   invitation_anti_abuse_enabled: boolean;
-  enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; minimum_withdrawal_fen: number;
+  enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; commission_notice: string; minimum_withdrawal_fen: number;
   available_fen: number; frozen_fen: number; earned_fen: number; paid_fen: number;
   withdrawal_open: boolean; timezone: string; server_time: string; next_open_at: string;
 }
-export interface ReferralRecord { id: string; amount_fen?: number | string; base_amount_fen?: number | string; rate_bps?: number; level?: number; status?: string; status_note?: string; review_note?: string; created_at: string; paid_at?: string; credits?: number; payer_id?: string; invited_user_id?: string; alipay_trade_no?: string }
-export interface ReferralPage { items: ReferralRecord[]; page: number; has_more: boolean }
-export interface ReferralSubordinate { id: string; display_name: string; account: string; status: string; parent_display_name: string | null; consumption_fen: number; paid_order_count: number; last_paid_at: string | null; created_at: string }
-export interface ReferralSubordinatePage { items: ReferralSubordinate[]; level: 1 | 2; page: number; page_size: number; total: number; total_consumption_fen: number; has_more: boolean }
+export interface ReferralRecord { id: string; amount_fen?: number | string; base_amount_fen?: number | string; rate_bps?: number; level?: number; status?: string; status_note?: string; review_note?: string; created_at: string; paid_at?: string; credits?: number; source_credits?: number | string; source_capability?: string; consumption_record_id?: string; payer_id?: string; invited_user_id?: string; alipay_trade_no?: string }
+export interface ReferralPage { items: ReferralRecord[]; page: number; page_size: number; total: number; total_pages: number; has_more: boolean }
+export interface ReferralSubordinate { id: string; display_name: string; account: string; status: string; parent_display_name: string | null; consumption_fen: number; generation_count: number; last_paid_at: string | null; created_at: string }
+export interface ReferralSubordinatePage { items: ReferralSubordinate[]; level: 1 | 2; page: number; page_size: number; total: number; total_pages: number; total_consumption_fen: number; has_more: boolean }
 export const getReferralSummary = () => authenticatedRequest<ReferralSummary>("/referrals/me");
 export const getReferralRecords = (kind: string, page = 1) => authenticatedRequest<ReferralPage>(`/referrals/me/${encodeURIComponent(kind)}?page=${page}`);
 export const getReferralSubordinates = (level: 1 | 2, page = 1) => authenticatedRequest<ReferralSubordinatePage>(`/referrals/me/subordinates?level=${level}&page=${page}`);

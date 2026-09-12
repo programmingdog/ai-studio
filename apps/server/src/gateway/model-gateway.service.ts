@@ -7,10 +7,11 @@ import { DatabaseService } from "../database/database.service";
 import { resolveMediaResolution, supportsMediaResolution } from "./media-resolution";
 import { wagaMediaParams, wagaProfiles, wagaTaskStatus } from "./waga-media";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
-import { multiplyCredits, storedModelCreditMultiplier } from "../common/model-credit";
+import { multiplyCredits, roundedModelCredits, storedModelCreditMultiplier } from "../common/model-credit";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
+import { ReferralsService } from "../referrals/referrals.service";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
@@ -23,6 +24,7 @@ interface TaskRow extends RowDataPacket {
   task_type: string; logical_model_code: string; provider_id: string; provider_model_id: string; provider_credential_id: string | null;
   remote_task_id: string | null; status: string; progress: number | string; revision: number;
   estimated_credits: number | string; settled_credits: number | string; error_code: string | null;
+  capability: string;
   created_at: Date; updated_at: Date; finished_at: Date | null;
 }
 interface ResolutionPriceRow extends RowDataPacket { credit_cost: number | string; }
@@ -73,9 +75,15 @@ function upstreamStatus(value: unknown, fallback: string): string {
 }
 function applicationError(value: unknown): string | null {
   const source = asObject(value);
-  if (source.success === false) return findString(value, ["error", "message", "msg"]) || "PROVIDER_REJECTED_REQUEST";
-  if (typeof source.code === "number" && source.code !== 0 && source.code !== 200) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
-  if (typeof source.code === "string" && source.code.trim() && !["0", "200", "OK", "SUCCESS"].includes(source.code.trim().toUpperCase())) return findString(value, ["error", "message", "msg"]) || `PROVIDER_CODE_${source.code}`;
+  const readable = (fallback: string) => {
+    const message = findString(value, ["error", "message", "msg"]) || fallback;
+    return message.toLowerCase().includes("did not get any data blocks")
+      ? "视频理解模型未读取到有效视频数据，请检查视频地址是否仍可公开访问或上传文件是否有效"
+      : message;
+  };
+  if (source.success === false) return readable("PROVIDER_REJECTED_REQUEST");
+  if (typeof source.code === "number" && source.code !== 0 && source.code !== 200) return readable(`PROVIDER_CODE_${source.code}`);
+  if (typeof source.code === "string" && source.code.trim() && !["0", "200", "OK", "SUCCESS"].includes(source.code.trim().toUpperCase())) return readable(`PROVIDER_CODE_${source.code}`);
   return null;
 }
 function credentialRetryableRejection(status: number, value: unknown): string | null {
@@ -294,8 +302,9 @@ function providerFetchError(error: unknown): string {
 export class ModelGatewayService {
   private readonly logger = new Logger(ModelGatewayService.name);
   constructor(@Inject(DatabaseService) private readonly database: DatabaseService, @Inject(SecretCryptoService) private readonly secretCrypto: SecretCryptoService,
-    @Inject(WagaModelMetadataService) private readonly wagaMetadata?: WagaModelMetadataService,
-    @Inject(TemporaryReferenceImageService) private readonly referenceImages?: TemporaryReferenceImageService) {}
+    @Inject(WagaModelMetadataService) private readonly wagaMetadata: WagaModelMetadataService,
+    @Inject(TemporaryReferenceImageService) private readonly referenceImages: TemporaryReferenceImageService,
+    @Inject(ReferralsService) private readonly referrals: ReferralsService) {}
 
   private async target(modelId: string): Promise<TargetRow> {
     const rows = await this.database.query<TargetRow[]>(
@@ -697,12 +706,12 @@ export class ModelGatewayService {
     }
     if (!Number.isFinite(base) || base < 0) throw new ServiceUnavailableException("模型积分价格配置无效");
     // Persist only the final estimate on task creation. Settlement never reapplies a later model multiplier.
-    base = multiplyCredits(base, storedModelCreditMultiplier(target.credit_multiplier));
+    base = roundedModelCredits(base, storedModelCreditMultiplier(target.credit_multiplier));
     if (target.capability !== "VIDEO_GENERATION") return base;
     const params = asObject(payload.params);
     const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration");
-    return multiplyCredits(base, seconds);
+    return Math.ceil(multiplyCredits(base, seconds));
   }
 
   private request(target: TargetRow, payload: Record<string, unknown>, apiKey: string): { url: string; method: string; headers: Record<string, string>; body: Record<string, unknown> | FormData } {
@@ -906,7 +915,7 @@ export class ModelGatewayService {
 
   private async settle(taskId: string, upstreamUsage?: unknown): Promise<void> {
     await this.database.transaction(async (connection) => {
-      const [tasks] = await connection.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? LIMIT 1 FOR UPDATE", [taskId]); const task = tasks[0];
+      const [tasks] = await connection.query<TaskRow[]>("SELECT t.*, pm.capability FROM ai_tasks t INNER JOIN provider_models pm ON pm.id = t.provider_model_id WHERE t.id = ? LIMIT 1 FOR UPDATE", [taskId]); const task = tasks[0];
       if (!task) return;
       const [holds] = await connection.query<RowDataPacket[]>("SELECT status FROM credit_holds WHERE task_id = ? LIMIT 1 FOR UPDATE", [taskId]);
       if (!holds.length || holds[0]!.status !== "ACTIVE") return;
@@ -919,12 +928,14 @@ export class ModelGatewayService {
       await connection.execute("UPDATE credit_holds SET status = 'CAPTURED' WHERE task_id = ? AND status = 'ACTIVE'", [taskId]);
       await connection.execute("UPDATE ai_tasks SET status = 'SUCCEEDED', progress = 1, settled_credits = ?, usage_json = ?, revision = revision + 1, finished_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [amount, upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage), taskId]);
       await connection.execute("UPDATE task_attempts SET status = 'SUCCEEDED', usage_json = ?, finished_at = CURRENT_TIMESTAMP(3) WHERE task_id = ? AND finished_at IS NULL", [upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage), taskId]);
+      const consumptionRecordId = randomUUID();
       await connection.execute(
         `INSERT INTO credit_consumption_records
           (id, consumption_no, user_id, task_id, provider_model_id, category, credits_consumed, status, description, occurred_at)
-         VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, 'CONFIRMED', ?, CURRENT_TIMESTAMP(3))`,
-        [randomUUID(), transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount, `${task.logical_model_code} 模型任务`],
+         VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, 'CONFIRMED', ?, UTC_TIMESTAMP(3))`,
+        [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount, `${task.logical_model_code} 模型任务`],
       );
+      await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, amount);
     });
   }
 

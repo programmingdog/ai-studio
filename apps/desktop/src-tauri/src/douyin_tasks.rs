@@ -5,7 +5,6 @@ use serde_json::{json, Value};
 use std::{fs, path::PathBuf, time::Duration};
 use tauri::Manager;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateDouyinUnderstandingTaskInput {
     share_text: String,
@@ -20,8 +19,16 @@ pub struct CreateDouyinUnderstandingTaskInput {
     video_info: Value,
     mode: String,
     fixed_seconds: Option<u64>,
+    #[serde(default = "default_video_submission_mode")]
+    video_submission_mode: String,
     #[serde(default)]
     platform_api_base_url: Option<String>,
+}
+
+fn default_video_submission_mode() -> String {
+    // Tasks created by an older client used the download/upload path. Keeping
+    // that default also makes retries of persisted tasks backward compatible.
+    "upload".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +142,44 @@ fn value_text(value: &Value, key: &str) -> String {
         .to_owned()
 }
 
+fn normalized_fixed_seconds(mode: &str, fixed_seconds: Option<u64>) -> Result<Option<u64>, String> {
+    if mode != "fixed" {
+        return Ok(None);
+    }
+    match fixed_seconds.unwrap_or(10) {
+        seconds @ (6 | 10 | 15) => Ok(Some(seconds)),
+        _ => Err("固定分镜时长只能选择 6、10 或 15 秒".to_owned()),
+    }
+}
+
+fn video_mime_type(extension: &str) -> &'static str {
+    match extension {
+        "mov" => "video/mov",
+        "webm" => "video/webm",
+        "mpeg" | "mpg" => "video/mpeg",
+        "avi" => "video/avi",
+        "wmv" => "video/wmv",
+        "3gp" => "video/3gpp",
+        _ => "video/mp4",
+    }
+}
+
+fn finish_completed(
+    app: &tauri::AppHandle,
+    task_id: &str,
+    result: &crate::ai::VideoUnderstandingResult,
+) {
+    if let (Ok(connection), Ok(result_json)) = (open(app), serde_json::to_string(result)) {
+        let now = Utc::now().to_rfc3339();
+        let _ = connection.execute(
+            "UPDATE douyin_understanding_tasks SET status = 'COMPLETED', stage = 'completed',
+             progress = 1, message = '视频理解与分镜生成完成', result_json = ?2,
+             error_json = NULL, updated_at = ?3, finished_at = ?3 WHERE id = ?1",
+            params![task_id, result_json, now],
+        );
+    }
+}
+
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let result_json: Option<String> = row.get(16)?;
     let error_json: Option<String> = row.get(17)?;
@@ -210,7 +255,7 @@ fn link_analysis_prompt(input: &CreateDouyinUnderstandingTaskInput) -> Result<St
             _ => None,
         },
     };
-    Ok(if let Some(aspect_ratio) = aspect_ratio {
+    let mut prompt = if let Some(aspect_ratio) = aspect_ratio {
         let resolution = match (input.source_width, input.source_height) {
             (Some(width), Some(height)) if width > 0 && height > 0 => format!("{width}×{height}"),
             _ => "未提供".to_owned(),
@@ -221,7 +266,21 @@ fn link_analysis_prompt(input: &CreateDouyinUnderstandingTaskInput) -> Result<St
         )
     } else {
         input.prompt.trim().to_owned()
-    })
+    };
+    if let Some(seconds) = normalized_fixed_seconds(&input.mode, input.fixed_seconds)? {
+        if let Some(duration) = input
+            .video_info
+            .get("duration")
+            .and_then(Value::as_f64)
+            .filter(|value| *value > 0.0)
+        {
+            let shot_count = (duration / seconds as f64).ceil() as u64;
+            prompt.push_str(&format!(
+                "\n\n【固定分镜权威时长】\n原视频真实时长为 {duration:.3} 秒。必须生成 {shot_count} 个分镜；分镜标题用于定位原片，最后一段标题结束于原视频真实结尾。每段标题下一行必须输出“生成时长：{seconds}秒”，且每个分镜（包括最后一个）的生成时长都恰好为 {seconds} 秒。最后一个分镜不足的部分只保持最后一个有意义的画面状态，不得新增剧情、台词、人物或动作。"
+            ));
+        }
+    }
+    Ok(prompt)
 }
 
 fn spawn_task(app: tauri::AppHandle, task_id: String) {
@@ -259,6 +318,45 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             if title.is_empty() { "video" } else { &title },
             if ext.is_empty() { "mp4" } else { &ext }
         );
+        if input.video_submission_mode == "url" {
+            let video_url = value_text(&input.video_info, "download_url");
+            let valid_url = reqwest::Url::parse(&video_url)
+                .ok()
+                .filter(|url| url.scheme() == "https");
+            if valid_url.is_none() {
+                finish_failed(
+                    &app,
+                    &task_id,
+                    json!({
+                        "code": "FAST_VIDEO_URL_INVALID",
+                        "message": "极速模式需要可供大模型读取的 HTTPS 视频地址。当前解析地址无效或已失效，请重新解析，或改用详细模式。",
+                        "retryable": true
+                    })
+                    .to_string(),
+                );
+                return;
+            }
+            update_progress(
+                &app,
+                &task_id,
+                "analyzing",
+                0.32,
+                "极速模式：正在将解析后的视频地址提交给 AI",
+            );
+            let analysis = crate::platform_video_understanding::understand_public_url(
+                input.platform_api_base_url.as_deref(),
+                &video_url,
+                video_mime_type(&ext),
+                &prompt,
+                video_name,
+            )
+            .await;
+            match analysis {
+                Ok(result) => finish_completed(&app, &task_id, &result),
+                Err(error) => finish_failed(&app, &task_id, error),
+            }
+            return;
+        }
         let temp_dir = match app.path().app_cache_dir() {
             Ok(path) => path.join("video-understanding-upload"),
             Err(error) => {
@@ -340,11 +438,21 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             }
         }
 
-        let downloaded_size = match tokio::fs::metadata(&downloaded_path).await {
-            Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata.len(),
-            _ => {
+        let downloaded_probe_path = downloaded_path.clone();
+        let downloaded_metadata = tauri::async_runtime::spawn_blocking(move || {
+            crate::media_tools::probe_video_metadata(&downloaded_probe_path)
+        })
+        .await;
+        let downloaded_size = match downloaded_metadata {
+            Ok(Ok(metadata)) => metadata.size_bytes,
+            Ok(Err(error)) => {
                 let _ = tokio::fs::remove_file(&downloaded_path).await;
-                finish_failed(&app, &task_id, "视频下载完成，但本地文件为空".to_owned());
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&downloaded_path).await;
+                finish_failed(&app, &task_id, format!("视频有效性检查任务异常：{error}"));
                 return;
             }
         };
@@ -368,7 +476,25 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             })
             .await;
             match compression {
-                Ok(Ok(())) => analysis_path = compressed_path.clone(),
+                Ok(Ok(())) => {
+                    let validation_path = compressed_path.clone();
+                    let validation = tauri::async_runtime::spawn_blocking(move || {
+                        crate::media_tools::probe_video_metadata(&validation_path)
+                    })
+                    .await;
+                    let validation_error = match validation {
+                        Ok(Ok(_)) => None,
+                        Ok(Err(error)) => Some(error),
+                        Err(error) => Some(format!("压缩视频有效性检查任务异常：{error}")),
+                    };
+                    if let Some(error) = validation_error {
+                        let _ = tokio::fs::remove_file(&downloaded_path).await;
+                        let _ = tokio::fs::remove_file(&compressed_path).await;
+                        finish_failed(&app, &task_id, error);
+                        return;
+                    }
+                    analysis_path = compressed_path.clone();
+                }
                 Ok(Err(error)) => {
                     let _ = tokio::fs::remove_file(&downloaded_path).await;
                     let _ = tokio::fs::remove_file(&compressed_path).await;
@@ -402,19 +528,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
         let _ = tokio::fs::remove_file(&downloaded_path).await;
         let _ = tokio::fs::remove_file(&compressed_path).await;
         match analysis {
-            Ok(result) => {
-                if let (Ok(connection), Ok(result_json)) =
-                    (open(&app), serde_json::to_string(&result))
-                {
-                    let now = Utc::now().to_rfc3339();
-                    let _ = connection.execute(
-                        "UPDATE douyin_understanding_tasks SET status = 'COMPLETED', stage = 'completed',
-                         progress = 1, message = '视频理解与分镜生成完成', result_json = ?2,
-                         error_json = NULL, updated_at = ?3, finished_at = ?3 WHERE id = ?1",
-                        params![task_id, result_json, now],
-                    );
-                }
-            }
+            Ok(result) => finish_completed(&app, &task_id, &result),
             Err(error) => finish_failed(&app, &task_id, error),
         }
     });
@@ -449,7 +563,11 @@ fn spawn_local_task(app: tauri::AppHandle, task_id: String) {
                 return;
             }
         };
-        let original_name = source_path.file_name().and_then(|value| value.to_str()).unwrap_or("video").to_owned();
+        let original_name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("video")
+            .to_owned();
         let temp_dir = match app.path().app_cache_dir() {
             Ok(path) => path.join("video-understanding-upload"),
             Err(error) => {
@@ -461,8 +579,15 @@ fn spawn_local_task(app: tauri::AppHandle, task_id: String) {
             finish_failed(&app, &task_id, format!("无法创建视频缓存目录：{error}"));
             return;
         }
-        let compressed_path = temp_dir.join(format!("{}-compressed.mp4", uuid::Uuid::new_v4().simple()));
-        update_progress(&app, &task_id, "compressing", 0.18, "正在压缩本地视频，准备上传服务端");
+        let compressed_path =
+            temp_dir.join(format!("{}-compressed.mp4", uuid::Uuid::new_v4().simple()));
+        update_progress(
+            &app,
+            &task_id,
+            "compressing",
+            0.18,
+            "正在压缩本地视频，准备上传服务端",
+        );
         let compression_source = source_path.clone();
         let compression_target = compressed_path.clone();
         let compression = tauri::async_runtime::spawn_blocking(move || {
@@ -537,7 +662,7 @@ fn finish_failed(app: &tauri::AppHandle, task_id: &str, error: String) {
 #[tauri::command]
 pub fn create_douyin_understanding_task(
     app: tauri::AppHandle,
-    input: CreateDouyinUnderstandingTaskInput,
+    mut input: CreateDouyinUnderstandingTaskInput,
 ) -> Result<Value, String> {
     if input.share_text.trim().is_empty() || input.prompt.trim().len() < 10 {
         return Err("视频链接或视频理解提示词无效".to_owned());
@@ -545,6 +670,10 @@ pub fn create_douyin_understanding_task(
     if !matches!(input.mode.as_str(), "standard" | "detailed" | "fixed") {
         return Err("视频理解模式无效".to_owned());
     }
+    if !matches!(input.video_submission_mode.as_str(), "url" | "upload") {
+        return Err("视频提交方式无效".to_owned());
+    }
+    input.fixed_seconds = normalized_fixed_seconds(&input.mode, input.fixed_seconds)?;
     let connection = open(&app)?;
     let id = format!("DYTASK_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
@@ -630,16 +759,31 @@ pub fn create_local_video_understanding_task(
     if !matches!(input.mode.as_str(), "standard" | "detailed" | "fixed") {
         return Err("视频理解模式无效".to_owned());
     }
+    input.fixed_seconds = normalized_fixed_seconds(&input.mode, input.fixed_seconds)?;
     let metadata = crate::media_tools::probe_video_metadata(&video_path)?;
-    input.prompt = format!(
-        "{}\n\n【本地视频真实时长（最高优先级）】\nFFprobe 已确认本视频完整时长为 {:.3} 秒，画面尺寸为 {}×{}。必须从 0 秒开始分析并连续覆盖到 {:.3} 秒的真实结尾；最后一个分镜的结束时间必须等于 {:.3} 秒（仅允许 0.5 秒以内的取整误差）。不得在 40 秒或任何中间位置提前结束，不得遗漏后半段内容，也不得虚构超出视频结尾的内容。输出前必须核对分镜时间轴总时长。",
-        input.prompt.trim(),
-        metadata.duration,
-        metadata.width,
-        metadata.height,
-        metadata.duration,
-        metadata.duration,
-    );
+    input.prompt = if let Some(seconds) = input.fixed_seconds {
+        let shot_count = (metadata.duration / seconds as f64).ceil() as u64;
+        format!(
+            "{}\n\n【本地视频真实时长与固定分镜规则（最高优先级）】\nFFprobe 已确认本视频完整时长为 {:.3} 秒，画面尺寸为 {}×{}。必须从 0 秒开始分析并连续覆盖真实结尾；必须生成 {} 个分镜，最后一段标题结束于原视频真实结尾。每段标题下一行必须输出“生成时长：{}秒”，且每个分镜（包括最后一个）的生成时长都恰好为 {} 秒。最后一个分镜不足的部分只保持最后一个有意义的画面状态，不得新增剧情、台词、人物或动作。输出前必须核对全部分镜时长。",
+            input.prompt.trim(),
+            metadata.duration,
+            metadata.width,
+            metadata.height,
+            shot_count,
+            seconds,
+            seconds,
+        )
+    } else {
+        format!(
+            "{}\n\n【本地视频真实时长（最高优先级）】\nFFprobe 已确认本视频完整时长为 {:.3} 秒，画面尺寸为 {}×{}。必须从 0 秒开始分析并连续覆盖到 {:.3} 秒的真实结尾；最后一个分镜的结束时间必须等于 {:.3} 秒（仅允许 0.5 秒以内的取整误差）。不得在 40 秒或任何中间位置提前结束，不得遗漏后半段内容，也不得虚构超出视频结尾的内容。输出前必须核对分镜时间轴总时长。",
+            input.prompt.trim(),
+            metadata.duration,
+            metadata.width,
+            metadata.height,
+            metadata.duration,
+            metadata.duration,
+        )
+    };
     let title = video_path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -878,4 +1022,20 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_fixed_seconds;
+
+    #[test]
+    fn fixed_mode_defaults_to_ten_and_rejects_unsupported_durations() {
+        assert_eq!(normalized_fixed_seconds("fixed", None).unwrap(), Some(10));
+        assert_eq!(normalized_fixed_seconds("fixed", Some(6)).unwrap(), Some(6));
+        assert!(normalized_fixed_seconds("fixed", Some(9)).is_err());
+        assert_eq!(
+            normalized_fixed_seconds("standard", Some(10)).unwrap(),
+            None
+        );
+    }
 }

@@ -16,6 +16,8 @@ interface WechatRuntimeRow extends RowDataPacket {
   official_account_name: string; app_id: string; status: string;
 }
 
+const CREDIT_RECORD_PAGE_SIZE = 10;
+
 type WechatRuntime = { merchantId: string; notifyUrl: string; apiV3Key: string; merchantCertificate: string; merchantPrivateKey: string; verifierKey: string; verifierId: string; appId: string };
 
 function orderNumber(): string { return `AV${Date.now()}${randomBytes(5).toString("hex")}`.slice(0, 32); }
@@ -50,7 +52,13 @@ export class CreditsService {
     return { balance, held, available: balance - held };
   }
 
-  async purchases(userId: string): Promise<Record<string, unknown>[]> {
+  async purchases(userId: string, rawPage?: string): Promise<Record<string, unknown>> {
+    const page = integer(rawPage === undefined ? 1 : Number(rawPage), "页码", 1, 100000);
+    const offset = (page - 1) * CREDIT_RECORD_PAGE_SIZE;
+    const totals = await this.database.query<RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM credit_package_purchases WHERE user_id = ?",
+      [userId],
+    );
     const rows = await this.database.query<RowDataPacket[]>(
       `SELECT cpp.id, cpp.purchase_no, cpp.package_id, cpp.package_code_snapshot,
               cpp.package_name_snapshot, cpp.base_credits_snapshot, cpp.bonus_credits_snapshot,
@@ -59,29 +67,49 @@ export class CreditsService {
               cpp.purchased_at, cpp.created_at, po.out_trade_no, po.code_url, po.expires_at, po.paid_at
        FROM credit_package_purchases cpp
        LEFT JOIN payment_orders po ON po.id = cpp.payment_order_id
-       WHERE cpp.user_id = ? ORDER BY cpp.created_at DESC LIMIT 100`,
+       WHERE cpp.user_id = ? ORDER BY cpp.created_at DESC, cpp.id DESC LIMIT ${CREDIT_RECORD_PAGE_SIZE} OFFSET ${offset}`,
       [userId],
     );
-    return rows.map((row) => ({
-      ...row,
-      base_credits_snapshot: Number(row.base_credits_snapshot),
-      bonus_credits_snapshot: Number(row.bonus_credits_snapshot),
-      credits_granted: Number(row.credits_granted),
-      paid_amount_fen: Number(row.paid_amount_fen),
-    }));
+    const total = Number(totals[0]?.total || 0);
+    return {
+      page,
+      page_size: CREDIT_RECORD_PAGE_SIZE,
+      total,
+      total_pages: Math.ceil(total / CREDIT_RECORD_PAGE_SIZE),
+      items: rows.map((row) => ({
+        ...row,
+        base_credits_snapshot: Number(row.base_credits_snapshot),
+        bonus_credits_snapshot: Number(row.bonus_credits_snapshot),
+        credits_granted: Number(row.credits_granted),
+        paid_amount_fen: Number(row.paid_amount_fen),
+      })),
+    };
   }
 
-  async consumptions(userId: string): Promise<Record<string, unknown>[]> {
+  async consumptions(userId: string, rawPage?: string): Promise<Record<string, unknown>> {
+    const page = integer(rawPage === undefined ? 1 : Number(rawPage), "页码", 1, 100000);
+    const offset = (page - 1) * CREDIT_RECORD_PAGE_SIZE;
+    const totals = await this.database.query<RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM credit_consumption_records WHERE user_id = ?",
+      [userId],
+    );
     const rows = await this.database.query<RowDataPacket[]>(
       `SELECT ccr.id, ccr.consumption_no, ccr.task_id, ccr.provider_model_id,
               pm.model_alias, pm.model_code, ccr.category, ccr.credits_consumed,
               ccr.status, ccr.description, ccr.occurred_at, ccr.created_at
        FROM credit_consumption_records ccr
        LEFT JOIN provider_models pm ON pm.id = ccr.provider_model_id
-       WHERE ccr.user_id = ? ORDER BY ccr.occurred_at DESC LIMIT 100`,
+       WHERE ccr.user_id = ? ORDER BY ccr.occurred_at DESC, ccr.id DESC LIMIT ${CREDIT_RECORD_PAGE_SIZE} OFFSET ${offset}`,
       [userId],
     );
-    return rows.map((row) => ({ ...row, credits_consumed: Number(row.credits_consumed) }));
+    const total = Number(totals[0]?.total || 0);
+    return {
+      page,
+      page_size: CREDIT_RECORD_PAGE_SIZE,
+      total,
+      total_pages: Math.ceil(total / CREDIT_RECORD_PAGE_SIZE),
+      items: rows.map((row) => ({ ...row, credits_consumed: Number(row.credits_consumed) })),
+    };
   }
 
   private async wechatRuntime(requireActive = true): Promise<WechatRuntime> {
@@ -253,7 +281,7 @@ export class CreditsService {
       if (String(transaction.mchid) !== config.merchantId || String(transaction.appid) !== config.appId) throw new ConflictException("微信支付商户或 AppID 不匹配");
       if (Number(amount.total) !== Number(order.amount_fen) || String(amount.currency || "CNY") !== String(order.currency)) throw new ConflictException("微信支付回调金额或币种不匹配");
       const paidFen = integer(amount.payer_total, "微信实付金额", 0, Number(order.amount_fen));
-      if (amount.payer_currency !== "CNY") throw new ConflictException("分润仅支持人民币实付金额");
+      if (amount.payer_currency !== "CNY") throw new ConflictException("微信实付币种必须为人民币");
       await connection.execute(
         `INSERT INTO payment_notifications
           (id, notification_id, payment_order_id, body_sha256, signature_valid, processing_status, processed_at)

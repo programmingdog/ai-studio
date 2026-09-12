@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Inject, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { Request } from "express";
 import { asRecord, requiredString } from "../common/input";
 import { UserAuthGuard, UserRequest } from "../user-auth/user-auth.guard";
@@ -19,11 +19,11 @@ export class CreditsController {
 
   @Get("credits/purchases")
   @UseGuards(UserAuthGuard)
-  purchases(@Req() request: UserRequest) { return this.credits.purchases(request.user.sub); }
+  purchases(@Req() request: UserRequest, @Query("page") page?: string) { return this.credits.purchases(request.user.sub, page); }
 
   @Get("credits/consumptions")
   @UseGuards(UserAuthGuard)
-  consumptions(@Req() request: UserRequest) { return this.credits.consumptions(request.user.sub); }
+  consumptions(@Req() request: UserRequest, @Query("page") page?: string) { return this.credits.consumptions(request.user.sub, page); }
 
   @Post("credits/purchases")
   @UseGuards(UserAuthGuard)

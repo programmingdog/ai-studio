@@ -1189,7 +1189,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                         return;
                     }
                     revision_note = Some(error);
-                },
+                }
             }
         }
         finish_failed(

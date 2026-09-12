@@ -149,11 +149,9 @@ fn target_details(
             )
             .optional(),
         "prop" => connection
-            .query_row(
-                "SELECT name FROM props WHERE id = ?1",
-                [target_id],
-                |row| row.get(0),
-            )
+            .query_row("SELECT name FROM props WHERE id = ?1", [target_id], |row| {
+                row.get(0)
+            })
             .optional(),
         _ => return Err(format!("不支持写入资产库的类型：{target_type}")),
     }

@@ -10,7 +10,13 @@ pub fn initialize(app: &App) -> tauri::Result<()> {
         .tooltip("逐梦帧 · 当前没有运行中的任务")
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
-            if !matches!(event, TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }) {
+            if !matches!(
+                event,
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
                 return;
             }
             if let Some(window) = tray.app_handle().get_webview_window("main") {
@@ -35,8 +41,11 @@ pub fn set_tray_status(app: AppHandle, status: String) -> Result<(), String> {
     } else {
         format!("逐梦帧 · {compact}")
     };
-    let tray = app.tray_by_id(TRAY_ID).ok_or_else(|| "系统托盘尚未初始化".to_owned())?;
-    tray.set_tooltip(Some(tooltip)).map_err(|error| error.to_string())
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "系统托盘尚未初始化".to_owned())?;
+    tray.set_tooltip(Some(tooltip))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
