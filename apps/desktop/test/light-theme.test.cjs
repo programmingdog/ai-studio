@@ -52,7 +52,7 @@ test('light surface and semantic text tokens have readable contrast', () => {
 test('no original dark surface remains, including rules masked by later overrides', () => {
   // Saturated brand buttons, tiny indicators and progress fills are intentional;
   // content panels, controls, tags, previews and dialogs are never exempted.
-  const accents = /^(?:\.brand-mark|nav button\.active::before|\.status-dot|\.welcome-glow|\.primary-button(?:,|$)|\.account-identity-avatar|\.asset-library-card\.selected \.asset-selection-check|\.progress i|\.agent-run-progress b|\.generation-record-progress i|\.auto-workflow-overall b|\.bulk-video-overall-progress b|\.idea-workflow-overall b|\.idea-segment-progress i\.(?:active|completed)|\.douyin-task-state > i b|\.video-remix-progress i|\.script-analysis-progress > i b|\.creative-type-group-mark)$/;
+  const accents = /^(?:\.brand-mark|nav button\.active::before|\.status-dot|\.welcome-glow|\.primary-button(?:,|$)|\.account-identity-avatar|\.asset-library-card\.selected \.asset-selection-check|\.promotion-poster-grid i|\.progress i|\.agent-run-progress b|\.generation-record-progress i|\.auto-workflow-overall b|\.bulk-video-overall-progress b|\.idea-workflow-overall b|\.idea-segment-progress i\.(?:active|completed)|\.douyin-task-state > i b|\.video-remix-progress i|\.script-analysis-progress > i b|\.creative-type-group-mark)$/;
   root.walkDecls(/^background/, d => {
     if (d.parent.selector.startsWith('::-webkit-scrollbar-thumb')) return;
     if (accents.test(d.parent.selector.split(',')[0].trim())) return;

@@ -22,8 +22,8 @@ test('confirmed picker creates a verified item grant that bypasses the second di
   assert.match(app, /key: `image:scene:\$\{scene\.id\}`/);
   assert.match(app, /key: `image:shot:\$\{selected\.id\}`/);
   assert.match(app, /key: `video:shot:\$\{selected\.id\}`, seconds: selected\.duration/);
-  assert.match(media, /if let Some\(\(root, id, key\)\) = &workflow[\s\S]*crate::workflow_credit::reserve/);
-  assert.match(media, /else \{ confirmed_quote\(/);
+  assert.match(media, /if let Some\(\(root, id, key\)\) = &workflow[\s\S]*crate::workflow_credit::reserve_locked\(/);
+  assert.match(media, /\} else \{\s*confirmed_quote\(/);
 });
 
 test('bulk video confirmation prices only shots that still need generation', () => {
