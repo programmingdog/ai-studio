@@ -15,6 +15,7 @@ const schemas = {
   'mj_imagine': [field('images'),field('botType',['MID_JOURNEY','NIJI_JOURNEY']),field('aspectRatio',['9:16'])],
   'gk-video-3.5': [field('images'),field('aspect_ratio',['9:16']),field('resolution',['720p']),field('duration',['10'])],
   'doubao-seedance-2-5-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',[{value:'480p',currently_unavailable:true},'720p']),field('duration',['10'])],
+  'seedance-2.5-anmiao': [field('images'),field('aspect_ratio',['9:16'],false),field('resolution',['720p']),field('duration',['10'])],
   'hailuo-h3-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',['768P','2K']),field('duration',['10'])],
   'kwvideo-v2-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',['720p',{value:'1080p',requires:{version:['标准']}}]),field('duration',['10']),field('version',['Mini','快速',{value:'标准',currently_unavailable:true}])],
   'seedance-2.0-anmiao-quannengcankao': [field('image_url',undefined,false),field('aspect_ratio',['9:16'],false),field('resolution',['720p',{value:'1080p',requires:{version:['标准']}}]),field('duration',['10']),field('version',['Mini','快速','标准']),field('video_url',undefined,false)],
@@ -51,6 +52,16 @@ test('Seedance 2.0 requires a reference and sends it as image_url', () => {
   assert.equal(videoBody.params.video_url,'https://example.com/ref.mp4');
   assert.equal(videoBody.params.image_url,undefined);
 });
+test('Seedance 2.5 requires images and sends the current images field', () => {
+  const code='seedance-2.5-anmiao';
+  const gateway=new ModelGatewayService({},{});
+  assert.throws(()=>gateway.request(target(code),{...payload(code),reference_images:[]},'fixture'),/至少需要一张参考图/);
+  const body=gateway.request(target(code),payload(code),'fixture').body;
+  assert.deepEqual(body.params.images,[ref]);
+  assert.equal(body.params.image_url,undefined);
+  assert.equal(body.params.version,undefined);
+  assert.throws(()=>gateway.request(target(code),{...payload(code),reference_images:[],audio_url:'https://example.com/ref.mp3'},'fixture'),/至少需要一张参考图/);
+});
 test('first frame is first in both the provider array and reference label guide', () => {
   const code='kling-v3-video';
   const body=new ModelGatewayService({},{}).request(target(code),{...payload(code),reference_images:[{url:ref,label:'尾帧'},{url:'https://example.com/first.png',type:'shot_first_frame',label:'首帧'}]},'fixture').body;
@@ -65,7 +76,7 @@ test('invalid media counts, missing references, unsupported durations and editio
   assert.throws(()=>wagaMediaParams('viduq3',schemas.viduq3,{}, {...payload('viduq3'),seconds:10}),/时长/);
   assert.throws(()=>wagaMediaParams('kling-v3-video',schemas['kling-v3-video'],{}, {...payload('kling-v3-video'),seconds:5}),/暂不可用/);
   assert.throws(()=>wagaMediaParams('kwvideo-v2-quannengcankao',schemas['kwvideo-v2-quannengcankao'],{}, {...payload('kwvideo-v2-quannengcankao'),resolution:'1080p'}),/版本不匹配/);
-  assert.throws(()=>wagaMediaParams('gk-video-3.5',schemas['gk-video-3.5'],{}, {...payload('gk-video-3.5'),reference_images:undefined},{submit:true}),/需要参考素材/);
+  assert.throws(()=>wagaMediaParams('gk-video-3.5',schemas['gk-video-3.5'],{}, {...payload('gk-video-3.5'),reference_images:undefined},{submit:true}),/至少需要一张参考图/);
 });
 test('quote and creation use the stored lowest-price edition without accepting overrides', () => {
   const config={generation_parameters_by_resolution:{'720p':{model_variant:'turbo',off_peak:'true'}}};

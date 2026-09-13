@@ -569,7 +569,7 @@ export interface UpdateAutomaticWorkflowInput {
   snapshot: AutomaticWorkflowSnapshot;
 }
 
-export interface AutomaticWorkflowMediaSelection { provider_model_id: string; model_alias: string; model_code?: string; resolution: string; credit_cost: number; workflow_credit_id?: string }
+export interface AutomaticWorkflowMediaSelection { provider_model_id: string; provider_code?: string; model_alias: string; model_code?: string; resolution: string; credit_cost: number; workflow_credit_id?: string }
 export interface AutomaticWorkflowSnapshot {
   items?: AutomaticWorkflowTaskSnapshot[];
   image_model?: AutomaticWorkflowMediaSelection;
@@ -606,6 +606,7 @@ export interface CreateShotVideoGenerationInput {
   first_frame_relative_path?: string;
   platform_api_base_url: string;
   provider_model_id: string;
+  provider_code?: string;
   model_alias: string;
 }
 
@@ -622,6 +623,7 @@ export interface CreateImageGenerationTasksInput {
   project_id: string;
   platform_api_base_url: string;
   provider_model_id: string;
+  provider_code?: string;
   model_alias: string;
   resolution: string;
   tasks: CreateImageGenerationTaskItem[];

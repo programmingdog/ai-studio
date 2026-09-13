@@ -9,6 +9,7 @@ export const wagaProfiles: Record<string, { video?: boolean; images: string; max
   "mj_imagine": { images: "images", max: 4, ratio: "aspectRatio", resolution: false, defaults: { botType: "MID_JOURNEY" } },
   "gk-video-3.5": { video: true, images: "images", max: 1, ratio: "aspect_ratio", duration: range(1, 15) },
   "doubao-seedance-2-5-quannengcankao": { video: true, images: "image_url", max: 30, ratio: "aspect_ratio", duration: range(4, 30) },
+  "seedance-2.5-anmiao": { video: true, images: "images", max: 30, ratio: "aspect_ratio", duration: range(4, 30) },
   "hailuo-h3-quannengcankao": { video: true, images: "image_url", max: 9, ratio: "aspect_ratio", duration: range(4, 15) },
   "kwvideo-v2-quannengcankao": { video: true, images: "image_url", max: 9, ratio: "aspect_ratio", duration: range(4, 15), defaults: { version: "Mini" } },
   "seedance-2.0-anmiao-quannengcankao": { video: true, images: "image_url", max: 9, ratio: "aspect_ratio", duration: range(4, 15), defaults: { version: "Mini" } },
@@ -88,10 +89,13 @@ export function wagaMediaParams(model: string, schema: unknown, config: unknown,
   }
   const has = (v: any) => Array.isArray(v) ? v.length > 0 : Boolean(v);
   if ((model === "gk-video-3.5" && !images.length)
+    || (model === "seedance-2.5-anmiao" && !images.length)
     || (model === "hailuo-h3-quannengcankao" && !images.length && !has(result.video_url))
     || (model === "seedance-2.0-anmiao-quannengcankao" && !images.length && !has(result.video_url))
     || (model === "doubao-seedance-2-5-quannengcankao" && !images.length && !has(result.video_url) && !has(result.audio_url))) {
-    fail("该方案需要参考素材，请先提供参考图或参考视频，或更换方案。");
+    fail(["gk-video-3.5", "seedance-2.5-anmiao"].includes(model)
+      ? "该模型至少需要一张参考图，请先添加分镜图作为视频参考。"
+      : "该方案需要参考素材，请先提供参考图或参考视频，或更换方案。");
   }
   for (const field of fields.filter(f => f.required && f.name !== "prompt" && !["resolution", "size", "imageSize"].includes(f.name))) {
     if (result[field.name] == null) fail(`缺少必要的生成设置 ${field.label || field.name}，请更换方案。`);

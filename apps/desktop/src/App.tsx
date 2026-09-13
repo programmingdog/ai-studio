@@ -58,22 +58,22 @@ function requestMediaModel(capability: PlatformMediaModel["capability"], title: 
 }
 
 function mediaImageFields(selection: MediaModelSelection) {
-  return { platform_api_base_url: platformApiBaseUrl, provider_model_id: selection.model.id, model_alias: selection.model.model_alias, resolution: selection.resolution, workflow_credit_id: selection.workflowCreditId };
+  return { platform_api_base_url: platformApiBaseUrl, provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, resolution: selection.resolution, workflow_credit_id: selection.workflowCreditId };
 }
 
 function mediaVideoFields(selection: MediaModelSelection) {
-  return { platform_api_base_url: platformApiBaseUrl, provider_model_id: selection.model.id, model_alias: selection.model.model_alias, resolution: selection.resolution, workflow_credit_id: selection.workflowCreditId };
+  return { platform_api_base_url: platformApiBaseUrl, provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, resolution: selection.resolution, workflow_credit_id: selection.workflowCreditId };
 }
 
 function workflowMediaSnapshot(selections?: { image: MediaModelSelection; video: MediaModelSelection }): AutomaticWorkflowSnapshot {
   if (!selections) return {};
-  const serialize = (selection: MediaModelSelection) => ({ provider_model_id: selection.model.id, model_alias: selection.model.model_alias, model_code: selection.model.model_code, resolution: selection.resolution, credit_cost: selection.creditCost, workflow_credit_id: selection.workflowCreditId });
+  const serialize = (selection: MediaModelSelection) => ({ provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, model_code: selection.model.model_code, resolution: selection.resolution, credit_cost: selection.creditCost, workflow_credit_id: selection.workflowCreditId });
   return { image_model: serialize(selections.image), video_model: serialize(selections.video) };
 }
 
 function restoredWorkflowMedia(snapshot: AutomaticWorkflowSnapshot): { image: MediaModelSelection; video: MediaModelSelection } | undefined {
   if (!snapshot.image_model || !snapshot.video_model) return undefined;
-  const restore = (value: NonNullable<AutomaticWorkflowSnapshot["image_model"]>) => ({ model: { id: value.provider_model_id, model_alias: value.model_alias, model_code: value.model_code } as PlatformMediaModel, resolution: value.resolution, creditCost: value.credit_cost, workflowCreditId: value.workflow_credit_id });
+  const restore = (value: NonNullable<AutomaticWorkflowSnapshot["image_model"]>) => ({ model: { id: value.provider_model_id, provider_code: value.provider_code, model_alias: value.model_alias, model_code: value.model_code } as PlatformMediaModel, resolution: value.resolution, creditCost: value.credit_cost, workflowCreditId: value.workflow_credit_id });
   return { image: restore(snapshot.image_model), video: restore(snapshot.video_model) };
 }
 

@@ -82,7 +82,7 @@ export interface ClientProductBrand {
 export interface CatalogCategory { id: string; code: string; name: string; description: string; sort_order: number }
 export interface PlatformMediaResolutionPrice { resolution: string; credit_cost: number; label?: string }
 export interface PlatformMediaModel {
-  id: string; provider_id: string; provider_name: string; model_code: string; display_name: string; model_alias: string;
+  id: string; provider_id: string; provider_code?: string; provider_name: string; model_code: string; display_name: string; model_alias: string;
   capability: "IMAGE_GENERATION" | "VIDEO_GENERATION"; billing_unit: "PER_REQUEST" | "PER_SECOND";
   video_duration_options?: number[];
   max_reference_images: number; supports_reference_video: boolean; supports_real_person: boolean;

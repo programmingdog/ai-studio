@@ -206,6 +206,7 @@ pub struct CreateImageGenerationTasksInput {
     project_id: String,
     platform_api_base_url: String,
     provider_model_id: String,
+    provider_code: Option<String>,
     model_alias: String,
     resolution: String,
     tasks: Vec<CreateImageGenerationTaskItem>,
@@ -246,6 +247,7 @@ pub struct CreateShotVideoGenerationInput {
     first_frame_relative_path: Option<String>,
     platform_api_base_url: String,
     provider_model_id: String,
+    provider_code: Option<String>,
     model_alias: String,
 }
 
@@ -2732,6 +2734,7 @@ async fn prepare_platform_video_request(
     resolution: &str,
     version: Option<&str>,
     references: &mut [ReferenceImage],
+    require_public_urls: bool,
 ) -> Result<Value, String> {
     // Apply only the provider's per-file limit first. If the aggregate is too
     // large, preserve image quality and use temporary URLs for the whole set.
@@ -2745,7 +2748,9 @@ async fn prepare_platform_video_request(
         usize::MAX,
         PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
     )?;
-    if !platform_video_requires_upload(references, &inline_payload) {
+    if references.is_empty()
+        || (!require_public_urls && !platform_video_requires_upload(references, &inline_payload))
+    {
         return Ok(inline_payload);
     }
     crate::logging::debug(
@@ -3077,7 +3082,21 @@ async fn execute_image_task(
                         false,
                     )
                 })?;
-            let reference_images = references.iter().map(|reference| json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})).collect::<Vec<_>>();
+            let mut reference_images = Vec::with_capacity(references.len());
+            for reference in &references {
+                let image = if metadata.get("provider_code").and_then(Value::as_str) == Some("allaiin") {
+                    let url = crate::platform_media::upload_reference_image(
+                        &task.base_url,
+                        reference.bytes.clone(),
+                        &reference.mime_type,
+                        &reference.filename,
+                    ).await?;
+                    json!({"url": url, "label": reference.label, "type": reference.kind})
+                } else {
+                    json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})
+                };
+                reference_images.push(image);
+            }
             let operation = format!(
                 "{} · {}",
                 match task.target_type.as_str() {
@@ -3311,7 +3330,7 @@ pub fn create_image_generation_tasks(
         crate::database::generation_records::set_request_metadata(
             &connection,
             &task.id,
-            &json!({"reference_assets": item.reference_assets, "provider_model_id": input.provider_model_id, "resolution": input.resolution, "workflow_credit_id": input.workflow_credit_id}),
+            &json!({"reference_assets": item.reference_assets, "provider_model_id": input.provider_model_id, "provider_code": input.provider_code, "resolution": input.resolution, "workflow_credit_id": input.workflow_credit_id}),
         )?;
         created.push(task);
     }
@@ -4257,6 +4276,7 @@ async fn execute_video_task(
                 resolution,
                 version,
                 &mut references,
+                metadata.get("provider_code").and_then(Value::as_str) == Some("allaiin"),
             )
             .await?;
             crate::platform_media::generate(
@@ -4467,7 +4487,7 @@ pub fn create_shot_video_generation(
     crate::database::generation_records::set_request_metadata(
         &transaction,
         &record.id,
-        &json!({"duration": input.duration, "resolution": resolution, "version": version, "reference_assets": reference_assets, "provider_model_id": input.provider_model_id, "workflow_credit_id": input.workflow_credit_id}),
+        &json!({"duration": input.duration, "resolution": resolution, "version": version, "reference_assets": reference_assets, "provider_model_id": input.provider_model_id, "provider_code": input.provider_code, "workflow_credit_id": input.workflow_credit_id}),
     )?;
     transaction.commit().map_err(|error| error.to_string())?;
     drop(connection);

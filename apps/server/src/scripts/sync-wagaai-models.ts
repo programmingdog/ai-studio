@@ -73,7 +73,7 @@ const catalog: CatalogModel[] = [
   { name: "doubao-seedream-5-0-pro-260628", alias: "Seedream 5.0 Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 30 },
   { name: "mj_imagine", alias: "Midjourney", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 4, supportsReferenceVideo: false, sortOrder: 40 },
   { name: "gk-video-3.5", alias: "GK Video 3.5", capability: "VIDEO_GENERATION", initialCreditCost: 6, maxReferenceImages: 1, supportsReferenceVideo: false, sortOrder: 10 },
-  { name: "doubao-seedance-2-5-quannengcankao", alias: "Seedance 2.5 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 14, maxReferenceImages: 30, supportsReferenceVideo: true, sortOrder: 20 },
+  { name: "seedance-2.5-anmiao", alias: "Seedance 2.5 按秒图生视频", capability: "VIDEO_GENERATION", initialCreditCost: 14, maxReferenceImages: 30, supportsReferenceVideo: false, sortOrder: 20 },
   { name: "hailuo-h3-quannengcankao", alias: "海螺 H3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 8, maxReferenceImages: 9, supportsReferenceVideo: true, sortOrder: 30 },
   { name: "seedance-2.0-anmiao-quannengcankao", alias: "Seedance 2.0 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 12, maxReferenceImages: 9, supportsReferenceVideo: true, supportsRealPerson: true, sortOrder: 40 },
   { name: "wan3.0-video-quannengcankao", alias: "Wan3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 10, maxReferenceImages: 10, supportsReferenceVideo: true, sortOrder: 50 },

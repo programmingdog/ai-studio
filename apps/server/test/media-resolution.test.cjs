@@ -53,12 +53,34 @@ test("media image and video wire requests use the matched value", () => {
 });
 
 test("REST and generic video requests normalize top-level and nested values", () => {
-  for (const api_protocol of ["allaiin_rest", "openai"]) {
-    const result = request(target({ api_protocol, capability: "VIDEO_GENERATION", parameter_schema_json: definition("resolution", ["720P"]) }), { resolution: "720p", params: { resolution: "720p" }, size: "9:16" });
-    assert.equal(result.body.resolution, "720P");
-    assert.equal(result.body.params.resolution, "720P");
-    assert.equal(result.body.size, "9:16");
-  }
+  const generic = request(target({ api_protocol: "openai", capability: "VIDEO_GENERATION", parameter_schema_json: definition("resolution", ["720P"]) }), { resolution: "720p", params: { resolution: "720p" }, size: "9:16" });
+  assert.equal(generic.body.resolution, "720P");
+  assert.equal(generic.body.params.resolution, "720P");
+  const allaiin = request(target({ api_protocol: "allaiin_rest", capability: "VIDEO_GENERATION", parameter_schema_json: definition("resolution", ["720P"]) }), { resolution: "720p", params: { resolution: "720p" }, size: "9:16", seconds: 5 });
+  assert.equal(allaiin.body.resolution, "720P");
+  assert.equal(allaiin.body.size, "9:16");
+  assert.equal(allaiin.body.seconds, 5);
+  assert.equal(allaiin.body.params, undefined);
+});
+
+test("AllAIIn media sends public reference URLs in documented fields", () => {
+  const model = target({ api_protocol: "allaiin_rest", capability: "VIDEO_GENERATION", parameter_schema_json: definition("resolution", ["720P"]) });
+  const payload = { prompt: "test", aspect_ratio: "9:16", duration: 5, seconds: 5, resolution: "720p", version: null,
+    reference_images: [{ url: "https://example.com/first.png", type: "shot_first_frame" }, { url: "https://example.com/ref.png" }] };
+  const body = request(model, payload).body;
+  assert.equal(body.frame_start, "https://example.com/first.png");
+  assert.deepEqual(body.reference_images, ["https://example.com/ref.png"]);
+  assert.equal(body.seconds, 5);
+  assert.equal(body.duration, undefined);
+  assert.equal(body.version, undefined);
+  assert.equal(body.aspect_ratio, undefined);
+  assert.equal(body.params, undefined);
+  assert.throws(() => request(model, { ...payload, reference_images: [{ data_url: "data:image/png;base64,aGVsbG8=" }] }), /参考图需要公网 URL/);
+  const image = request(target({ api_protocol: "allaiin_rest", model_config_json: { remote_numeric_id: 7 } }), {
+    prompt: "image", resolution: "2K", reference_images: [{ url: "https://example.com/ref.png" }],
+  }).body;
+  assert.equal(image.model_id, 7);
+  assert.deepEqual(image.reference_images, ["https://example.com/ref.png"]);
 });
 
 test("AllAIIn Seedance 2.0 rush version routes by its numeric model id", () => {

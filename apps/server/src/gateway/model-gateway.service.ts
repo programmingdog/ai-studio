@@ -815,7 +815,26 @@ export class ModelGatewayService {
       body = { model: target.model_code, prompt: `${typeof prompt === "string" ? prompt : ""}${guide}`, params,
         ...(target.capability === "IMAGE_GENERATION" && !wagaProfiles[target.model_code] ? { images: references } : {}) };
     } else if (protocol === "allaiin_rest") {
-      body = { ...source };
+      const supplied = { ...asObject(source.params), ...source };
+      const rawReferences = Array.isArray(source.reference_images) ? source.reference_images : Array.isArray(asObject(source.params).reference_images) ? asObject(source.params).reference_images as unknown[] : [];
+      const referenceUrls = rawReferences.map((item) => {
+        const reference = asObject(item);
+        const url = typeof item === "string" ? item : String(reference.url || reference.data_url || "");
+        if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new BadRequestException("慧心AI 参考图需要公网 URL，请使用新版客户端重新上传参考图；本次未开始生成");
+        return { url, type: String(reference.type || "reference") };
+      });
+      const firstFrame = referenceUrls.find((reference) => reference.type === "shot_first_frame");
+      body = { prompt: String(supplied.prompt || "") };
+      if (target.capability === "VIDEO_GENERATION") {
+        body.size = String(supplied.size || supplied.aspect_ratio || "9:16");
+        if (supplied.seconds != null || supplied.duration != null) body.seconds = Number(supplied.seconds ?? supplied.duration);
+      }
+      for (const field of ["n", "count", "reference_image", "reference_video", "reference_videos", "reference_audio", "reference_audios", "frame_start", "frame_end", "selectedLineModelId"]) {
+        if (supplied[field] != null) body[field] = supplied[field];
+      }
+      if (firstFrame) body.frame_start = firstFrame.url;
+      const additionalImages = referenceUrls.filter((reference) => reference !== firstFrame).map((reference) => reference.url);
+      if (additionalImages.length) body.reference_images = additionalImages;
       const id = Number(modelConfig.remote_numeric_id);
       if (Number.isInteger(id) && id > 0) body.model_id = id;
       else body.model = target.model_code;
