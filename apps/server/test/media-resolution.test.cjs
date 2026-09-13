@@ -61,6 +61,18 @@ test("REST and generic video requests normalize top-level and nested values", ()
   }
 });
 
+test("AllAIIn Seedance 2.0 rush version routes by its numeric model id", () => {
+  const result = request(target({
+    model_code: "seedance-2-0-chongliang",
+    api_protocol: "allaiin_rest",
+    capability: "VIDEO_GENERATION",
+    model_config_json: { remote_numeric_id: 65 },
+  }), { prompt: "夜晚街景", seconds: 5, resolution: "720P" });
+  assert.equal(result.body.model_id, 65);
+  assert.equal(result.body.model, undefined);
+  assert.equal(result.body.prompt, "夜晚街景");
+});
+
 test("Gemini applies chosen imageSize even with prebuilt contents", () => {
   const result = request(target({ api_protocol: "gemini", parameter_schema_json: definition("imageSize", ["2K"]) }), { resolution: "2k", contents: [{ parts: [{ text: "test" }] }], generationConfig: { temperature: 0.5, imageConfig: { imageSize: "1K", aspectRatio: "9:16" } } });
   assert.equal(result.body.generationConfig.imageConfig.imageSize, "2K");

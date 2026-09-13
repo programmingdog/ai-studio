@@ -52,7 +52,14 @@ const videoAliasOverrides = new Map<number, string>([
   [33, "Seedance 2.0"],
   [53, "Grok 1.5"],
   [55, "Seedance 2.5"],
+  [65, "Seedance 2.0 冲量版"],
   [69, "Wan3"],
+]);
+
+const videoCodeOverrides = new Map<number, string>([
+  // AllAIIn id 65 uses "Seedance 2.0 Fast" as model_id. Use a stable,
+  // unambiguous local code while routing requests by remote_numeric_id.
+  [65, "seedance-2-0-chongliang"],
 ]);
 
 function isHappyHorse11(model: RemoteModel): boolean {
@@ -62,7 +69,7 @@ function isHappyHorse11(model: RemoteModel): boolean {
 
 function videoReferenceSupport(model: RemoteModel): { maxReferenceImages: number; supportsReferenceVideo: boolean } {
   const code = model.model_id.toLowerCase();
-  if (code.includes("seedance-2-0") || code.includes("seedance2.0")) {
+  if (/seedance[-\s_]*2[-.\s_]*0/.test(code)) {
     return { maxReferenceImages: 2, supportsReferenceVideo: true };
   }
   if (code.includes("omni_flash")) return { maxReferenceImages: 3, supportsReferenceVideo: false };
@@ -80,7 +87,7 @@ function buildVideoCatalog(remoteModels: RemoteModel[]): CatalogModel[] {
       seenCodes.add(remote.model_id);
       const reference = videoReferenceSupport(remote);
       return {
-        modelCode: duplicate ? `${remote.model_id}:${remote.id}` : remote.model_id,
+        modelCode: videoCodeOverrides.get(remote.id) || (duplicate ? `${remote.model_id}:${remote.id}` : remote.model_id),
         remoteId: remote.id,
         alias: videoAliasOverrides.get(remote.id) || remote.name,
         capability: "VIDEO_GENERATION",
