@@ -75,7 +75,7 @@ const catalog: CatalogModel[] = [
   { name: "gk-video-3.5", alias: "GK Video 3.5", capability: "VIDEO_GENERATION", initialCreditCost: 6, maxReferenceImages: 1, supportsReferenceVideo: false, sortOrder: 10 },
   { name: "doubao-seedance-2-5-quannengcankao", alias: "Seedance 2.5 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 14, maxReferenceImages: 30, supportsReferenceVideo: true, sortOrder: 20 },
   { name: "hailuo-h3-quannengcankao", alias: "海螺 H3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 8, maxReferenceImages: 9, supportsReferenceVideo: true, sortOrder: 30 },
-  { name: "kwvideo-v2-quannengcankao", alias: "Seedance 2.0 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 12, maxReferenceImages: 9, supportsReferenceVideo: true, supportsRealPerson: true, sortOrder: 40 },
+  { name: "seedance-2.0-anmiao-quannengcankao", alias: "Seedance 2.0 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 12, maxReferenceImages: 9, supportsReferenceVideo: true, supportsRealPerson: true, sortOrder: 40 },
   { name: "wan3.0-video-quannengcankao", alias: "Wan3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 10, maxReferenceImages: 10, supportsReferenceVideo: true, sortOrder: 50 },
   { name: "omni_flash-10s", alias: "Omni Flash 10s", capability: "VIDEO_GENERATION", initialCreditCost: 10, maxReferenceImages: 7, supportsReferenceVideo: false, sortOrder: 60 },
   { name: "kling-v3-video", alias: "Kling V3", capability: "VIDEO_GENERATION", initialCreditCost: 18, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 70 },

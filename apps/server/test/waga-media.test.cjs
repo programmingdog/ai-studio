@@ -17,6 +17,7 @@ const schemas = {
   'doubao-seedance-2-5-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',[{value:'480p',currently_unavailable:true},'720p']),field('duration',['10'])],
   'hailuo-h3-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',['768P','2K']),field('duration',['10'])],
   'kwvideo-v2-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',['720p',{value:'1080p',requires:{version:['标准']}}]),field('duration',['10']),field('version',['Mini','快速',{value:'标准',currently_unavailable:true}])],
+  'seedance-2.0-anmiao-quannengcankao': [field('image_url',undefined,false),field('aspect_ratio',['9:16'],false),field('resolution',['720p',{value:'1080p',requires:{version:['标准']}}]),field('duration',['10']),field('version',['Mini','快速','标准']),field('video_url',undefined,false)],
   'wan3.0-video-quannengcankao': [field('image_url'),field('ratio',['9:16']),field('resolution',['720P']),field('duration',['10']),field('version',['standard','prime'])],
   'omni_flash-10s': [field('images'),field('aspect_ratio',['9:16'])],
   'kling-v3-video': [field('images'),field('aspect_ratio',['9:16']),field('duration',[{value:'5',currently_unavailable:true},'10','15']),field('mode',[{value:'std',currently_unavailable:true},'pro'])],
@@ -25,7 +26,7 @@ const schemas = {
 function target(code) { return { model_code:code, model_id:'model', model_alias:code, capability:wagaProfiles[code].video?'VIDEO_GENERATION':'IMAGE_GENERATION',
   api_protocol:'lingkeai_media', credit_multiplier:1, base_url:'https://example.com',generation_endpoint:'/v1/media/generate',provider_config_json:{},model_config_json:{},parameter_schema_json:schemas[code] }; }
 function payload(code) { const p=wagaProfiles[code]; return { prompt:'fixture prompt', aspect_ratio:'9:16', resolution:code==='hailuo-h3-quannengcankao'?'2k':p.video?'720p':'2K', reference_images:[ref], ...(p.video?{seconds:code==='viduq3'?12:10,version:null}:{}) }; }
-test('all 12 media adapters send documented fields, required parameters and URL arrays', () => {
+test('WagaAI media adapters send documented fields, required parameters and URL arrays', () => {
   const gateway = new ModelGatewayService({},{});
   for (const code of Object.keys(wagaProfiles)) {
     const request=gateway.request(target(code),payload(code),'fixture-key');
@@ -36,6 +37,19 @@ test('all 12 media adapters send documented fields, required parameters and URL 
     for(const key of Object.keys(params)) assert(schemas[code].some(f=>f.name===key),`${code}: unknown ${key}`);
     for(const f of schemas[code].filter(f=>f.required)) assert(params[f.name]!=null,`${code}: missing ${f.name}`);
   }
+});
+test('Seedance 2.0 requires a reference and sends it as image_url', () => {
+  const code='seedance-2.0-anmiao-quannengcankao';
+  const gateway=new ModelGatewayService({},{});
+  assert.throws(()=>gateway.request(target(code),{...payload(code),reference_images:[]},'fixture'),/需要参考素材/);
+  const body=gateway.request(target(code),payload(code),'fixture').body;
+  assert.deepEqual(body.params.image_url,[ref]);
+  assert.equal(body.params.images,undefined);
+  assert.equal(body.params.version,'Mini');
+  assert.equal(body.params.duration,'10');
+  const videoBody=gateway.request(target(code),{...payload(code),reference_images:[],video_url:'https://example.com/ref.mp4'},'fixture').body;
+  assert.equal(videoBody.params.video_url,'https://example.com/ref.mp4');
+  assert.equal(videoBody.params.image_url,undefined);
 });
 test('first frame is first in both the provider array and reference label guide', () => {
   const code='kling-v3-video';
