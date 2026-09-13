@@ -14,6 +14,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release.ps1 -Stage
 
 同版本重新运行会生成新的内容哈希 URL，替换该已发布版本的 Windows 更新包和公开下载地址。新版本号必须高于线上已发布的最高版本。已安装相同版本号的客户端不会收到在线升级提示；需要给它们推送修复时，应使用更高版本号。同版本替换依赖最新的 API `PATCH /admin/desktop-releases/:id/artifact`，首次使用前需先部署包含该接口的 API。
 
+如果客户端已构建并上传，但发布阶段因 API 尚未部署而失败，部署完成后运行 `publish-client.bat --resume`，输入同一版本号即可沿用已上传产物完成发布，无需重新输入构建密钥或重新编译。脚本会在开始构建前检查生产 API 是否提供同版本替换接口。
+
 ## 首次配置
 
 ```powershell

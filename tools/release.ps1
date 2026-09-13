@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-  [ValidateSet("Initialize", "SaveAdminCredential", "ClientOnly", "Check", "Prepare", "DeployPlatform", "BuildClient", "UploadClient", "PublishClient", "Verify", "Promote", "All")]
+  [ValidateSet("Initialize", "SaveAdminCredential", "ClientOnly", "ResumeClient", "Check", "Prepare", "DeployPlatform", "BuildClient", "UploadClient", "PublishClient", "Verify", "Promote", "All")]
   [string]$Stage = "All",
   [string]$Version,
   [string]$ReleaseNotes,
@@ -163,7 +163,7 @@ function Get-AdminPassword {
   $fromEnvironment = [Environment]::GetEnvironmentVariable("AIVS_ADMIN_PASSWORD", "Process")
   if ($fromEnvironment) { return $fromEnvironment }
   if (-not (Test-Path -LiteralPath $script:AdminCredentialPath -PathType Leaf)) {
-    if ($Stage -ne "ClientOnly") { return Read-PlainSecret "AIVS_ADMIN_PASSWORD" "请输入生产管理后台密码" }
+    if ($Stage -notin @("ClientOnly", "ResumeClient")) { return Read-PlainSecret "AIVS_ADMIN_PASSWORD" "请输入生产管理后台密码" }
     Fail "缺少管理员凭据。先运行：powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release.ps1 -Stage SaveAdminCredential"
   }
   try {
@@ -677,6 +677,27 @@ function Get-AdminToken {
   }
 }
 
+function Assert-ArtifactReplaceEndpoint([string]$ReleaseId, [string]$Token) {
+  $base = ([string](Get-PropertyValue $script:Config "api_base_url")).TrimEnd('/')
+  $uri = "$base/admin/desktop-releases/$ReleaseId/artifact"
+  $statusCode = 0
+  try {
+    # An empty body is rejected by the controller before any write. HTTP 400
+    # proves the route exists; an older production API returns HTTP 404.
+    $response = Invoke-WebRequest -Uri $uri -Method Patch -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body "{}" -UseBasicParsing
+    $statusCode = [int]$response.StatusCode
+  } catch {
+    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+      $statusCode = [int]$_.Exception.Response.StatusCode
+    } else {
+      Fail "无法检查生产 API 的同版本替换接口：$($_.Exception.Message)"
+    }
+  }
+  if ($statusCode -eq 400) { return }
+  if ($statusCode -eq 404) { Fail "生产 API 尚未部署同版本替换接口。请先 push 包含接口的提交并等待 platform.yml 的 deploy 成功，然后运行 publish-client.bat --resume" }
+  Fail "生产 API 的同版本替换接口检查失败（HTTP $statusCode）"
+}
+
 function Invoke-PublishClient {
   Write-Step "更新公开下载地址并创建在线升级版本"
   Assert-ArtifactState
@@ -798,10 +819,11 @@ function Invoke-Promote {
   Write-Host "v$Version 灰度已调整为 $($updated.rollout_percent)%"
 }
 
-function Invoke-ClientOnly {
-  Write-Step "准备仅发布 Windows 客户端 v$Version"
-  Assert-Config -RequireServer -RequireAdmin -RequireSigning
-  Assert-Command npm.cmd
+function Invoke-ClientOnly([switch]$Resume) {
+  $mode = if ($Resume) { "续跑发布" } else { "构建并发布" }
+  Write-Step "准备$mode Windows 客户端 v$Version"
+  if ($Resume) { Assert-Config -RequireServer -RequireAdmin }
+  else { Assert-Config -RequireServer -RequireAdmin -RequireSigning; Assert-Command npm.cmd }
   Assert-Command ssh
   Assert-Command scp
   $versions = Get-DesktopVersions
@@ -818,16 +840,27 @@ function Invoke-ClientOnly {
   if ($highest -and (Compare-SemVer $Version $highest.version) -lt 0) { Fail "v$Version 低于已发布的 v$($highest.version)，不能作为最新版本发布" }
   if ($existing -and $existing.status -eq "ARCHIVED") { Fail "v$Version 已归档，请输入更高的版本号" }
   if (-not $existing -and $highest -and (Compare-SemVer $Version $highest.version) -eq 0) { Fail "v$Version 已被发布过，不能再次创建" }
+  if ($existing -and $existing.status -eq "PUBLISHED") { Assert-ArtifactReplaceEndpoint ([string]$existing.id) $token }
   $notes = if ($existing -and $existing.notes) { [string]$existing.notes } else { "客户端 v$Version 更新" }
   Set-StateValue "release_notes" $notes
-  if ($versions.package -ne $Version) {
-    Write-Host "客户端版本：$($versions.package) → $Version"
-    Set-DesktopVersion $Version
+  if ($Resume) {
+    Assert-ArtifactState
+    if (-not (Get-PropertyValue $script:State "urls")) { Fail "缺少上传记录，不能续跑" }
+    foreach ($entry in @(@("exe", "exe_sha256"), @("signature", "signature_sha256"))) {
+      $actual = (Get-FileHash -LiteralPath ([string]$script:State.artifacts.($entry[0])) -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($actual -ne [string]$script:State.artifacts.($entry[1])) { Fail "本地产物哈希与上传记录不一致：$($entry[0])" }
+    }
+    Write-Host "沿用已构建、已上传的 v$Version 产物。"
+  } else {
+    if ($versions.package -ne $Version) {
+      Write-Host "客户端版本：$($versions.package) → $Version"
+      Set-DesktopVersion $Version
+    }
+    Invoke-BuildClient
+    Invoke-UploadClient
   }
   $RolloutPercent = 100
   $PublishUpdate = $true
-  Invoke-BuildClient
-  Invoke-UploadClient
   Invoke-PublishClient
   if ([int]$script:State.rollout_percent -lt 100) { Invoke-Promote }
   Invoke-Verify
@@ -855,7 +888,7 @@ try {
   if ($Stage -eq "Initialize") { Initialize-Config; return }
   Load-Config
   if ($Stage -eq "SaveAdminCredential") { Save-AdminCredential; return }
-  if (-not $Version -and $Stage -eq "ClientOnly") { $Version = Read-Host "请输入要发布的客户端版本号（如 0.1.0）" }
+  if (-not $Version -and $Stage -in @("ClientOnly", "ResumeClient")) { $Version = Read-Host "请输入要发布的客户端版本号（如 0.1.0）" }
   if (-not $Version -and $Stage -notin @("Check")) { Fail "阶段 $Stage 需要 -Version，例如 -Version 0.2.1" }
   if ($Version) { Initialize-State }
   if ($DryRun -and $Stage -eq "All") { Show-DryRunPlan; return }
@@ -863,6 +896,7 @@ try {
   switch ($Stage) {
     "Check" { Invoke-Check }
     "ClientOnly" { Invoke-ClientOnly }
+    "ResumeClient" { Invoke-ClientOnly -Resume }
     "Prepare" { Invoke-Prepare }
     "DeployPlatform" { Invoke-DeployPlatform; Test-PlatformHealth }
     "BuildClient" { Invoke-BuildClient }

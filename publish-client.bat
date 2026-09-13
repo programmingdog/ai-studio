@@ -10,7 +10,9 @@ if not exist "%POWERSHELL_EXE%" (
   goto :failed
 )
 
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\release.ps1" -Stage ClientOnly
+set "RELEASE_STAGE=ClientOnly"
+if /i "%~1"=="--resume" set "RELEASE_STAGE=ResumeClient"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\release.ps1" -Stage %RELEASE_STAGE%
 if errorlevel 1 goto :failed
 
 echo.
