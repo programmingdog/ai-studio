@@ -615,6 +615,36 @@ mod tests {
     }
 
     #[test]
+    fn single_shot_project_video_reuses_the_shot_file() {
+        let mut connection = database();
+        let shot_record = create(&connection, NewGenerationRecord {
+            project_id: "P_TEST", media_type: "video", target_type: "shot", target_id: "A-001",
+            base_url: "https://example.com", model: "video-model", protocol: "platform",
+            prompt: "分镜视频", aspect_ratio: "9:16",
+        }).unwrap();
+        complete_video(&mut connection, &shot_record.id, "shots/videos/A-001.mp4", "C:/test/A-001.mp4", "video/mp4").unwrap();
+        let project_record = create(&connection, NewGenerationRecord {
+            project_id: "P_TEST", media_type: "video", target_type: "project", target_id: "P_TEST",
+            base_url: "local://shot-video", model: "Single Shot", protocol: "local-direct",
+            prompt: "将单个分镜视频设为完整视频", aspect_ratio: "9:16",
+        }).unwrap();
+        complete_project_video(&mut connection, &project_record.id, "shots/videos/A-001.mp4", "C:/test/A-001.mp4", "video/mp4").unwrap();
+
+        let completed = get(&connection, &project_record.id).unwrap().unwrap();
+        assert_eq!(completed.status, STATUS_COMPLETED);
+        assert_eq!(completed.result_relative_path.as_deref(), Some("shots/videos/A-001.mp4"));
+        assert_eq!(completed.result_mime_type.as_deref(), Some("video/mp4"));
+        let asset_path: String = connection.query_row(
+            "SELECT relative_path FROM assets WHERE asset_type = 'COMPOSED_VIDEO' AND owner_id = 'P_TEST'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(asset_path, "shots/videos/A-001.mp4");
+        let shot: String = connection.query_row("SELECT data_json FROM shots WHERE id = 'A-001'", [], |row| row.get(0)).unwrap();
+        let shot: Value = serde_json::from_str(&shot).unwrap();
+        assert_eq!(shot.pointer("/video_assets/0").and_then(Value::as_str), Some("shots/videos/A-001.mp4"));
+    }
+
+    #[test]
     fn image_task_trigger_creates_unified_generation_record() {
         let connection = database();
         connection.execute(

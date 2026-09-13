@@ -5026,11 +5026,23 @@ pub fn compose_project_video(
             false,
         ));
     }
-    drop(connection);
-    ordered_shot_video_paths(&project_root, &input.project_id, &input.ordered_shot_ids)?;
-    let connection = crate::database::open(&project_root)?;
+    let shot_video_paths =
+        ordered_shot_video_paths(&project_root, &input.project_id, &input.ordered_shot_ids)?;
+    let single_shot_video = if input.ordered_shot_ids.len() == 1 {
+        existing_records.iter().find(|record| {
+            record.media_type == "video"
+                && record.target_type == "shot"
+                && record.target_id == input.ordered_shot_ids[0]
+                && record.status == crate::database::generation_records::STATUS_COMPLETED
+                && record.result_relative_path.is_some()
+        })
+    } else {
+        None
+    };
+    let direct_video = single_shot_video.is_some();
     let prompt = format!(
-        "按项目分镜顺序合成视频：{}",
+        "{}：{}",
+        if direct_video { "将单个分镜视频设为完整视频" } else { "按项目分镜顺序合成视频" },
         input.ordered_shot_ids.join(" → ")
     );
     let record = crate::database::generation_records::create(
@@ -5040,9 +5052,9 @@ pub fn compose_project_video(
             media_type: "video",
             target_type: "project",
             target_id: &input.project_id,
-            base_url: "local://ffmpeg",
-            model: "FFmpeg",
-            protocol: "local-compose",
+            base_url: if direct_video { "local://shot-video" } else { "local://ffmpeg" },
+            model: if direct_video { "Single Shot" } else { "FFmpeg" },
+            protocol: if direct_video { "local-direct" } else { "local-compose" },
             prompt: &prompt,
             aspect_ratio: &input.aspect_ratio,
         },
@@ -5052,6 +5064,24 @@ pub fn compose_project_video(
         &record.id,
         &json!({"ordered_shot_ids": input.ordered_shot_ids}),
     )?;
+    if let Some(source_record) = single_shot_video {
+        let source_path = &shot_video_paths[0];
+        let relative_path = source_record.result_relative_path.as_deref().unwrap();
+        let mime_type = source_record.result_mime_type.as_deref().unwrap_or("video/mp4");
+        let mut connection = connection;
+        if let Err(completion_error) = crate::database::generation_records::complete_project_video(
+            &mut connection,
+            &record.id,
+            relative_path,
+            &source_path.to_string_lossy(),
+            mime_type,
+        ) {
+            let _ = crate::database::generation_records::fail(&connection, &record.id, &completion_error);
+            return Err(completion_error);
+        }
+        return crate::database::generation_records::get(&connection, &record.id)?
+            .ok_or_else(|| "完成单分镜视频后未能读取项目视频记录".to_owned());
+    }
     drop(connection);
     spawn_project_video_composition(app, project_root, record.id.clone());
     Ok(record)

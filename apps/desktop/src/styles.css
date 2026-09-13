@@ -1420,3 +1420,7 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .account-modal-backdrop.credit-purchase-backdrop { z-index: 1800; }
 .payment-dialog-backdrop.credit-purchase-payment-backdrop { z-index: 1810; }
 .account-modal-backdrop.session-reauthentication-backdrop { z-index: 1900; }
+.shot-media-heading-actions { display: flex; align-items: center; gap: 10px; }
+.shot-media-heading-actions .secondary-button { width: auto; min-width: max-content; min-height: 30px; padding: 5px 9px; font-size: 11px; }
+.shot-media-save-message { overflow: hidden; padding: 10px 14px; border-top: 1px solid var(--ui-border); color: var(--ui-success); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.shot-media-save-message.error { color: var(--ui-danger); }
