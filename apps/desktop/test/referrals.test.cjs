@@ -55,9 +55,16 @@ test('referral records are grouped into dedicated tabs with duplicated paginatio
   assert.ok((source.match(/position="top"/g) || []).length >= 2);
   assert.ok((source.match(/position="bottom"/g) || []).length >= 2);
 });
-test('client referral overview renders the administrator commission notice and generation-only rule', () => {
+test('commission rates, generation-only rule and administrator notice appear in promotion instead of account center', () => {
   const source = require('node:fs').readFileSync(file, 'utf8');
-  assert.match(source, /summary\.data\.commission_notice/);
-  assert.match(source, /仅对下级图片、视频生成的实际积分消耗计提/);
-  assert.match(source, /充值和其他模型消耗不参与分润/);
+  const promotion = require('node:fs').readFileSync(path.join(__dirname, '../src/components/PromotionPosterModal.tsx'), 'utf8');
+  assert.match(source, /累计分润 \{money\(summary\.data\.earned_fen\)\}/);
+  assert.doesNotMatch(source, /summary\.data\.(?:direct_rate_bps|indirect_rate_bps|commission_notice)/);
+  assert.match(promotion, /summary\.data\.direct_rate_bps/);
+  assert.match(promotion, /summary\.data\.indirect_rate_bps/);
+  assert.match(promotion, /summary\.data\.commission_notice/);
+  assert.match(promotion, /仅对下级图片、视频生成的利润积分计提/);
+  assert.match(promotion, /充值和其他模型消耗不参与分润/);
+  assert.ok(promotion.indexOf('className="promotion-link-card"') < promotion.indexOf('className="promotion-rules-card"'));
+  assert.ok(promotion.indexOf('className="promotion-rules-card"') < promotion.indexOf('className="promotion-poster-workspace"'));
 });

@@ -1397,6 +1397,9 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .promotion-link-card { display: grid; gap: 14px; padding: 17px 18px; border: 1px solid var(--ui-accent-border); border-radius: 13px; background: linear-gradient(135deg, var(--ui-accent-soft), var(--ui-surface)); }
 .promotion-link-card > div:first-child { display: flex; align-items: center; gap: 11px; color: var(--ui-accent); }.promotion-link-card > div:first-child > div { display: grid; gap: 3px; }.promotion-link-card strong { font-size: 14px; }.promotion-link-card span { color: var(--ui-text-muted); font-size: 11px; }
 .promotion-link-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }.promotion-link-copy input { min-width: 0; background: #fff; font-size: 12px; }.promotion-link-copy button { width: auto; white-space: nowrap; }
+.promotion-rules-card { display: grid; gap: 8px; margin-top: 14px; padding: 15px 18px; border: 1px solid var(--ui-border); border-radius: 13px; background: var(--ui-surface-subtle); }
+.promotion-rules-heading { display: flex; align-items: center; gap: 8px; color: var(--ui-accent); }.promotion-rules-heading strong { font-size: 14px; }
+.promotion-rules-card > p { margin: 0; color: var(--ui-text-muted); font-size: 12px; line-height: 1.65; }.promotion-rules-card .commission-notice { padding: 11px 13px; }
 .promotion-loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; color: var(--ui-text-muted); font-size: 12px; }
 .promotion-get-posters { width: auto; min-width: 190px; margin: 18px 0 0 auto; }
 .promotion-poster-workspace { display: grid; grid-template-columns: minmax(330px, .72fr) minmax(380px, 1.28fr); gap: 18px; min-height: 430px; margin-top: 20px; }

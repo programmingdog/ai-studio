@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { QRCodeCanvas } from "qrcode.react";
-import { Check, Copy, Download, Image as ImageIcon, LoaderCircle, Share2, Upload, X } from "lucide-react";
+import { BadgeDollarSign, Check, Copy, Download, Image as ImageIcon, LoaderCircle, Share2, Upload, X } from "lucide-react";
 import { getReferralSummary } from "../services/platform";
 import {
   choosePromotionPosterFile,
@@ -140,6 +140,12 @@ export function PromotionPosterModal({ onClose }: { onClose: () => void }) {
           <div><Share2 size={20} /><div><strong>我的专属推广链接</strong><span>链接已自动绑定你的邀请码</span></div></div>
           {summary.isLoading ? <div className="promotion-loading"><LoaderCircle className="spin" size={18} />正在读取推广链接…</div> : summary.error ? <div className="error-banner">{summary.error instanceof Error ? summary.error.message : "推广链接读取失败"}</div> : <div className="promotion-link-copy"><input readOnly value={summary.data?.invitation_url || ""} onFocus={(event) => event.currentTarget.select()} /><button className="secondary-button" type="button" onClick={() => void copyLink()}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? "已复制" : "一键复制"}</button></div>}
         </section>
+        {summary.data && <section className="promotion-rules-card" aria-label="分润比例与规则">
+          <div className="promotion-rules-heading"><BadgeDollarSign size={18} /><strong>分润比例与规则</strong></div>
+          <p>{summary.data.enabled ? `当前直接分润 ${summary.data.direct_rate_bps / 100}%，间接分润 ${summary.data.indirect_rate_bps / 100}%，最多两级。` : "分销当前关闭，不产生新分润；已有余额仍可按规则提现。"}</p>
+          <p>仅对下级图片、视频生成的利润积分计提：实际扣费减去模型成本，再按任务创建时的积分人民币比例和分润比例计算；每级不足 1 分舍去。充值和其他模型消耗不参与分润。</p>
+          {summary.data.commission_notice && <div className="commission-notice"><strong>分润提示</strong><p>{summary.data.commission_notice}</p></div>}
+        </section>}
         {!showPosters ? <button className="primary-button promotion-get-posters" type="button" disabled={!summary.data?.invitation_url} onClick={() => setShowPosters(true)}><ImageIcon size={18} />获取推广海报</button> : <section className="promotion-poster-workspace">
           <section className="promotion-poster-picker">
             <header><div><strong>选择推广海报</strong><span>预设海报 001–004 含专属二维码；自定义海报保持原图。</span></div><div className="promotion-poster-picker-actions"><b>共 {posterOptions.length} 款</b><button className="secondary-button" type="button" disabled={importing} onClick={() => void addPoster()}>{importing ? <LoaderCircle className="spin" size={14} /> : <Upload size={14} />}{importing ? "添加中…" : "添加本地海报"}</button></div></header>
