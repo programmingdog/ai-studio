@@ -54,12 +54,13 @@ export class CreditPricingService {
 
   private async models(providerId: string, connection?: PoolConnection): Promise<CreditPriceModel[]> {
     const query = async (sql: string) => connection ? (await connection.query<RowDataPacket[]>(sql, [providerId]))[0] : this.database.query<RowDataPacket[]>(sql, [providerId]);
-    const rows = await query(`SELECT id, model_code, model_alias, capability, api_protocol, credit_cost, parameter_schema_json, config_json
+    const rows = await query(`SELECT id, model_code, model_alias, capability, api_protocol, credit_cost, billing_unit, parameter_schema_json, config_json
       FROM provider_models WHERE provider_id = ? ORDER BY id${connection ? " FOR UPDATE" : ""}`);
     const prices = await query(`SELECT provider_model_id, resolution, credit_cost FROM provider_model_resolution_prices
       WHERE provider_model_id IN (SELECT id FROM provider_models WHERE provider_id = ?) ORDER BY provider_model_id, resolution${connection ? " FOR UPDATE" : ""}`);
     return rows.map((row) => ({ id: String(row.id), model_code: String(row.model_code), model_alias: String(row.model_alias),
       capability: String(row.capability), api_protocol: String(row.api_protocol), credit_cost: Number(row.credit_cost),
+      billing_unit: row.capability === "VIDEO_GENERATION" && row.billing_unit === "PER_REQUEST" ? "PER_REQUEST" : "PER_SECOND",
       parameter_schema_json: parseStoredJson(row.parameter_schema_json), config_json: parseStoredJson(row.config_json),
       resolution_prices: prices.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost) })),
     }));
@@ -94,7 +95,13 @@ export class CreditPricingService {
       }
       const currentModels = await Promise.all(before.map(async model => this.wagaMetadata && wagaProfiles[model.model_code]
         ? { ...model, parameter_schema_json: await this.wagaMetadata.schema(providerId, model.model_code) } : model));
-      const items = currentModels.flatMap((model) => calculateModelCredits(model, pricing.models.find((price) => price.name === model.model_code), config.cny_per_credit))
+      const items = currentModels.flatMap((model) => model.capability === "VIDEO_GENERATION" && model.billing_unit === "PER_REQUEST"
+        ? (model.resolution_prices.length ? model.resolution_prices : [{ resolution: "", credit_cost: model.credit_cost }]).map((tier): CreditPriceResult => ({
+          model_id: model.id, model_code: model.model_code, model_alias: model.model_alias, resolution: tier.resolution,
+          billing_unit: "PER_REQUEST", previous_credits: tier.credit_cost, credits: null, price_cny: null,
+          channel: "", parameters: {}, status: "SKIPPED", reason: "按次视频价格由后台手工配置",
+        }))
+        : calculateModelCredits(model, pricing.models.find((price) => price.name === model.model_code), config.cny_per_credit))
         .map((item) => ({ ...item, provider_name: pricing.provider_name }));
       const report = this.report(config.cny_per_credit, true, items);
       await this.database.transaction(async (connection) => {
@@ -147,7 +154,8 @@ export class CreditPricingService {
       const baseline = previousAllaiinSyncedCredits(stored);
       let credits: number | null = null;
       let error = !source ? "上游实时目录未找到该模型" : baseline === null ? "缺少上次同步基准，保留人工定价" : "";
-      if (source && baseline !== null) {
+      if (model.capability === "VIDEO_GENERATION" && model.billing_unit === "PER_REQUEST") error = "按次视频价格由后台手工配置";
+      else if (source && baseline !== null) {
         try { credits = allaiinPointsToCredits(source.source_points!, config.cny_per_credit); }
         catch (reason) { error = reason instanceof Error ? reason.message : "价格换算失败"; }
       }
@@ -159,7 +167,7 @@ export class CreditPricingService {
         if (status === "UPDATED" && tier.resolution) updateTiers.push(tier.resolution);
         items.push({ model_id: model.id, model_code: model.model_code, model_alias: model.model_alias,
           provider_name: pricing.provider_name, resolution: tier.resolution,
-          billing_unit: model.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+          billing_unit: model.capability === "VIDEO_GENERATION" && model.billing_unit !== "PER_REQUEST" ? "PER_SECOND" : "PER_REQUEST",
           previous_credits: tier.credit_cost, credits: status === "SKIPPED" ? null : credits,
           price_cny: source ? Number((source.source_points! * ALLAIIN_POINT_CNY).toFixed(12)) : null,
           channel: source ? "AllAIIn" : "", parameters: {}, status,

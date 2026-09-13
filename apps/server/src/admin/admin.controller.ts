@@ -695,6 +695,8 @@ export class AdminController {
       generationEndpoint: requiredString(body, "generation_endpoint", 500),
       queryEndpoint: optionalString(body, "query_endpoint", 500) || null,
       creditCost: Number(body.credit_cost),
+      billingUnit: body.billing_unit === undefined ? undefined : requiredString(body, "billing_unit", 16),
+      videoDurationOptions: body.video_duration_options,
       creditMultiplier: body.credit_multiplier === undefined ? undefined : Number(body.credit_multiplier),
       maxReferenceImages: Number(body.max_reference_images),
       supportsReferenceVideo: body.supports_reference_video === true,

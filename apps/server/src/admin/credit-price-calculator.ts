@@ -10,6 +10,7 @@ type Choice = { value: string; label: string; unavailable: boolean };
 type Variant = { multiplier: number; addition: number; parameters: Record<string, string> };
 export type CreditPriceModel = {
   id: string; model_code: string; model_alias: string; capability: string; api_protocol: string;
+  billing_unit?: "PER_SECOND" | "PER_REQUEST";
   credit_cost: number; parameter_schema_json: unknown; config_json: unknown;
   resolution_prices: { resolution: string; credit_cost: number }[];
 };
@@ -108,6 +109,8 @@ function groupMinimum(group: Group, model: CreditPriceModel, resolution: string)
   if (!["按次", "按秒"].includes(method)) throw new Error("按 Token 计费，缺少用量换算规则；保留原积分");
   if (group.base_price === null) throw new Error("供应商未返回基础报价");
   const video = model.capability === "VIDEO_GENERATION";
+  const perRequestVideo = video && model.billing_unit === "PER_REQUEST";
+  if (perRequestVideo && method === "按秒") throw new Error("供应商按秒报价无法直接换算按次价格");
   if (!video && method !== "按次") throw new Error("供应商计费单位无法换算为每次积分");
   const currency = group.currency;
   if (currency && !["CNY", "RMB", "人民币", "元", "算力"].includes(currency.toUpperCase())) throw new Error("报价币种不是人民币或算力");
@@ -162,7 +165,7 @@ function groupMinimum(group: Group, model: CreditPriceModel, resolution: string)
       let value = group.base_price * variant.multiplier + variant.addition;
       // min_price is a real payable floor; base_price alone may not be purchasable.
       if (group.min_price !== null) value = Math.max(value, group.min_price);
-      if (video && method === "按次") {
+      if (video && method === "按次" && !perRequestVideo) {
         const seconds = Number(durationField ? variant.parameters[durationField] : config.fixed_duration_seconds ?? (model.model_code === "omni_flash-10s" ? 10 : NaN));
         if (!Number.isFinite(seconds) || seconds <= 0) continue;
         value /= seconds;
@@ -194,7 +197,7 @@ export function calculateModelCredits(model: CreditPriceModel, pricing: Price | 
   const tiers = media && model.resolution_prices.length ? model.resolution_prices : [{ resolution: "", credit_cost: model.credit_cost }];
   return tiers.map((tier): CreditPriceResult => {
     const result: CreditPriceResult = { model_id: model.id, model_code: model.model_code, model_alias: model.model_alias,
-      resolution: tier.resolution, billing_unit: model.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+      resolution: tier.resolution, billing_unit: model.capability === "VIDEO_GENERATION" && model.billing_unit !== "PER_REQUEST" ? "PER_SECOND" : "PER_REQUEST",
       previous_credits: Number(tier.credit_cost), credits: null, price_cny: null, channel: "", parameters: {}, status: "SKIPPED", reason: "" };
     try {
       if (media && !tier.resolution) throw new Error("尚未配置分辨率");

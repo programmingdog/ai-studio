@@ -9,7 +9,7 @@ function fixture(options = {}) {
   const route = { code: options.allaiin ? "allaiin" : "wagaai", base_url: "https://example.com", status: options.providerDisabled ? "DISABLED" : "ACTIVE", credential_id: "key-id", api_key_ciphertext: "cipher" };
   async function query(sql) {
     if (sql.includes("FROM model_credit_pricing_config")) return [{ ...state.config }];
-    if (sql.includes("SELECT id, model_code")) return [{ id: "m1", model_code: options.model || "image", model_alias: "测试图", capability: "IMAGE_GENERATION", api_protocol: "lingkeai_media", credit_cost: state.cost, parameter_schema_json: [{ name: "resolution", options: ["2k"] }], config_json: options.allaiin ? { remote_numeric_id: 65, source_points_cost: 8 } : { existing_setting: true } }];
+    if (sql.includes("SELECT id, model_code")) return [{ id: "m1", model_code: options.model || "image", model_alias: "测试图", capability: options.requestVideo ? "VIDEO_GENERATION" : "IMAGE_GENERATION", billing_unit: options.requestVideo ? "PER_REQUEST" : "PER_SECOND", api_protocol: "lingkeai_media", credit_cost: state.cost, parameter_schema_json: [{ name: "resolution", options: ["2k"] }], config_json: options.allaiin ? { remote_numeric_id: 65, source_points_cost: 8 } : { existing_setting: true } }];
     if (sql.includes("FROM provider_model_resolution_prices")) return [{ provider_model_id: "m1", resolution: "2K", credit_cost: state.tier }];
     if (sql.includes("LEFT JOIN provider_credentials")) return [route];
     if (sql.includes("SELECT id, display_name, code, status FROM providers")) return [{ id: "p1", display_name: "WagaAI", code: "wagaai", status: "ACTIVE" }];
@@ -65,6 +65,11 @@ test("AllAIIn live refresh converts eight upstream points to 80 credits and pres
   const tierResult = await manualTier.instance.refreshProvider("admin", "p1");
   assert.equal(tierResult.credit_sync.skipped_count, 1);
   assert.equal(manualTier.state.cost, 80); assert.equal(manualTier.state.tier, 12);
+
+  const perRequest = fixture({ allaiin: true, requestVideo: true });
+  const fixed = await perRequest.instance.refreshProvider("admin", "p1");
+  assert.equal(fixed.credit_sync.skipped_count, 1);
+  assert.equal(perRequest.state.cost, 8); assert.equal(perRequest.state.tier, 8);
 });
 
 test('Waga sync persists generation parameters atomically even when rounded credits are unchanged', async () => {

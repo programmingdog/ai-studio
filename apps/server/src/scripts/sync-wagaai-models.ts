@@ -173,6 +173,11 @@ async function main(): Promise<void> {
 
     await connection.beginTransaction();
     try {
+      const [existingModels] = await connection.query<RowDataPacket[]>(
+        "SELECT model_code, billing_unit, config_json FROM provider_models WHERE provider_id = ?", [provider.id],
+      );
+      const existingConfig = new Map(existingModels.map((row) => [String(row.model_code), parseJsonObject(row.config_json)]));
+      const existingBilling = new Map(existingModels.map((row) => [String(row.model_code), String(row.billing_unit)]));
       await connection.execute(
         `UPDATE providers SET display_name = 'WagaAI', adapter_type = 'lingkeai', base_url = ?,
          status = 'ACTIVE', config_json = ? WHERE id = ?`,
@@ -203,6 +208,7 @@ async function main(): Promise<void> {
         ]);
         const isMedia = detail.type === "image" || detail.type === "video";
         const config = {
+          ...existingConfig.get(selected.name),
           source: "wagaai_skills_api",
           source_type: detail.type,
           tags: detail.tags || [],
@@ -216,7 +222,9 @@ async function main(): Promise<void> {
                 ? "WagaAI avatar_ids 参数明确支持真人头像，但要求先完成二维码活体认证。"
                 : "当前 WagaAI 模型文档未明确承诺真人支持，按平台默认值关闭。")
             : undefined,
-          credit_cost_note: selected.capability === "VIDEO_GENERATION"
+          credit_cost_note: selected.capability === "VIDEO_GENERATION" && existingBilling.get(selected.name) === "PER_REQUEST"
+            ? "每次消耗积分数；后台人工按次价格在实时价格同步时保留。"
+            : selected.capability === "VIDEO_GENERATION"
             ? "每秒消耗积分数；首次同步使用预设值，后台人工修改后续同步会保留。"
             : "每次消耗积分数；首次同步使用预设值，后台人工修改后续同步会保留。",
         };

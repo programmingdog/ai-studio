@@ -6,6 +6,7 @@ import { roundedModelCredits, storedModelCreditMultiplier } from "../common/mode
 import { supportsMediaResolution } from "../gateway/media-resolution";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
 import { wagaMediaParams, wagaProfiles } from "../gateway/waga-media";
+import { modelBillingUnit, videoDurationOptions } from "../common/video-billing";
 
 interface PublishedConfigRow extends RowDataPacket {
   config_key: string;
@@ -30,6 +31,7 @@ interface ClientModelRow extends RowDataPacket {
   model_alias: string;
   capability: string;
   credit_cost: number;
+  billing_unit: string;
   credit_multiplier: number | string;
   max_reference_images: number;
   supports_reference_video: number;
@@ -87,7 +89,7 @@ export class ClientConfigService {
   async models(): Promise<Record<string, unknown>[]> {
     const [rows, priceRows] = await Promise.all([this.database.query<ClientModelRow[]>(
       `SELECT pm.id, p.id AS provider_id, p.code AS provider_code, p.display_name AS provider_name,
-              pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.credit_cost, pm.credit_multiplier,
+              pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.credit_cost, pm.billing_unit, pm.credit_multiplier,
               pm.max_reference_images, pm.supports_reference_video, pm.supports_real_person,
               pm.supports_async_tasks,
               pm.sort_order, pm.description, pm.parameter_schema_json, pm.config_json, pm.api_protocol
@@ -117,7 +119,8 @@ export class ClientConfigService {
         base_credit_cost: Number(row.credit_cost),
         credit_multiplier: creditMultiplier,
         credit_cost: roundedModelCredits(Number(row.credit_cost), creditMultiplier),
-        billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+        billing_unit: row.capability === "VIDEO_GENERATION" ? modelBillingUnit(row.capability, row.billing_unit) : "PER_REQUEST",
+        video_duration_options: row.capability === "VIDEO_GENERATION" ? videoDurationOptions(parseStoredJson(row.config_json)) : [],
         max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
         generation_notice: row.model_code === "viduq3" ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
           : row.model_code === "omni_flash-10s" ? "此方案固定生成 10 秒视频。"

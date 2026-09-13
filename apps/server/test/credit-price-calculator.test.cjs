@@ -80,6 +80,14 @@ test("per-second video uses the requested resolution price without dividing by d
   assert.equal(results[0].billing_unit, "PER_SECOND");
 });
 
+test("per-request video keeps an upstream per-request price and skips per-second offers", () => {
+  const overrides = { capability: "VIDEO_GENERATION", billing_unit: "PER_REQUEST", resolution_prices: [{ resolution: "720p", credit_cost: 8 }], parameter_schema_json: [field("resolution", ["720p"])] };
+  const perRequest = calculate(overrides, [group({ base_price: 0.8, min_price: 0.8 })], 0.01)[0];
+  assert.equal(perRequest.credits, 80);
+  assert.equal(perRequest.billing_unit, "PER_REQUEST");
+  assert.equal(calculate(overrides, [group({ billing_method: "按秒", base_price: 0.8 })])[0].status, "SKIPPED");
+});
+
 test("per-request video is converted using supported durations and combined parameter prices", () => {
   const overrides = { capability: "VIDEO_GENERATION", resolution_prices: [{ resolution: "720p", credit_cost: 8 }], parameter_schema_json: [field("resolution", ["720p"]), field("duration", ["5", "10"]), field("quality", ["high"])] };
   const results = calculate(overrides, [group({ base_price: 1, min_price: 1, option_prices: [option("duration", "10", 2, 2), option("quality", "high", 1.5, 1.5)] })]);

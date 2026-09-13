@@ -1,0 +1,2 @@
+ALTER TABLE provider_models
+  ADD COLUMN billing_unit ENUM('PER_SECOND', 'PER_REQUEST') NOT NULL DEFAULT 'PER_SECOND' AFTER credit_cost;

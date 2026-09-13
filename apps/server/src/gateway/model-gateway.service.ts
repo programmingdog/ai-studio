@@ -12,11 +12,12 @@ import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
 import { ReferralsService } from "../referrals/referrals.service";
+import { modelBillingUnit, validVideoSeconds } from "../common/video-billing";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
   model_id: string; model_code: string; model_alias: string; capability: string; api_protocol: string;
-  generation_endpoint: string; query_endpoint: string | null; credit_cost: number | string; credit_multiplier: number | string;
+  generation_endpoint: string; query_endpoint: string | null; credit_cost: number | string; billing_unit: string; credit_multiplier: number | string;
   supports_async_tasks: number; model_config_json: unknown; parameter_schema_json: unknown; credential_id: string; api_key_ciphertext: string;
 }
 interface TaskRow extends RowDataPacket {
@@ -311,7 +312,7 @@ export class ModelGatewayService {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
        INNER JOIN provider_credentials pc ON pc.provider_id = p.id
@@ -347,7 +348,7 @@ export class ModelGatewayService {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
        INNER JOIN provider_credentials pc ON pc.provider_id = p.id AND pc.id = ?
@@ -400,7 +401,7 @@ export class ModelGatewayService {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier, pm.supports_async_tasks,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM ai_default_model_config dc
        INNER JOIN provider_models pm ON pm.id = dc.video_understanding_model_id
@@ -524,7 +525,7 @@ export class ModelGatewayService {
       model_code: target.model_code, capability: target.capability, credits,
       resolution: payload.resolution ?? asObject(payload.params).resolution ?? null,
       seconds: target.capability === "VIDEO_GENERATION" ? Number(payload.seconds ?? payload.duration ?? asObject(payload.params).seconds ?? asObject(payload.params).duration) : null,
-      billing_unit: target.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+      billing_unit: target.capability === "VIDEO_GENERATION" ? modelBillingUnit(target.capability, target.billing_unit) : "PER_REQUEST",
       includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING",
     };
   }
@@ -549,6 +550,7 @@ export class ModelGatewayService {
       seen.add(itemKey);
       const target = await this.target(providerModelId);
       if (target.capability !== capability) throw new BadRequestException("自动制作模型类型发生变化，请重新选择");
+      if (capability === "VIDEO_GENERATION" && !validVideoSeconds(Number(seconds), parseStoredJson(target.model_config_json))) throw new BadRequestException("视频报价时长不在模型支持的选项中");
       const currentCredits = await this.estimatedCredits(target, { resolution, seconds });
       if (currentCredits !== expectedCredits) {
         this.logger.warn({ event: "workflow.quote_mismatch", userId, itemKey,
@@ -716,7 +718,8 @@ export class ModelGatewayService {
     if (target.capability !== "VIDEO_GENERATION") return { credits: base, costCredits: target.capability === "IMAGE_GENERATION" ? unitCost : 0 };
     const params = asObject(payload.params);
     const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
-    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration");
+    if (!validVideoSeconds(seconds, parseStoredJson(target.model_config_json))) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration，且时长须在模型支持的选项中");
+    if (modelBillingUnit(target.capability, target.billing_unit) === "PER_REQUEST") return { credits: base, costCredits: unitCost };
     return { credits: Math.ceil(multiplyCredits(base, seconds)), costCredits: multiplyCredits(unitCost, seconds) };
   }
 

@@ -67,7 +67,7 @@ export function CreditPricingPanel({ token }: { token: string }) {
       <label className="credit-auto-sync"><input type="checkbox" checked={enabled} disabled={busy} onChange={(event) => setEnabled(event.target.checked)} />启用按实时价格自动更新模型积分</label>
       <p className="supplier-pricing-note">WagaAI：1 算力 = 1 元。选择运行中且当前 API Key 可用渠道的最低可换算价格；模型消耗积分 = 人民币价格 ÷ 每积分金额，向上取整，最低 1 积分。图片按分辨率计每次积分，视频计每秒积分；用户最终单价还会乘以供应商与模型配置中的该模型系数。</p>
       <p className="supplier-pricing-note">AllAIIn：1 慧心积分 = ¥0.10；模型消耗积分 = 慧心积分 × ¥0.10 ÷ 系统每积分人民币金额，向上取整。人工修改的模型或分辨率价格会保留。</p>
-      <p className="supplier-pricing-note">开启后，保存比例会同步已接入的启用供应商；在 AI 供应商页面查询/刷新实时价格也会更新积分。不进行定时后台刷新，不影响已创建任务、用户现有余额或充值套餐。按 Token 计费且无用量换算规则、不可用或参数不匹配的档位保留原积分，见下方结果。</p>
+      <p className="supplier-pricing-note">开启后，保存比例会同步已接入的启用供应商；在 AI 供应商页面查询/刷新实时价格也会更新积分。按次计费的视频价格由后台手工配置，不会被实时价格同步覆盖。不进行定时后台刷新，不影响已创建任务、用户现有余额或充值套餐。按 Token 计费且无用量换算规则、不可用或参数不匹配的档位保留原积分，见下方结果。</p>
       <div className="inline-actions credit-pricing-actions"><button className="primary" disabled={busy}>{busy ? "处理中…" : enabled ? "保存比例并更新模型积分" : "保存比例"}</button>
         <button type="button" className="secondary" disabled={busy || !config.auto_sync || dirty} onClick={() => void sync()}>刷新实时价并更新积分</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => { setError(""); apiRequest<PricingConfig>("/admin/configs/credit-pricing", {}, token).then(apply).catch((reason) => setError(reason instanceof Error ? reason.message : "读取失败")); }}>重新读取配置</button>

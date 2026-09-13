@@ -37,6 +37,18 @@ test('media quote includes resolution price, seconds and model multiplier', asyn
   await assert.rejects(gateway.quote({ providerModelId: 'video', payload: { resolution: '1080P' } }), /seconds|duration/);
 });
 
+test('per-request video charges once for each allowed duration and rejects unsupported seconds', async () => {
+  const gateway = service();
+  gateway.target = async () => target('VIDEO_GENERATION', { billing_unit: 'PER_REQUEST', model_config_json: { video_duration_options: [5, 10, 15] } });
+  for (const seconds of [5, 10, 15]) {
+    const quote = await gateway.quote({ providerModelId: 'video', payload: { resolution: '1080P', seconds } });
+    assert.equal(quote.credits, 5);
+    assert.equal(quote.billing_unit, 'PER_REQUEST');
+    assert.equal((await gateway.estimatedPricing(await gateway.target(), { resolution: '1080P', seconds })).costCredits, 4);
+  }
+  await assert.rejects(gateway.quote({ providerModelId: 'video', payload: { resolution: '1080P', seconds: 12 } }), /时长/);
+});
+
 test('any changed or invalid price blocks provider calls and ledger writes', async () => {
   const gateway = service();
   gateway.existing = async () => null;

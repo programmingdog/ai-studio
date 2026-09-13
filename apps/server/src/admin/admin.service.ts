@@ -8,6 +8,7 @@ import { DatabaseService } from "../database/database.service";
 import { roundedModelCredits, storedModelCreditMultiplier, validateModelCreditMultiplier } from "../common/model-credit";
 import { integer } from "../referrals/referral-rules";
 import { isAdminVisibleProviderModel, isDefaultModelCandidate } from "../common/wagaai-text-models";
+import { videoDurationOptions } from "../common/video-billing";
 
 // Both directory counts and relationship pages use the same exact two-level scope.
 // Disabled accounts remain in the tree; no third-level traversal or rank promotion.
@@ -134,6 +135,7 @@ interface ProviderModelRow extends RowDataPacket {
   generation_endpoint: string;
   query_endpoint: string | null;
   credit_cost: number;
+  billing_unit: string;
   credit_multiplier: number | string;
   max_reference_images: number;
   supports_reference_video: number;
@@ -157,6 +159,8 @@ interface ProviderModelInput {
   generationEndpoint: string;
   queryEndpoint?: string | null;
   creditCost: number;
+  billingUnit?: string;
+  videoDurationOptions?: unknown;
   creditMultiplier?: number;
   maxReferenceImages: number;
   supportsReferenceVideo: boolean;
@@ -747,7 +751,7 @@ export class AdminService {
     const [rows, priceRows] = await Promise.all([this.database.query<ProviderModelRow[]>(
       `SELECT pm.id, pm.provider_id, p.code AS provider_code, p.display_name AS provider_name,
               pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.credit_multiplier,
+              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier,
               pm.max_reference_images, pm.supports_reference_video, pm.supports_real_person,
               pm.supports_async_tasks,
               pm.sort_order, pm.description, pm.status, pm.parameter_schema_json, pm.config_json,
@@ -770,7 +774,7 @@ export class AdminService {
         credit_cost: Number(row.credit_cost),
         credit_multiplier: creditMultiplier,
         final_credit_cost: roundedModelCredits(Number(row.credit_cost), creditMultiplier),
-        billing_unit: row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
+        billing_unit: row.capability === "VIDEO_GENERATION" && row.billing_unit === "PER_REQUEST" ? "PER_REQUEST" : row.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST",
         max_reference_images: Number(row.max_reference_images),
         supports_reference_video: Boolean(row.supports_reference_video),
         supports_real_person: Boolean(row.supports_real_person),
@@ -778,6 +782,7 @@ export class AdminService {
         sort_order: Number(row.sort_order),
         parameter_schema_json: parseStoredJson(row.parameter_schema_json),
         config_json: parseStoredJson(row.config_json),
+        video_duration_options: row.capability === "VIDEO_GENERATION" ? videoDurationOptions(parseStoredJson(row.config_json)) : [],
         resolution_prices: priceRows.filter((price) => price.provider_model_id === row.id).map((price) => ({ resolution: String(price.resolution), credit_cost: Number(price.credit_cost), final_credit_cost: roundedModelCredits(Number(price.credit_cost), creditMultiplier) })),
       };
     });
@@ -789,6 +794,19 @@ export class AdminService {
     }
     const capability = input.capability.toUpperCase();
     if (!modelCapabilities.has(capability)) throw new BadRequestException("不支持的模型类型");
+    const billingUnit = capability === "VIDEO_GENERATION" ? input.billingUnit ?? "PER_SECOND" : "PER_REQUEST";
+    if (!["PER_SECOND", "PER_REQUEST"].includes(billingUnit) || (capability !== "VIDEO_GENERATION" && input.billingUnit && input.billingUnit !== "PER_REQUEST")) {
+      throw new BadRequestException("计费方式无效");
+    }
+    const rawConfig = input.config && typeof input.config === "object" && !Array.isArray(input.config) ? input.config as Record<string, unknown> : {};
+    const durationOptions = input.videoDurationOptions ?? rawConfig.video_duration_options ?? [];
+    if (!Array.isArray(durationOptions) || durationOptions.length > 60 || durationOptions.some((value) => !Number.isInteger(value) || value < 1 || value > 3600) || new Set(durationOptions).size !== durationOptions.length) {
+      throw new BadRequestException("视频时长选项必须为不重复的 1～3600 秒整数，最多 60 项");
+    }
+    if (capability !== "VIDEO_GENERATION" && durationOptions.length) throw new BadRequestException("只有视频模型可配置时长选项");
+    const modelConfig = { ...rawConfig };
+    if (capability === "VIDEO_GENERATION" && durationOptions.length) modelConfig.video_duration_options = durationOptions;
+    else delete modelConfig.video_duration_options;
     const status = (input.status || "DISABLED").toUpperCase();
     if (!modelStatuses.has(status)) throw new BadRequestException("模型状态不正确");
     const generationEndpoint = validatedEndpoint(input.generationEndpoint, "生成接口地址");
@@ -809,10 +827,13 @@ export class AdminService {
     return {
       ...input,
       capability,
+      billingUnit,
+      videoDurationOptions: durationOptions,
+      config: modelConfig,
       status,
       generationEndpoint,
       queryEndpoint,
-      creditCost: integerInRange(input.creditCost, capability === "VIDEO_GENERATION" ? "每秒消耗积分数" : "每次消耗积分数", 1, 100000),
+      creditCost: integerInRange(input.creditCost, capability === "VIDEO_GENERATION" && billingUnit === "PER_SECOND" ? "每秒消耗积分数" : "每次消耗积分数", 1, 100000),
       creditMultiplier: validateModelCreditMultiplier(input.creditMultiplier ?? 1),
       maxReferenceImages: integerInRange(input.maxReferenceImages, "参考图数量", 0, 255),
       supportsRealPerson: capability === "VIDEO_GENERATION" && input.supportsRealPerson,
@@ -839,12 +860,12 @@ export class AdminService {
     await this.database.transaction(async (connection) => {
       await connection.query(`INSERT INTO provider_models
         (id, provider_id, model_code, display_name, model_alias, capability, api_protocol,
-         generation_endpoint, query_endpoint, credit_cost, credit_multiplier, max_reference_images,
+         generation_endpoint, query_endpoint, credit_cost, billing_unit, credit_multiplier, max_reference_images,
          supports_reference_video, supports_real_person, supports_async_tasks, sort_order, description, status,
          parameter_schema_json, config_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, providerId, input.modelCode, input.displayName, input.modelAlias, input.capability,
-       input.apiProtocol, input.generationEndpoint, input.queryEndpoint, input.creditCost, input.creditMultiplier,
+       input.apiProtocol, input.generationEndpoint, input.queryEndpoint, input.creditCost, input.billingUnit, input.creditMultiplier,
        input.maxReferenceImages, input.supportsReferenceVideo ? 1 : 0, input.supportsRealPerson ? 1 : 0,
        input.supportsAsyncTasks ? 1 : 0,
        input.sortOrder, input.description || "", input.status,
@@ -852,7 +873,7 @@ export class AdminService {
        input.config === undefined ? null : JSON.stringify(input.config)]);
       await this.replaceResolutionPrices(connection, id, input.resolutionPrices);
     });
-    await this.audit.record({ adminUserId, action: "provider_model.create", entityType: "provider_model", entityId: id, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
+    await this.audit.record({ adminUserId, action: "provider_model.create", entityType: "provider_model", entityId: id, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.billingUnit, videoDurationOptions: input.videoDurationOptions } });
     return { id };
   }
 
@@ -862,12 +883,12 @@ export class AdminService {
       const [rows] = await connection.query<RowDataPacket[]>("SELECT id FROM provider_models WHERE id = ? AND provider_id = ? LIMIT 1 FOR UPDATE", [modelId, providerId]);
       if (!rows.length) throw new NotFoundException("模型不存在");
       await connection.query(`UPDATE provider_models SET model_code = ?, display_name = ?, model_alias = ?, capability = ?,
-         api_protocol = ?, generation_endpoint = ?, query_endpoint = ?, credit_cost = ?, credit_multiplier = ?,
+         api_protocol = ?, generation_endpoint = ?, query_endpoint = ?, credit_cost = ?, billing_unit = ?, credit_multiplier = ?,
          max_reference_images = ?, supports_reference_video = ?, supports_real_person = ?, supports_async_tasks = ?,
          sort_order = ?, description = ?, status = ?, parameter_schema_json = ?, config_json = ?
        WHERE id = ? AND provider_id = ?`,
       [input.modelCode, input.displayName, input.modelAlias, input.capability, input.apiProtocol,
-       input.generationEndpoint, input.queryEndpoint, input.creditCost, input.creditMultiplier, input.maxReferenceImages,
+       input.generationEndpoint, input.queryEndpoint, input.creditCost, input.billingUnit, input.creditMultiplier, input.maxReferenceImages,
        input.supportsReferenceVideo ? 1 : 0, input.supportsRealPerson ? 1 : 0,
        input.supportsAsyncTasks ? 1 : 0, input.sortOrder,
        input.description || "", input.status,
@@ -875,7 +896,7 @@ export class AdminService {
        input.config === undefined ? null : JSON.stringify(input.config), modelId, providerId]);
       await this.replaceResolutionPrices(connection, modelId, input.resolutionPrices);
     });
-    await this.audit.record({ adminUserId, action: "provider_model.update", entityType: "provider_model", entityId: modelId, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.capability === "VIDEO_GENERATION" ? "PER_SECOND" : "PER_REQUEST" } });
+    await this.audit.record({ adminUserId, action: "provider_model.update", entityType: "provider_model", entityId: modelId, details: { providerId, modelCode: input.modelCode, capability: input.capability, creditCost: input.creditCost, creditMultiplier: input.creditMultiplier, billingUnit: input.billingUnit, videoDurationOptions: input.videoDurationOptions } });
     return { updated: true };
   }
 

@@ -22,7 +22,7 @@ interface CatalogModel {
 
 interface ProviderRow extends RowDataPacket { id: string; config_json: unknown }
 interface CredentialRow extends RowDataPacket { id: string; api_key_ciphertext: string }
-interface PricingRow extends RowDataPacket { id: string; model_code: string; model_alias: string; credit_cost: number | string; config_json: unknown }
+interface PricingRow extends RowDataPacket { id: string; model_code: string; model_alias: string; capability: string; billing_unit: string; credit_cost: number | string; config_json: unknown }
 interface PricingConfigRow extends RowDataPacket { cny_per_credit: number | string; auto_sync: number }
 interface PricingPlan {
   id: string; modelCode: string; alias: string; previousCredits: number; nextCredits: number | null;
@@ -140,7 +140,7 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
 
 async function planCreditPrices(db: Connection, providerId: string, remoteById: Map<number, RemoteModel>, cnyPerCredit: number, syncedAt: string): Promise<PricingPlan[]> {
   const [rows] = await db.query<PricingRow[]>(
-    "SELECT id, model_code, model_alias, credit_cost, config_json FROM provider_models WHERE provider_id = ? ORDER BY model_code",
+    "SELECT id, model_code, model_alias, capability, billing_unit, credit_cost, config_json FROM provider_models WHERE provider_id = ? ORDER BY model_code",
     [providerId],
   );
   return rows.map((row) => {
@@ -148,6 +148,10 @@ async function planCreditPrices(db: Connection, providerId: string, remoteById: 
     const remote = remoteById.get(Number(config.remote_numeric_id));
     const previousCredits = Number(row.credit_cost);
     const previousSourceCredits = previousAllaiinSyncedCredits(config);
+    if (row.capability === "VIDEO_GENERATION" && row.billing_unit === "PER_REQUEST") {
+      return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
+        nextCredits: null, previousSourceCredits, providerPoints: remote ? Number(remote.points_cost) : null, status: "MANUAL", config: null };
+    }
     if (!remote || previousSourceCredits === null) {
       return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
         nextCredits: null, previousSourceCredits, providerPoints: null, status: "SKIPPED", config: null };
@@ -301,6 +305,11 @@ async function main(): Promise<void> {
 
     await db.beginTransaction();
     try {
+      const [existingModels] = await db.query<RowDataPacket[]>(
+        "SELECT model_code, billing_unit, config_json FROM provider_models WHERE provider_id = ?", [provider.id],
+      );
+      const existingConfig = new Map(existingModels.map((row) => [String(row.model_code), parseJsonObject(row.config_json)]));
+      const existingBilling = new Map(existingModels.map((row) => [String(row.model_code), String(row.billing_unit)]));
       if (Number(pricing.auto_sync) === 1) await applyCreditPrices(db, pricePlans);
       await db.execute(
         `UPDATE providers SET display_name = 'AllAIIn', adapter_type = 'allaiin', base_url = ?, status = 'ACTIVE', config_json = ? WHERE id = ?`,
@@ -318,6 +327,7 @@ async function main(): Promise<void> {
         const convertedCredits = allaiinPointsToCredits(Number(remote.points_cost), cnyPerCredit);
         const endpoint = endpointFor(selected.capability);
         const config = {
+          ...existingConfig.get(selected.modelCode),
           source: "allaiin_models_api",
           docs_url: DOCS_URL,
           remote_numeric_id: remote.id,
@@ -334,7 +344,9 @@ async function main(): Promise<void> {
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
             : undefined,
-          credit_cost_note: selected.capability === "VIDEO_GENERATION"
+          credit_cost_note: selected.capability === "VIDEO_GENERATION" && existingBilling.get(selected.modelCode) === "PER_REQUEST"
+            ? "每次成本由后台人工配置，不随时长变化；实时价格同步保留该价格。"
+            : selected.capability === "VIDEO_GENERATION"
             ? "每秒成本按 AllAIIn 积分 × ¥0.10 ÷ 系统每积分人民币金额换算并向上取整；人工修改的积分定价保留。"
             : "每次成本按 AllAIIn 积分 × ¥0.10 ÷ 系统每积分人民币金额换算并向上取整；人工修改的积分定价保留。",
         };
