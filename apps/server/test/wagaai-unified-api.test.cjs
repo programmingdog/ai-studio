@@ -47,12 +47,19 @@ test('WagaAI text requests use the documented root URL and model protocol', () =
 test('sync and migration keep the WagaAI universal API contract aligned', () => {
   const sync = fs.readFileSync(path.join(__dirname, '../src/scripts/sync-wagaai-models.ts'), 'utf8');
   const migration = fs.readFileSync(path.join(__dirname, '../src/database/migrations/035_wagaai_unified_api.sql'), 'utf8');
+  const ttImage25 = fs.readFileSync(path.join(__dirname, '../src/database/migrations/045_wagaai_tt_image_2_5.sql'), 'utf8');
   assert.match(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai"/);
   assert.doesNotMatch(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai\/api"/);
   assert.match(sync, /requestJson<Record<string, unknown>>\("\/v1\/skills\/guide"/);
+  assert.match(sync, /name: "tt-image-2\.5"[\s\S]*maxReferenceImages: 16[\s\S]*initialResolutions: \["1K", "2K", "4K"\]/);
   assert.match(migration, /base_url = 'https:\/\/api\.lk888\.ai'/);
   assert.match(migration, /'\/v1\/media\/generate'/);
   assert.match(migration, /'\/v1\/skills\/task-status'/);
   assert.match(migration, /'\/v1beta\/models\/\{model\}:generateContent'/);
   assert.match(migration, /'\/v1\/chat\/completions'/);
+  assert.match(ttImage25, /'tt-image-2\.5'/);
+  assert.match(ttImage25, /'\/v1\/media\/generate'/);
+  assert.match(ttImage25, /'\/v1\/skills\/task-status'/);
+  assert.match(ttImage25, /'version', 'flare'/);
+  assert.match(ttImage25, /'1K'[\s\S]*'2K'[\s\S]*'4K'/);
 });

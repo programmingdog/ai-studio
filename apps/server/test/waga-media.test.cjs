@@ -10,6 +10,7 @@ const field = (name, values, required = true) => ({ name, required, options: val
 const ref = 'https://example.com/ref.png';
 const schemas = {
   'tt-image-2': [field('images'), field('size', [{ value:'1440x2560', label:'2K Portrait (9:16)' }])],
+  'tt-image-2.5': [field('images',undefined,false),field('version',['flare','sunburst']),field('aspect_ratio',['auto','9:16'],false),field('resolution',['auto','1K','2K','4K']),field('quality',['auto','high','max'],false),field('background',['opaque','transparent','auto'],false),field('size',undefined,false)],
   'banana-pro': [field('images'), field('aspectRatio',['9:16']),field('imageSize',['2K'])],
   'doubao-seedream-5-0-pro-260628': [field('images'),field('aspect_ratio',['9:16']),field('size',['2K'])],
   'mj_imagine': [field('images'),field('botType',['MID_JOURNEY','NIJI_JOURNEY']),field('aspectRatio',['9:16'])],
@@ -51,6 +52,26 @@ test('Seedance 2.0 requires a reference and sends it as image_url', () => {
   const videoBody=gateway.request(target(code),{...payload(code),reference_images:[],video_url:'https://example.com/ref.mp4'},'fixture').body;
   assert.equal(videoBody.params.video_url,'https://example.com/ref.mp4');
   assert.equal(videoBody.params.image_url,undefined);
+});
+test('TT Image 2.5 supports text-to-image and up to 16 references with a priced standard edition', () => {
+  const code='tt-image-2.5', gateway=new ModelGatewayService({},{});
+  const textBody=gateway.request(target(code),{...payload(code),reference_images:[]},'fixture').body;
+  assert.equal(textBody.params.images,undefined);
+  assert.equal(textBody.params.version,'flare');
+  assert.equal(textBody.params.aspect_ratio,'9:16');
+  assert.equal(textBody.params.resolution,'2K');
+  const styled=gateway.request(target(code),{...payload(code),quality:'max',background:'transparent'},'fixture').body;
+  assert.equal(styled.params.quality,'max');
+  assert.equal(styled.params.background,'transparent');
+  assert.throws(()=>wagaMediaParams(code,schemas[code],{},payload(code),{submit:true,references:Array(17).fill({url:ref})}),/最多支持 16 张/);
+
+  const pricing={name:code,channel_groups:[normalizePricingGroup({is_active:true,in_key_whitelist:true,billing_method:'按次',base_price:0.036,min_price:0.036,
+    option_prices:[{param_name:'version',option_value:'sunburst',final_price:0.048,price_multiplier:1,price_addition:0.012}]})]};
+  const model={id:'model',model_code:code,model_alias:code,capability:'IMAGE_GENERATION',api_protocol:'lingkeai_media',credit_cost:4,config_json:{},
+    parameter_schema_json:schemas[code],resolution_prices:['1K','2K','4K'].map(resolution=>({resolution,credit_cost:4}))};
+  const calculated=calculateModelCredits(model,pricing,0.01);
+  assert.deepEqual(calculated.map(item=>item.credits),[4,4,4]);
+  assert(calculated.every(item=>item.parameters.version==='flare'));
 });
 test('Seedance 2.5 requires images and sends the current images field', () => {
   const code='seedance-2.5-anmiao';

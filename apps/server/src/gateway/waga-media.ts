@@ -4,6 +4,7 @@ type Obj = Record<string, any>;
 const object = (v: unknown): Obj => v && typeof v === "object" && !Array.isArray(v) ? v : {};
 export const wagaProfiles: Record<string, { video?: boolean; images: string; max: number; ratio: string; duration?: number[]; fixed?: number; defaults?: Obj; resolution?: false }> = {
   "tt-image-2": { images: "images", max: 10, ratio: "" },
+  "tt-image-2.5": { images: "images", max: 16, ratio: "aspect_ratio", defaults: { version: "flare" } },
   "banana-pro": { images: "images", max: 14, ratio: "aspectRatio" },
   "doubao-seedream-5-0-pro-260628": { images: "images", max: 10, ratio: "aspect_ratio" },
   "mj_imagine": { images: "images", max: 4, ratio: "aspectRatio", resolution: false, defaults: { botType: "MID_JOURNEY" } },
@@ -46,7 +47,7 @@ export function wagaMediaParams(model: string, schema: unknown, config: unknown,
     }
     return choice ? choice.value : value;
   };
-  const policyFields = ["version", "mode", "model_variant", "off_peak", "botType", "quality", "stylize", "chaos", "style", "audio", "prompt_extend", "web_search"];
+  const policyFields = ["version", "mode", "model_variant", "off_peak", "botType", "quality", "background", "stylize", "chaos", "style", "audio", "prompt_extend", "web_search"];
   for (const name of policyFields) {
     if (!fields.some(f => f.name === name) && !(name in (profile.defaults || {}))) continue;
     let value = plan[name] ?? source[name] ?? profile.defaults?.[name];

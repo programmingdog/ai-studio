@@ -17,6 +17,7 @@ interface CatalogModel {
   supportsReferenceVideo: boolean;
   supportsRealPerson?: boolean;
   sortOrder: number;
+  initialResolutions?: string[];
 }
 
 interface ProviderRow extends RowDataPacket {
@@ -68,6 +69,7 @@ const catalog: CatalogModel[] = [
     sortOrder: model.sortOrder,
   })),
   { name: "gem-3.7-flash", alias: "GEM 3.7 Flash 视频理解", capability: "VIDEO_UNDERSTANDING", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: true, sortOrder: 10 },
+  { name: "tt-image-2.5", alias: "TT Image 2.5", capability: "IMAGE_GENERATION", initialCreditCost: 4, maxReferenceImages: 16, supportsReferenceVideo: false, sortOrder: 5, initialResolutions: ["1K", "2K", "4K"] },
   { name: "tt-image-2", alias: "TT Image 2", capability: "IMAGE_GENERATION", initialCreditCost: 2, maxReferenceImages: 10, supportsReferenceVideo: false, sortOrder: 10 },
   { name: "banana-pro", alias: "Banana Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 14, supportsReferenceVideo: false, sortOrder: 20 },
   { name: "doubao-seedream-5-0-pro-260628", alias: "Seedream 5.0 Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 30 },
@@ -253,12 +255,17 @@ async function main(): Promise<void> {
            selected.sortOrder, detail.description || "", JSON.stringify(detail.params || []), JSON.stringify(config)],
         );
         if (isMedia) {
-          await connection.execute(
-            `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
-             SELECT id, ?, credit_cost, 0 FROM provider_models
-             WHERE provider_id = ? AND model_code = ? AND capability = ?`,
-            [selected.name === "hailuo-h3-cankaosheng" ? "768P" : selected.name === "omni_flash-10s" ? "default" : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.name, selected.capability],
-          );
+          const defaultResolution = selected.name === "hailuo-h3-cankaosheng" ? "768P"
+            : selected.name === "omni_flash-10s" ? "default"
+            : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K";
+          for (const [sortOrder, resolution] of (selected.initialResolutions || [defaultResolution]).entries()) {
+            await connection.execute(
+              `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
+               SELECT id, ?, credit_cost, ? FROM provider_models
+               WHERE provider_id = ? AND model_code = ? AND capability = ?`,
+              [resolution, sortOrder, provider.id, selected.name, selected.capability],
+            );
+          }
         }
       }
       await connection.commit();
