@@ -136,7 +136,7 @@ function PricingModal({ provider, data, error, loading, initialSearch, onClose, 
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
       }}>
       <header><div><span className="kicker">LIVE SUPPLIER PRICING</span><h2 id="supplier-pricing-title">{provider.display_name} · 实时价格</h2></div><button aria-label="关闭实时价格" onClick={onClose}>×</button></header>
-      <p className="supplier-pricing-note">WagaAI 原始报价按 1 算力 = 1 元换算。积分定价开启自动更新后，查询/刷新会按最低可用价格更新模型消耗积分；最终扣费还会乘以该模型独立系数。Token 报价不能直接当作每次或每秒价格。</p>
+      <p className="supplier-pricing-note">{provider.code.toLowerCase() === "allaiin" ? "AllAIIn 原始报价按 1 慧心积分 = ¥0.10 换算。" : "WagaAI 原始报价按 1 算力 = 1 元换算。"}积分定价开启自动更新后，查询/刷新会按系统每积分人民币金额换算模型消耗积分；最终扣费还会乘以该模型独立系数。人工修改的 AllAIIn 定价会保留。</p>
       {data?.credit_sync && <CreditSyncResults report={data.credit_sync} />}
       {data && <p className="supplier-pricing-note">查询时间：{time(data.queried_at)} · API Key：{data.credential_name}（首个启用密钥）<br />目录 {data.catalog_total} 个模型 · 含本地补查共 {data.models.length} 个 · 成功 {data.success_count} 个 / 失败 {data.failed_count} 个。价格为本次查询快照，关闭弹窗后仍显示在模型下方。</p>}
       <div className="supplier-price-toolbar">
@@ -144,7 +144,7 @@ function PricingModal({ provider, data, error, loading, initialSearch, onClose, 
         <label><input type="checkbox" checked={localOnly} onChange={(event) => { setLocalOnly(event.target.checked); setPage(0); }} />仅本地已配置</label>
         <button className="primary" disabled={loading} onClick={onRefresh}>{loading ? "查询中…" : "刷新实时价格"}</button>
       </div>
-      {loading && <div className="loading-card" role="status"><span className="spinner" />正在逐个查询模型价格，请稍候…{data && "下方暂为上次查询结果。"}</div>}
+      {loading && <div className="loading-card" role="status"><span className="spinner" />正在查询模型价格，请稍候…{data && "下方暂为上次查询结果。"}</div>}
       {error && <div className="form-error" role="alert">{error}{data && "；下方保留上次查询结果，请注意时间。"}</div>}
       {data?.failed_count ? <div className="test-warning">部分模型价格查询失败，已单独标记；可点击刷新重试。</div> : null}
       <div className="supplier-price-models">{models.slice(currentPage * 15, (currentPage + 1) * 15).map((model) => <ModelPriceDetails key={model.name} model={model} />)}</div>

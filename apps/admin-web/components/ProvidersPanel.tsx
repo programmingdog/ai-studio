@@ -222,7 +222,7 @@ export function ProvidersPanel({ token }: { token: string }) {
           <span className={`status ${statusTone(provider.status)}`}>{provider.status}</span>
         </button>
         <div className="inline-actions"><button onClick={() => setProviderModal(provider)}>编辑</button><button onClick={() => void toggleProvider(provider)}>{provider.status === "ACTIVE" ? "停用" : "启用"}</button></div>
-        <div className="provider-live-price"><button className="secondary" disabled={provider.code.toLowerCase() !== "wagaai"} onClick={() => pricing.open(provider)}>查看实时价格</button>{provider.code.toLowerCase() !== "wagaai" && <small>暂未接入该供应商价格接口</small>}</div>
+        <div className="provider-live-price"><button className="secondary" disabled={!["wagaai", "allaiin"].includes(provider.code.toLowerCase())} onClick={() => pricing.open(provider)}>查看实时价格</button>{!["wagaai", "allaiin"].includes(provider.code.toLowerCase()) && <small>暂未接入该供应商价格接口</small>}</div>
       </article>)}</div> : <div className="empty-row">尚未配置 AI 供应商</div>}
     </section>
 
@@ -241,7 +241,7 @@ export function ProvidersPanel({ token }: { token: string }) {
           <header><div><strong>{capabilityLabels[capability]}</strong><small>{items.length} 个模型</small></div></header>
           {items.length ? <div className="model-list">{items.map((model) => <article key={model.id}>
             <div className="model-main"><span className={`status ${statusTone(model.status)}`}>{model.status}</span><h3>{model.model_alias}</h3><p>{model.display_name} · <code>{model.model_code}</code></p><small>{model.api_protocol} · {model.generation_endpoint}</small>
-              {selected.code.toLowerCase() === "wagaai" && <ModelSupplierPrice model={pricing.modelPrice(selected.id, model.model_code)} onDetails={() => pricing.open(selected, model.model_code)} />}
+              {["wagaai", "allaiin"].includes(selected.code.toLowerCase()) && <ModelSupplierPrice model={pricing.modelPrice(selected.id, model.model_code)} onDetails={() => pricing.open(selected, model.model_code)} />}
             </div>
             <div className="model-pricing"><small>用户最终积分（小数向上取整）</small>{model.resolution_prices?.length ? model.resolution_prices.map((price) => <span className="resolution-price" key={price.resolution}><strong>{price.resolution}</strong><em>{price.final_credit_cost ?? price.credit_cost} 积分{model.capability === "VIDEO_GENERATION" ? " / 秒" : " / 次"}</em><small>消耗 {price.credit_cost} × 模型系数 {model.credit_multiplier}</small></span>) : <><strong>{model.final_credit_cost ?? model.credit_cost}</strong><span>{model.capability === "VIDEO_GENERATION" ? "积分 / 秒" : "积分 / 次"}</span><small>消耗 {model.credit_cost} × 模型系数 {model.credit_multiplier}</small></>}</div>
             <div className="model-flags"><span>参考图 {model.max_reference_images}</span><span>参考视频 {model.supports_reference_video ? "支持" : "不支持"}</span>{model.capability === "VIDEO_GENERATION" && <span>真人 {model.supports_real_person ? "支持" : "不支持"}</span>}<span>{model.supports_async_tasks ? "异步查询" : "同步返回"}</span></div>

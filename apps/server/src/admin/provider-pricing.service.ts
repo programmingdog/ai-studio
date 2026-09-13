@@ -1,5 +1,6 @@
 import { BadGatewayException, BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { RowDataPacket } from "mysql2/promise";
+import { parseStoredJson } from "../common/input";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
 
@@ -43,11 +44,12 @@ export function normalizePricingGroup(input: unknown) {
 
 interface ProviderRow extends RowDataPacket { id: string; code: string; display_name: string; base_url: string }
 interface CredentialRow extends RowDataPacket { name: string; api_key_ciphertext: string }
-interface ModelRow extends RowDataPacket { model_code: string; model_alias: string; display_name: string }
+interface ModelRow extends RowDataPacket { model_code: string; model_alias: string; display_name: string; config_json: unknown }
 type CatalogModel = { name: string; display_name: string; type: string; available_for_this_key: boolean | null };
 type ModelPrice = CatalogModel & {
   local_aliases: string[]; queried_at: string; error: string | null; pricing_note: string;
   currency: string; price_unit: string; channel_groups: ReturnType<typeof normalizePricingGroup>[];
+  remote_numeric_id?: number; source_points?: number;
 };
 export type ProviderPricing = {
   provider_id: string; provider_name: string; credential_name: string; queried_at: string;
@@ -75,7 +77,8 @@ export class ProviderPricingService {
   private async fetchPricing(providerId: string): Promise<ProviderPricing> {
     const [provider] = await this.database.query<ProviderRow[]>("SELECT id, code, display_name, base_url FROM providers WHERE id = ?", [providerId]);
     if (!provider) throw new NotFoundException("供应商不存在");
-    if (provider.code.toLowerCase() !== "wagaai") throw new BadRequestException("该供应商暂未接入实时价格接口，目前支持 WagaAI");
+    const providerCode = provider.code.toLowerCase();
+    if (!["wagaai", "allaiin"].includes(providerCode)) throw new BadRequestException("该供应商暂未接入实时价格接口，目前支持 WagaAI 和 AllAIIn");
     const [credential] = await this.database.query<CredentialRow[]>(
       "SELECT name, api_key_ciphertext FROM provider_credentials WHERE provider_id = ? AND status = 'ACTIVE' ORDER BY created_at, id LIMIT 1", [providerId],
     );
@@ -121,11 +124,43 @@ export class ProviderPricingService {
       }
     };
 
+    if (providerCode === "allaiin") {
+      const catalog = await get("/models");
+      if (catalog.code !== 200 || !Array.isArray(catalog.data) || catalog.data.length > 2000) throw new BadGatewayException("AllAIIn 模型目录格式无效或超过查询上限");
+      const localModels = await this.database.query<ModelRow[]>(
+        "SELECT model_code, model_alias, display_name, config_json FROM provider_models WHERE provider_id = ?", [providerId],
+      );
+      const queriedAt = new Date().toISOString();
+      const remote = catalog.data.map((value) => {
+        const item = record(value);
+        const id = Number(item.id), points = Number(item.points_cost);
+        if (!Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(points) || points < 0) throw new BadGatewayException("AllAIIn 模型目录包含无效价格或 ID");
+        return { id, points, name: string(item.name) || string(item.model_id), type: Number(item.type) };
+      });
+      const models: ModelPrice[] = remote.flatMap((item) => {
+        const locals = localModels.filter((local) => {
+          const raw = parseStoredJson(local.config_json);
+          return Number(record(raw).remote_numeric_id) === item.id;
+        });
+        return (locals.length ? locals : [null]).map((local) => ({
+          name: local?.model_code || String(item.id), display_name: item.name, type: item.type === 3 ? "video" : item.type === 2 ? "image" : "chat",
+          available_for_this_key: true, local_aliases: local ? [local.model_alias || local.display_name] : [],
+          queried_at: queriedAt, error: null, pricing_note: "1 慧心积分 = ¥0.10", currency: "积分",
+          price_unit: item.type === 3 ? "秒" : "次", remote_numeric_id: item.id, source_points: item.points,
+          channel_groups: [normalizePricingGroup({ group_name: "AllAIIn", is_active: true, in_key_whitelist: true,
+            billing_method: item.type === 3 ? "按秒" : "按次", currency: "积分", price_unit: item.type === 3 ? "秒" : "次",
+            base_price: item.points, min_price: item.points })],
+        }));
+      });
+      return { provider_id: providerId, provider_name: provider.display_name, credential_name: credential.name,
+        queried_at: queriedAt, catalog_total: remote.length, success_count: models.length, failed_count: 0, models };
+    }
+
     // No type/status filter: include every model exposed by the catalog and paused channels.
     const catalog = await get("/v1/skills/models");
     if (!Array.isArray(catalog.models) || catalog.models.length > 2000) throw new BadGatewayException("供应商模型目录格式无效或超过查询上限");
     const localModels = await this.database.query<ModelRow[]>(
-      "SELECT model_code, model_alias, display_name FROM provider_models WHERE provider_id = ?", [providerId],
+      "SELECT model_code, model_alias, display_name, config_json FROM provider_models WHERE provider_id = ?", [providerId],
     );
     const entries = new Map<string, CatalogModel>();
     for (const value of catalog.models) {

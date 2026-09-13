@@ -1,7 +1,8 @@
 import "dotenv/config";
 import { createDecipheriv, createHash, randomUUID } from "node:crypto";
-import { createConnection, RowDataPacket } from "mysql2/promise";
+import { createConnection, type Connection, type RowDataPacket } from "mysql2/promise";
 import { loadDatabaseConfig } from "../config/environment";
+import { allaiinPointsToCredits, ALLAIIN_POINT_CNY, previousAllaiinSyncedCredits } from "./allaiin-credit-pricing";
 
 const BASE_URL = "https://ailingg.store/api/v1";
 const DOCS_URL = "https://ailingg.store/api-docs";
@@ -21,6 +22,14 @@ interface CatalogModel {
 
 interface ProviderRow extends RowDataPacket { id: string; config_json: unknown }
 interface CredentialRow extends RowDataPacket { id: string; api_key_ciphertext: string }
+interface PricingRow extends RowDataPacket { id: string; model_code: string; model_alias: string; credit_cost: number | string; config_json: unknown }
+interface PricingConfigRow extends RowDataPacket { cny_per_credit: number | string; auto_sync: number }
+interface PricingPlan {
+  id: string; modelCode: string; alias: string; previousCredits: number; nextCredits: number | null;
+  previousSourceCredits: number | null; providerPoints: number | null;
+  status: "UPDATED" | "UNCHANGED" | "MANUAL" | "SKIPPED";
+  config: Record<string, unknown> | null;
+}
 interface RemoteModel {
   id: number;
   model_id: string;
@@ -129,6 +138,55 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
+async function planCreditPrices(db: Connection, providerId: string, remoteById: Map<number, RemoteModel>, cnyPerCredit: number, syncedAt: string): Promise<PricingPlan[]> {
+  const [rows] = await db.query<PricingRow[]>(
+    "SELECT id, model_code, model_alias, credit_cost, config_json FROM provider_models WHERE provider_id = ? ORDER BY model_code",
+    [providerId],
+  );
+  return rows.map((row) => {
+    const config = parseJsonObject(row.config_json);
+    const remote = remoteById.get(Number(config.remote_numeric_id));
+    const previousCredits = Number(row.credit_cost);
+    const previousSourceCredits = previousAllaiinSyncedCredits(config);
+    if (!remote || previousSourceCredits === null) {
+      return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
+        nextCredits: null, previousSourceCredits, providerPoints: null, status: "SKIPPED", config: null };
+    }
+    const nextCredits = allaiinPointsToCredits(Number(remote.points_cost), cnyPerCredit);
+    const automatic = previousCredits === previousSourceCredits;
+    return {
+      id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits, nextCredits,
+      previousSourceCredits, providerPoints: Number(remote.points_cost),
+      status: !automatic ? "MANUAL" : previousCredits === nextCredits ? "UNCHANGED" : "UPDATED",
+      config: {
+        ...config, source_points_cost: Number(remote.points_cost), source_point_cny: ALLAIIN_POINT_CNY,
+        source_credit_cost: nextCredits, source_cny_per_credit: cnyPerCredit,
+        request_model_name: remote.name, remote_model_id: remote.model_id, pricing_synced_at: syncedAt,
+      },
+    };
+  });
+}
+
+async function applyCreditPrices(db: Connection, plans: PricingPlan[]): Promise<void> {
+  for (const plan of plans) {
+    if (!plan.config) continue;
+    if (plan.status === "UPDATED") {
+      const [result] = await db.execute(
+        "UPDATE provider_models SET credit_cost = ? WHERE id = ? AND credit_cost = ?",
+        [plan.nextCredits, plan.id, plan.previousCredits],
+      );
+      if (!result || !("affectedRows" in result) || result.affectedRows !== 1) {
+        throw new Error(`AllAIIn model price changed during sync: ${plan.modelCode}`);
+      }
+      await db.execute(
+        "UPDATE provider_model_resolution_prices SET credit_cost = ? WHERE provider_model_id = ? AND credit_cost = ?",
+        [plan.nextCredits, plan.id, plan.previousCredits],
+      );
+    }
+    await db.execute("UPDATE provider_models SET config_json = ? WHERE id = ?", [JSON.stringify(plan.config), plan.id]);
+  }
+}
+
 function commonPromptParameter(): Record<string, unknown> {
   return { name: "prompt", label: "提示词", type: "textarea", required: true, description: "生成内容描述；也可使用 OpenAI messages 格式。" };
 }
@@ -184,6 +242,9 @@ function endpointFor(capability: Capability): { generation: string; query: strin
 }
 
 async function main(): Promise<void> {
+  const pricesOnly = process.argv.includes("--prices-only");
+  const dryRun = process.argv.includes("--dry-run");
+  if (dryRun && !pricesOnly) throw new Error("--dry-run requires --prices-only");
   const db = await createConnection({ ...loadDatabaseConfig(), charset: "utf8mb4", timezone: "Z" });
   try {
     const [providers] = await db.query<ProviderRow[]>("SELECT id, config_json FROM providers WHERE code = 'allaiin' LIMIT 1");
@@ -197,18 +258,34 @@ async function main(): Promise<void> {
     const credential = credentials[0];
     if (!credential) throw new Error("AllAIIn has no active database API Key");
     const apiKey = decryptSecret(credential.api_key_ciphertext);
-    const [remoteModels, account] = await Promise.all([
-      request<RemoteModel[]>("/models", apiKey),
-      request<AccountData>("/account", apiKey),
-    ]);
+    const remoteModels = await request<RemoteModel[]>("/models", apiKey);
     const remoteByCode = new Map(remoteModels.map((model) => [model.model_id, model]));
     const remoteById = new Map(remoteModels.map((model) => [model.id, model]));
+    const [pricingRows] = await db.query<PricingConfigRow[]>(
+      "SELECT cny_per_credit, auto_sync FROM model_credit_pricing_config WHERE id = 1 LIMIT 1",
+    );
+    const pricing = pricingRows[0];
+    if (!pricing) throw new Error("Missing system CNY per credit configuration");
+    const cnyPerCredit = Number(pricing.cny_per_credit);
+    const syncedAt = new Date().toISOString();
+    const pricePlans = await planCreditPrices(db, provider.id, remoteById, cnyPerCredit, syncedAt);
+    if (pricesOnly) {
+      const summary = pricePlans.map(({ modelCode, alias, previousCredits, nextCredits, providerPoints, status }) =>
+        ({ modelCode, alias, providerPoints, previousCredits, nextCredits, status }));
+      process.stdout.write(`AllAIIn price preview: 1 provider point = ¥${ALLAIIN_POINT_CNY}, 1 system credit = ¥${cnyPerCredit}\n${JSON.stringify(summary, null, 2)}\n`);
+      if (dryRun) return;
+      await db.beginTransaction();
+      try { await applyCreditPrices(db, pricePlans); await db.commit(); }
+      catch (error) { await db.rollback(); throw error; }
+      process.stdout.write(`AllAIIn price sync complete: ${pricePlans.filter((plan) => plan.status === "UPDATED").length} updated, ${pricePlans.filter((plan) => plan.status === "MANUAL").length} manual prices preserved\n`);
+      return;
+    }
+    const account = await request<AccountData>("/account", apiKey);
     const missing = curatedCatalog.filter((model) => !remoteByCode.has(model.modelCode));
     if (missing.length) throw new Error(`AllAIIn models missing: ${missing.map((model) => model.modelCode).join(", ")}`);
     const videoCatalog = buildVideoCatalog(remoteModels);
     if (!videoCatalog.length) throw new Error("AllAIIn returned no eligible video models");
     const catalog = [...curatedCatalog, ...videoCatalog];
-    const syncedAt = new Date().toISOString();
     const providerConfig = {
       ...parseJsonObject(provider.config_json),
       credentials_configured: true,
@@ -224,6 +301,7 @@ async function main(): Promise<void> {
 
     await db.beginTransaction();
     try {
+      if (Number(pricing.auto_sync) === 1) await applyCreditPrices(db, pricePlans);
       await db.execute(
         `UPDATE providers SET display_name = 'AllAIIn', adapter_type = 'allaiin', base_url = ?, status = 'ACTIVE', config_json = ? WHERE id = ?`,
         [BASE_URL, JSON.stringify(providerConfig), provider.id],
@@ -236,6 +314,8 @@ async function main(): Promise<void> {
 
       for (const selected of catalog) {
         const remote = selected.remoteId ? remoteById.get(selected.remoteId)! : remoteByCode.get(selected.modelCode)!;
+        const existingPlan = pricePlans.find((plan) => plan.modelCode === selected.modelCode);
+        const convertedCredits = allaiinPointsToCredits(Number(remote.points_cost), cnyPerCredit);
         const endpoint = endpointFor(selected.capability);
         const config = {
           source: "allaiin_models_api",
@@ -246,14 +326,17 @@ async function main(): Promise<void> {
           remote_type: remote.type,
           remote_type_name: remote.type_name,
           source_points_cost: Number(remote.points_cost),
+          source_point_cny: ALLAIIN_POINT_CNY,
+          source_credit_cost: Number(pricing.auto_sync) === 1 ? convertedCredits : existingPlan?.previousSourceCredits ?? convertedCredits,
+          source_cny_per_credit: cnyPerCredit,
           line_selection: remote.line_selection || null,
           pricing_synced_at: syncedAt,
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
             : undefined,
           credit_cost_note: selected.capability === "VIDEO_GENERATION"
-            ? "每秒消耗积分数；首次按 AllAIIn points_cost 初始化，后台人工修改后续同步会保留。"
-            : "每次消耗积分数；首次按 AllAIIn points_cost 初始化，后台人工修改后续同步会保留。",
+            ? "每秒成本按 AllAIIn 积分 × ¥0.10 ÷ 系统每积分人民币金额换算并向上取整；人工修改的积分定价保留。"
+            : "每次成本按 AllAIIn 积分 × ¥0.10 ÷ 系统每积分人民币金额换算并向上取整；人工修改的积分定价保留。",
         };
         await db.execute(
           `INSERT INTO provider_models
@@ -271,10 +354,10 @@ async function main(): Promise<void> {
              description = VALUES(description), parameter_schema_json = VALUES(parameter_schema_json),
              config_json = VALUES(config_json)`,
           [randomUUID(), provider.id, selected.modelCode, remote.name, selected.alias, selected.capability,
-           endpoint.protocol, endpoint.generation, endpoint.query, Math.max(1, Math.round(Number(remote.points_cost))),
+           endpoint.protocol, endpoint.generation, endpoint.query, convertedCredits,
            selected.maxReferenceImages, selected.supportsReferenceVideo ? 1 : 0, selected.supportsRealPerson ? 1 : 0,
            endpoint.async ? 1 : 0, selected.sortOrder,
-           `${remote.name}，由 AllAIIn API 提供，当前基础积分消耗 ${remote.points_cost}。`,
+           `${remote.name}，由 AllAIIn API 提供，上游基础价 ${remote.points_cost} 积分（¥${(Number(remote.points_cost) * ALLAIIN_POINT_CNY).toFixed(2)}）。`,
            JSON.stringify(parameterSchema(selected)), JSON.stringify(config)],
         );
         if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(selected.capability)) {

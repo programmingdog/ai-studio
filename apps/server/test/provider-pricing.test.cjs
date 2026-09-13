@@ -25,6 +25,16 @@ function upstream(t, handler) {
 const catalog = { models: [{ name: "image-2", display_name: "Image 2", type: "image", available_for_this_key: true }, { name: "remote-only", display_name: "Remote", type: "video" }] };
 const channel = { group_name: "运行渠道", is_active: true, billing_method: "按次", base_price: 0.02, min_price: 0, in_key_whitelist: true, option_prices: [{ param_name: "resolution", option_label: "2K", option_value: "2k", final_price: 0.05, price_multiplier: 2.5, price_addition: -0.01 }] };
 
+test("AllAIIn live catalog matches local models by numeric ID and exposes upstream points", async (t) => {
+  const calls = upstream(t, () => Response.json({ code: 200, data: [{ id: 65, name: "Seedance 2.0 冲量版", model_id: "Seedance 2.0 Fast", type: 3, points_cost: 8 }] }));
+  const { instance } = service({ code: "allaiin", models: [{ model_code: "seedance-2-0-chongliang", model_alias: "冲量版", display_name: "冲量版", config_json: { remote_numeric_id: 65 } }] });
+  const result = await instance.query("p1");
+  assert.equal(calls.length, 1);
+  assert.equal(result.models[0].name, "seedance-2-0-chongliang");
+  assert.equal(result.models[0].source_points, 8);
+  assert.equal(result.models[0].channel_groups[0].base_price, 8);
+});
+
 test("normalization preserves zero, paused state, token prices and option casing without exposing unknown fields", () => {
   const result = normalizePricingGroup({ ...channel, is_active: false, input_token_price: "0", output_token_price: "1.2", secret: "do-not-forward" });
   assert.equal(result.base_price, 0.02);
