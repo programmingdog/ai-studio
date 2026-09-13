@@ -23,3 +23,4 @@ logs/
 binaries/
 release/
 tools/release.config.json
+tools/release.admin-credential

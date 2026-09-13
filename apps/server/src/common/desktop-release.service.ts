@@ -140,6 +140,25 @@ export class DesktopReleaseService {
     return this.get(id);
   }
 
+  async replacePublishedArtifact(adminUserId: string, id: string, rawArtifact: DesktopReleaseArtifactInput) {
+    const release = await this.release(id);
+    if (release.status !== "PUBLISHED") throw new ConflictException("只能替换已发布版本的更新包");
+    const [artifact] = this.validateArtifacts([rawArtifact]);
+    if (!artifact) throw new BadRequestException("更新包信息不能为空");
+    const existing = (await this.artifacts(id)).find((item) => item.target === artifact.target && item.arch === artifact.arch);
+    if (!existing) throw new NotFoundException("该平台的更新包不存在");
+    if (existing.url === artifact.url && existing.signature === artifact.signature) return this.get(id);
+    await this.database.execute(
+      `UPDATE desktop_release_artifacts SET url = ?, signature = ?
+       WHERE release_id = ? AND target = ? AND arch = ?`,
+      [artifact.url, artifact.signature, id, artifact.target, artifact.arch],
+    );
+    await this.audit.record({ adminUserId, action: "desktop_release.artifact_replace", entityType: "desktop_release", entityId: id,
+      details: { version: release.version, channel: release.channel, target: artifact.target, arch: artifact.arch,
+        before_url: existing.url, after_url: artifact.url } });
+    return this.get(id);
+  }
+
   async publish(adminUserId: string, id: string) {
     const release = await this.release(id);
     if (release.status !== "DRAFT") throw new ConflictException("只有草稿版本可以发布");

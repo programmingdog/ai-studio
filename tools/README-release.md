@@ -2,6 +2,18 @@
 
 入口：`tools/release.ps1`。完整发布说明仍以 [`docs/release-runbook.md`](../docs/release-runbook.md) 为准。
 
+## 仅发布 Windows 客户端（一键运行）
+
+先确认 `tools/release.config.json` 中的服务器、SSH 私钥、管理后台邮箱和 Updater 签名私钥路径正确；这些配置仅需设置一次。首次在本机保存管理后台密码：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release.ps1 -Stage SaveAdminCredential
+```
+
+密码由当前 Windows 用户的 DPAPI 加密保存在 Git 忽略的 `tools/release.admin-credential`。以后双击仓库根目录的 [`publish-client.bat`](../publish-client.bat)，只需输入目标版本号和 Updater 签名私钥密码（构建密钥）。脚本按当前工作区代码构建、签名、上传、发布到 stable 渠道并设为 100% 灰度，不提交或推送 Git，也不触发 API/管理后台部署。
+
+同版本重新运行会生成新的内容哈希 URL，替换该已发布版本的 Windows 更新包和公开下载地址。新版本号必须高于线上已发布的最高版本。已安装相同版本号的客户端不会收到在线升级提示；需要给它们推送修复时，应使用更高版本号。同版本替换依赖最新的 API `PATCH /admin/desktop-releases/:id/artifact`，首次使用前需先部署包含该接口的 API。
+
 ## 首次配置
 
 ```powershell

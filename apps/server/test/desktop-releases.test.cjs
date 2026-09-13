@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { BadRequestException } = require("@nestjs/common");
+const { BadRequestException, ConflictException } = require("@nestjs/common");
 const { compareDesktopVersions, parseDesktopVersion, DesktopReleaseService } = require("../dist/common/desktop-release.service.js");
 
 test("desktop release versions follow SemVer precedence", () => {
@@ -64,4 +64,35 @@ test("published release notes remain editable and feed the updater manifest", as
   assert.equal(selected.notes, "后台修改后的更新内容");
   assert.match(writes[0].sql, /SET notes/);
   assert.equal(audits[0].action, "desktop_release.notes");
+});
+
+test("a published version can replace its signed artifact without changing its version", async () => {
+  const release = { id: "r1", version: "0.1.0", channel: "stable", status: "PUBLISHED", notes: "", min_supported_version: "0.0.0", rollout_percent: 100, published_at: "2026-01-01" };
+  const artifact = { id: "a1", release_id: "r1", target: "windows", arch: "x86_64", url: "https://cdn.example/client/old.exe", signature: "old-signature" };
+  const audits = [];
+  const database = {
+    async query(sql) {
+      if (sql.includes("FROM desktop_releases")) return [release];
+      if (sql.includes("FROM desktop_release_artifacts")) return [artifact];
+      return [];
+    },
+    async execute(sql, args) {
+      assert.match(sql, /UPDATE desktop_release_artifacts/);
+      artifact.url = args[0];
+      artifact.signature = args[1];
+      return { affectedRows: 1 };
+    },
+  };
+  const service = new DesktopReleaseService(database, { record: async value => audits.push(value) });
+  const replaced = await service.replacePublishedArtifact("admin", "r1", {
+    target: "windows", arch: "x86_64", url: "https://cdn.example/client/new.exe", signature: "new-signature",
+  });
+  assert.equal(replaced.version, "0.1.0");
+  assert.equal(replaced.artifacts[0].url, "https://cdn.example/client/new.exe");
+  assert.equal(audits[0].action, "desktop_release.artifact_replace");
+  assert.equal(await service.selectUpdate({ currentVersion: "0.1.0", channel: "stable", target: "windows", arch: "x86_64", cohort: "device" }), null);
+  release.status = "ARCHIVED";
+  await assert.rejects(() => service.replacePublishedArtifact("admin", "r1", {
+    target: "windows", arch: "x86_64", url: "https://cdn.example/client/next.exe", signature: "next-signature",
+  }), ConflictException);
 });

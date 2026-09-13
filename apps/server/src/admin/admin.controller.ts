@@ -55,6 +55,18 @@ export class AdminController {
     return this.desktopReleases.update(request.admin.sub, releaseId, this.desktopReleaseInput(asRecord(input)));
   }
 
+  @Patch("desktop-releases/:releaseId/artifact")
+  @RequirePermissions("releases.manage")
+  replaceDesktopReleaseArtifact(@Req() request: AdminRequest, @Param("releaseId") releaseId: string, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.desktopReleases.replacePublishedArtifact(request.admin.sub, releaseId, {
+      target: requiredString(body, "target", 16),
+      arch: requiredString(body, "arch", 16),
+      url: requiredString(body, "url", 1000),
+      signature: requiredString(body, "signature", 2000),
+    });
+  }
+
   @Post("desktop-releases/:releaseId/publish")
   @RequirePermissions("releases.manage")
   publishDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {

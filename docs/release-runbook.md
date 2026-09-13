@@ -114,7 +114,7 @@ https://ai-studio.yuntianxing.net/client/0.1.0/yingjiang-0.1.0-x64-setup.exe
 https://ai-studio.yuntianxing.net/client/0.1.0/yingjiang-0.1.0-x64-setup.exe.sig
 ```
 
-Nginx 直接提供 `/client/` 下的静态文件，现有 `/download` 仍作为公开下载页面使用。发布后禁止覆盖同一 URL 下的文件；修复问题时必须提升版本号并使用新路径。
+Nginx 直接提供 `/client/` 下的静态文件，现有 `/download` 仍作为公开下载页面使用。发布后不得覆盖同一 URL 下的文件。一键客户端发布脚本在同版本重新构建时使用新的内容哈希路径，并更新公开下载地址和签名更新包；已安装相同版本号的客户端不会收到更新通知，若需要在线推送修复，仍须提升版本号。
 
 首次使用时，在服务器以 `root` 创建目录：
 

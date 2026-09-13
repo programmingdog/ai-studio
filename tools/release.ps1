@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-  [ValidateSet("Initialize", "Check", "Prepare", "DeployPlatform", "BuildClient", "UploadClient", "PublishClient", "Verify", "Promote", "All")]
+  [ValidateSet("Initialize", "SaveAdminCredential", "ClientOnly", "Check", "Prepare", "DeployPlatform", "BuildClient", "UploadClient", "PublishClient", "Verify", "Promote", "All")]
   [string]$Stage = "All",
   [string]$Version,
   [string]$ReleaseNotes,
@@ -24,6 +24,7 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 $script:ToolsRoot = Split-Path -Parent $PSCommandPath
 $script:RepositoryRoot = Split-Path -Parent $script:ToolsRoot
 $script:ExampleConfigPath = Join-Path $script:ToolsRoot "release.config.example.json"
+$script:AdminCredentialPath = Join-Path $script:ToolsRoot "release.admin-credential"
 if (-not $ConfigPath) { $ConfigPath = Join-Path $script:ToolsRoot "release.config.json" }
 if (-not [IO.Path]::IsPathRooted($ConfigPath)) { $ConfigPath = Join-Path $script:RepositoryRoot $ConfigPath }
 $script:Config = $null
@@ -148,6 +149,29 @@ function Read-PlainSecret([string]$EnvironmentName, [string]$Prompt) {
   $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+}
+
+function Save-AdminCredential {
+  Write-Step "保存本机管理员登录凭据"
+  $secure = Read-Host "请输入生产管理后台密码（仅首次配置）" -AsSecureString
+  $encrypted = ConvertFrom-SecureString -SecureString $secure
+  [IO.File]::WriteAllText($script:AdminCredentialPath, $encrypted, [Text.UTF8Encoding]::new($false))
+  Write-Host "已使用当前 Windows 用户的 DPAPI 加密保存：$script:AdminCredentialPath"
+}
+
+function Get-AdminPassword {
+  $fromEnvironment = [Environment]::GetEnvironmentVariable("AIVS_ADMIN_PASSWORD", "Process")
+  if ($fromEnvironment) { return $fromEnvironment }
+  if (-not (Test-Path -LiteralPath $script:AdminCredentialPath -PathType Leaf)) {
+    if ($Stage -ne "ClientOnly") { return Read-PlainSecret "AIVS_ADMIN_PASSWORD" "请输入生产管理后台密码" }
+    Fail "缺少管理员凭据。先运行：powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/release.ps1 -Stage SaveAdminCredential"
+  }
+  try {
+    $secure = ConvertTo-SecureString (Read-Utf8Text $script:AdminCredentialPath)
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }
+  } catch { Fail "本机管理员凭据无法解密，请用当前 Windows 用户重新运行 SaveAdminCredential" }
 }
 
 function Confirm-Action([string]$Prompt, [switch]$DefaultNo) {
@@ -483,6 +507,7 @@ function Invoke-BuildClient {
   if ($versions.package -ne $Version -or $versions.tauri -ne $Version -or $versions.cargo -ne $Version) {
     Fail "客户端版本号不是目标版本 $Version"
   }
+  $buildStarted = [DateTime]::UtcNow.AddSeconds(-3)
   $privateKeyBefore = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
   $passwordBefore = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Process")
   try {
@@ -502,8 +527,8 @@ function Invoke-BuildClient {
   if ($DryRun) { return }
 
   $bundle = Join-Path $script:RepositoryRoot "apps/desktop/src-tauri/target/release/bundle/nsis"
-  $exe = Get-ChildItem -LiteralPath $bundle -File -Filter "*.exe" | Where-Object Name -Match ([regex]::Escape($Version)) | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-  if (-not $exe) { Fail "没有找到版本 $Version 的 EXE 安装包" }
+  $exe = Get-ChildItem -LiteralPath $bundle -File -Filter "*.exe" | Where-Object { $_.Name -match ([regex]::Escape($Version)) -and $_.LastWriteTimeUtc -ge $buildStarted } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  if (-not $exe) { Fail "本次构建没有生成版本 $Version 的 EXE 安装包" }
   $signaturePath = "$($exe.FullName).sig"
   if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf)) { Fail "没有找到在线升级签名：$signaturePath" }
 
@@ -544,11 +569,12 @@ function Get-RemoteSha256([string]$RemotePath) {
 }
 
 function Invoke-UploadClient {
-  Write-Step "上传客户端到 /client/$Version"
+  Write-Step "上传客户端版本 $Version"
   Assert-Config -RequireServer
   Assert-ArtifactState
   $remoteRoot = ([string](Get-PropertyValue $script:Config "remote_client_root")).TrimEnd('/')
-  $remoteDirectory = "$remoteRoot/$Version"
+  $buildId = "$(([string]$script:State.artifacts.exe_sha256).Substring(0, 16))-$(([string]$script:State.artifacts.signature_sha256).Substring(0, 8))"
+  $remoteDirectory = "$remoteRoot/$Version/$buildId"
   $baseName = "dreamotion-$Version-x64-setup"
   $files = @(
     @{ Local = [string]$script:State.artifacts.exe; Remote = "$baseName.exe"; Hash = [string]$script:State.artifacts.exe_sha256 },
@@ -556,14 +582,14 @@ function Invoke-UploadClient {
   )
   $exists = Invoke-Server "if [ -d $remoteDirectory ]; then printf exists; else printf missing; fi" -Capture
   if ($exists -eq "exists") {
-    Write-Host "服务器版本目录已经存在，将验证文件是否完全一致。"
+    Write-Host "服务器上已有相同构建，正在验证文件哈希。"
     foreach ($file in $files) {
       $remoteHash = Get-RemoteSha256 "$remoteDirectory/$($file.Remote)"
-      if ($remoteHash -ne $file.Hash) { Fail "服务器已有同版本但文件不同，禁止覆盖：$($file.Remote)" }
+      if ($remoteHash -ne $file.Hash) { Fail "服务器同名构建文件哈希不一致：$($file.Remote)" }
     }
   } else {
     $incoming = "$remoteRoot/.incoming-$Version-$PID"
-    Invoke-Server "set -eu; test ! -e $remoteDirectory; test ! -e $incoming; mkdir -m 755 $incoming" | Out-Null
+    Invoke-Server "set -eu; mkdir -p $remoteRoot/$Version; test ! -e $remoteDirectory; test ! -e $incoming; mkdir -m 755 $incoming" | Out-Null
     $keyPath = Resolve-RepositoryPath ([string](Get-PropertyValue $script:Config "ssh_key_path"))
     $port = [int](Get-PropertyValue $script:Config "server_port" 22)
     $target = "{0}@{1}:{2}/" -f (Get-PropertyValue $script:Config "server_user"), (Get-PropertyValue $script:Config "server_host"), $incoming
@@ -579,9 +605,9 @@ function Invoke-UploadClient {
 
   $site = ([string](Get-PropertyValue $script:Config "site_origin")).TrimEnd('/')
   $urls = [pscustomobject]@{
-    exe = "$site/client/$Version/$baseName.exe"
-    updater = "$site/client/$Version/$baseName.exe"
-    signature = "$site/client/$Version/$baseName.exe.sig"
+    exe = "$site/client/$Version/$buildId/$baseName.exe"
+    updater = "$site/client/$Version/$buildId/$baseName.exe"
+    signature = "$site/client/$Version/$buildId/$baseName.exe.sig"
   }
   Set-StateValue "urls" $urls
   if (-not $DryRun) {
@@ -640,7 +666,7 @@ function Invoke-AivsApi([string]$Path, [string]$Method = "GET", $Body = $null, [
 function Get-AdminToken {
   Assert-Config -RequireAdmin
   $email = [string](Get-PropertyValue $script:Config "admin_email")
-  $password = Read-PlainSecret "AIVS_ADMIN_PASSWORD" "请输入生产管理后台密码"
+  $password = Get-AdminPassword
   try {
     Write-Info "登录生产管理 API：$email"
     $login = Invoke-AivsApi "/admin/auth/login" "POST" @{ email = $email; password = $password }
@@ -664,18 +690,6 @@ function Invoke-PublishClient {
   if (-not $notes) { Fail "更新说明不能为空" }
   Set-StateValue "release_notes" $notes
   $token = Get-AdminToken
-  Write-Info "读取当前软件下载配置"
-  $downloads = Invoke-AivsApi "/admin/distribution/downloads" "GET" $null $token
-  $downloadBody = @{
-    windows_download_enabled = $true
-    windows_download_url = [string]$script:State.urls.exe
-    macos_download_enabled = [bool]$downloads.macos_download_enabled
-    macos_download_url = [string]$downloads.macos_download_url
-    revision = [int]$downloads.revision
-  }
-  Write-Info "启用 Windows 下载地址"
-  Invoke-AivsApi "/admin/distribution/downloads" "PATCH" $downloadBody $token | Out-Null
-
   $rollout = if ($RolloutPercent -gt 0) { $RolloutPercent } else { [int](Get-PropertyValue $script:Config "initial_rollout_percent" 10) }
   if ($rollout -lt 1 -or $rollout -gt 100) { Fail "灰度比例必须为 1 到 100" }
   $channel = [string](Get-PropertyValue $script:Config "release_channel" "stable")
@@ -704,10 +718,12 @@ function Invoke-PublishClient {
     $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)" "PATCH" $releaseBody $token) "更新客户端版本接口").item
   } elseif ($release.status -eq "PUBLISHED") {
     $artifact = @($release.artifacts) | Where-Object { $_.target -eq "windows" -and $_.arch -eq "x86_64" } | Select-Object -First 1
-    if (-not $artifact -or $artifact.url -ne $script:State.urls.updater -or $artifact.signature -ne $signature) {
-      Fail "线上已发布同版本，但更新包地址或签名不同"
+    if (-not $artifact) { Fail "线上已发布同版本，但缺少 Windows x86_64 更新包" }
+    if ($artifact.url -ne $script:State.urls.updater -or $artifact.signature -ne $signature) {
+      Write-Info "替换 v$Version 已发布的客户端更新包"
+      $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)/artifact" "PATCH" $releaseBody.artifacts[0] $token) "替换已发布更新包接口").item
     }
-    Write-Host "v$Version 已发布，保留现有发布记录。"
+    Write-Host "v$Version 已发布，当前下载地址和更新包已指向本次构建。"
   } else {
     Fail "v$Version 已归档，必须提升版本号后重新发布"
   }
@@ -717,6 +733,17 @@ function Invoke-PublishClient {
     Write-Info "发布 v$Version 客户端版本"
     $release = (Get-ApiObject (Invoke-AivsApi "/admin/desktop-releases/$($release.id)/publish" "POST" @{} $token) "发布客户端版本接口").item
   }
+  Write-Info "读取当前软件下载配置"
+  $downloads = Invoke-AivsApi "/admin/distribution/downloads" "GET" $null $token
+  $downloadBody = @{
+    windows_download_enabled = $true
+    windows_download_url = [string]$script:State.urls.exe
+    macos_download_enabled = [bool]$downloads.macos_download_enabled
+    macos_download_url = [string]$downloads.macos_download_url
+    revision = [int]$downloads.revision
+  }
+  Write-Info "启用 Windows 下载地址"
+  Invoke-AivsApi "/admin/distribution/downloads" "PATCH" $downloadBody $token | Out-Null
   Set-StateValue "desktop_release_id" ([string]$release.id)
   Set-StateValue "desktop_release_status" ([string]$release.status)
   Set-StateValue "rollout_percent" ([int]$release.rollout_percent)
@@ -771,6 +798,42 @@ function Invoke-Promote {
   Write-Host "v$Version 灰度已调整为 $($updated.rollout_percent)%"
 }
 
+function Invoke-ClientOnly {
+  Write-Step "准备仅发布 Windows 客户端 v$Version"
+  Assert-Config -RequireServer -RequireAdmin -RequireSigning
+  Assert-Command npm.cmd
+  Assert-Command ssh
+  Assert-Command scp
+  $versions = Get-DesktopVersions
+  if ($versions.package -ne $versions.tauri -or $versions.package -ne $versions.cargo) { Fail "三个客户端版本号不一致" }
+  $token = Get-AdminToken
+  $channel = [string](Get-PropertyValue $script:Config "release_channel" "stable")
+  $response = Invoke-AivsApi "/admin/desktop-releases" "GET" $null $token
+  $releases = @((Get-ApiCollection $response "客户端版本列表接口" "version").items) | Where-Object { $_.channel -eq $channel }
+  $existing = $releases | Where-Object { $_.version -eq $Version } | Select-Object -First 1
+  $highest = $null
+  foreach ($item in $releases) {
+    if ($item.status -in @("PUBLISHED", "ARCHIVED") -and (-not $highest -or (Compare-SemVer $item.version $highest.version) -gt 0)) { $highest = $item }
+  }
+  if ($highest -and (Compare-SemVer $Version $highest.version) -lt 0) { Fail "v$Version 低于已发布的 v$($highest.version)，不能作为最新版本发布" }
+  if ($existing -and $existing.status -eq "ARCHIVED") { Fail "v$Version 已归档，请输入更高的版本号" }
+  if (-not $existing -and $highest -and (Compare-SemVer $Version $highest.version) -eq 0) { Fail "v$Version 已被发布过，不能再次创建" }
+  $notes = if ($existing -and $existing.notes) { [string]$existing.notes } else { "客户端 v$Version 更新" }
+  Set-StateValue "release_notes" $notes
+  if ($versions.package -ne $Version) {
+    Write-Host "客户端版本：$($versions.package) → $Version"
+    Set-DesktopVersion $Version
+  }
+  $RolloutPercent = 100
+  $PublishUpdate = $true
+  Invoke-BuildClient
+  Invoke-UploadClient
+  Invoke-PublishClient
+  if ([int]$script:State.rollout_percent -lt 100) { Invoke-Promote }
+  Invoke-Verify
+  Write-Host "客户端 v$Version 已发布。" -ForegroundColor Green
+}
+
 function Show-DryRunPlan {
   Write-Step "DryRun 发布计划"
   Invoke-Check
@@ -791,12 +854,15 @@ Push-Location $script:RepositoryRoot
 try {
   if ($Stage -eq "Initialize") { Initialize-Config; return }
   Load-Config
+  if ($Stage -eq "SaveAdminCredential") { Save-AdminCredential; return }
+  if (-not $Version -and $Stage -eq "ClientOnly") { $Version = Read-Host "请输入要发布的客户端版本号（如 0.1.0）" }
   if (-not $Version -and $Stage -notin @("Check")) { Fail "阶段 $Stage 需要 -Version，例如 -Version 0.2.1" }
   if ($Version) { Initialize-State }
   if ($DryRun -and $Stage -eq "All") { Show-DryRunPlan; return }
 
   switch ($Stage) {
     "Check" { Invoke-Check }
+    "ClientOnly" { Invoke-ClientOnly }
     "Prepare" { Invoke-Prepare }
     "DeployPlatform" { Invoke-DeployPlatform; Test-PlatformHealth }
     "BuildClient" { Invoke-BuildClient }
