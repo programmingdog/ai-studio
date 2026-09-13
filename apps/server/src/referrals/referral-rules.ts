@@ -20,9 +20,31 @@ export function integer(value: unknown, name: string, min = 0, max = 1_000_000_0
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) throw new BadRequestException(`${name}必须是 ${min}～${max} 的整数`);
   return value;
 }
-export function commissionFen(amount: number, bps: number): number {
-  integer(amount, "实付金额", 0, Number.MAX_SAFE_INTEGER); integer(bps, "分润比例", 0, 10000);
-  return Number(BigInt(amount) * BigInt(bps) / 10000n);
+const creditPrecision = 1_000_000n;
+
+function fixedSix(value: number, name: string): bigint {
+  if (!Number.isFinite(value) || value < 0) throw new BadRequestException(`${name}无效`);
+  const [mantissa = "0", exponentText = "0"] = String(value).toLowerCase().split("e");
+  const digits = mantissa.replace(".", "");
+  const exponent = Number(exponentText) + 6 - (mantissa.split(".")[1]?.length || 0);
+  const units = BigInt(digits) * 10n ** BigInt(Math.max(exponent, 0));
+  if (exponent >= 0) return units;
+  const divisor = 10n ** BigInt(-exponent);
+  if (units % divisor !== 0n) throw new BadRequestException(`${name}最多支持 6 位小数`);
+  return units / divisor;
+}
+
+/** Apply the rate before flooring to fen, so fractional profit is not discarded early. */
+export function profitCommission(creditsConsumed: number, costCredits: number, cnyPerCredit: number, bps: number) {
+  integer(bps, "分润比例", 0, 10000);
+  if (cnyPerCredit <= 0) throw new BadRequestException("积分人民币比例无效");
+  const profit = fixedSix(creditsConsumed, "消耗积分") - fixedSix(costCredits, "模型成本积分");
+  const profitCredits = profit > 0n ? profit : 0n;
+  const ratio = fixedSix(cnyPerCredit, "积分人民币比例");
+  const baseFen = profitCredits * ratio * 100n / (creditPrecision * creditPrecision);
+  const amountFen = profitCredits * ratio * 100n * BigInt(bps) / (creditPrecision * creditPrecision * 10000n);
+  if (baseFen > BigInt(Number.MAX_SAFE_INTEGER) || amountFen > BigInt(Number.MAX_SAFE_INTEGER)) throw new BadRequestException("分润金额超过上限");
+  return { profitCredits: Number(profitCredits) / Number(creditPrecision), baseFen: Number(baseFen), amountFen: Number(amountFen) };
 }
 export function withdrawalWindow(now = new Date()) {
   const shifted = new Date(now.getTime() + 8 * 3600_000);

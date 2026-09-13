@@ -5,7 +5,7 @@ import { DatabaseService } from "../database/database.service";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { EnvironmentService } from "../config/environment.service";
 import { optionalString, requiredString } from "../common/input";
-import { commissionFen, generateInviteCode, integer, inviteCode, publicUrl, receiptImage, withdrawalWindow } from "./referral-rules";
+import { generateInviteCode, integer, inviteCode, profitCommission, publicUrl, receiptImage, withdrawalWindow } from "./referral-rules";
 
 const withdrawalColumns = "id, user_id, amount_fen, status, review_note, reviewed_at, processing_by, processing_at, paid_at, created_at";
 type Config = { enabled: boolean; direct_rate_bps: number; indirect_rate_bps: number; commission_notice: string; minimum_withdrawal_fen: number; invitation_reward_credits: number; invitation_anti_abuse_enabled: boolean; invitation_daily_reward_limit: number; invitation_monthly_reward_limit: number; invite_page_base_url: string; windows_download_enabled: boolean; windows_download_url: string; macos_download_enabled: boolean; macos_download_url: string; revision: number; updated_at?: unknown };
@@ -300,18 +300,20 @@ export class ReferralsService {
   }
 
   /** The consumption row and commission must commit atomically with a successful image/video task. */
-  async settleGenerationConsumption(c: PoolConnection, consumptionRecordId: string, taskId: string, consumerId: string, capability: string, creditsConsumed: number) {
+  async settleGenerationConsumption(c: PoolConnection, consumptionRecordId: string, taskId: string, consumerId: string, capability: string, creditsConsumed: number, costCredits: number | null, cnyPerCredit: number | null) {
     if (!COMMISSIONABLE_CAPABILITIES.has(capability)) return;
     if (!Number.isFinite(creditsConsumed) || creditsConsumed < 0 || creditsConsumed > Number.MAX_SAFE_INTEGER) throw new BadRequestException("生成任务消耗积分无效");
-    const baseAmountFen = Math.floor(creditsConsumed); // 1 credit = ¥0.01 = 1 fen.
+    // Tasks predating the cost/rate snapshot cannot be priced reliably and receive no new commission.
+    const priced = costCredits === null || cnyPerCredit === null ? null : profitCommission(creditsConsumed, costCredits, cnyPerCredit, 0);
+    const baseAmountFen = priced?.baseFen ?? 0;
     const [existing] = await c.query<RowDataPacket[]>("SELECT consumption_record_id FROM distribution_consumption_settlements WHERE consumption_record_id = ?", [consumptionRecordId]);
     if (existing.length) return;
     const config = await this.config(c);
     await c.execute(
-      "INSERT INTO distribution_consumption_settlements (consumption_record_id, task_id, consumer_id, capability, credits_consumed, base_amount_fen, enabled, direct_rate_bps, indirect_rate_bps, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [consumptionRecordId, taskId, consumerId, capability, creditsConsumed, baseAmountFen, config.enabled, config.direct_rate_bps, config.indirect_rate_bps, config.revision],
+      "INSERT INTO distribution_consumption_settlements (consumption_record_id, task_id, consumer_id, capability, credits_consumed, cost_credits, profit_credits, cny_per_credit, base_amount_fen, enabled, direct_rate_bps, indirect_rate_bps, config_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [consumptionRecordId, taskId, consumerId, capability, creditsConsumed, costCredits, priced?.profitCredits ?? null, cnyPerCredit, baseAmountFen, config.enabled, config.direct_rate_bps, config.indirect_rate_bps, config.revision],
     );
-    if (!config.enabled || baseAmountFen === 0) return;
+    if (!config.enabled || !priced || priced.profitCredits === 0) return;
     const [rows] = await c.query<RowDataPacket[]>("SELECT p.id AS direct_id, p.status AS direct_status, gp.id AS indirect_id, gp.status AS indirect_status FROM users u LEFT JOIN users p ON p.id = u.pid LEFT JOIN users gp ON gp.id = p.pid WHERE u.id = ?", [consumerId]);
     const chain = rows[0];
     if (!chain) return;
@@ -320,7 +322,7 @@ export class ReferralsService {
     const recipients = [{ id: chain.direct_id, status: chain.direct_status, level: 1, rate: config.direct_rate_bps }, { id: chain.indirect_id, status: chain.indirect_status, level: 2, rate: config.indirect_rate_bps }]
       .filter(item => { if (!item.id || seen.has(String(item.id))) return false; seen.add(String(item.id)); return item.status === "ACTIVE"; }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
     for (const item of recipients) {
-      const amount = commissionFen(baseAmountFen, item.rate);
+      const amount = profitCommission(creditsConsumed, costCredits!, cnyPerCredit!, item.rate).amountFen;
       if (!amount) continue;
       await this.wallet(c, String(item.id));
       const id = randomUUID();
@@ -441,9 +443,8 @@ export class ReferralsService {
     const offset = (page - 1) * pageSize;
     const table = kind === "commissions" ? "commission_records" : kind === "withdrawals" ? "withdrawal_applications" : kind === "payouts" ? "manual_payout_records" : kind === "rewards" ? "referral_rewards" : "";
     if (!table) throw new BadRequestException("记录类型无效");
-    const tableAlias = includeLoginNames
-      ? kind === "commissions" ? "cr" : kind === "withdrawals" ? "wa" : kind === "payouts" ? "mpr" : "rr"
-      : "";
+    const tableAlias = kind === "commissions" ? "cr"
+      : includeLoginNames ? kind === "withdrawals" ? "wa" : kind === "payouts" ? "mpr" : "rr" : "";
     const columnPrefix = tableAlias ? `${tableAlias}.` : "";
     const ownerColumn = kind === "commissions" ? "beneficiary_id" : kind === "rewards" ? "inviter_id" : "user_id";
     const owner = `${columnPrefix}${ownerColumn}`;
@@ -457,7 +458,7 @@ export class ReferralsService {
     const where = conditions.length ? ` WHERE ${conditions.join(" AND ")}` : "";
     const recordColumns = kind === "withdrawals"
       ? withdrawalColumns.split(", ").map(column => `${columnPrefix}${column}`).join(", ")
-      : `${columnPrefix}*`;
+      : kind === "commissions" ? "cr.*, dcs.cost_credits, dcs.profit_credits, dcs.cny_per_credit" : `${columnPrefix}*`;
     const columns = includeLoginNames && kind === "rewards"
       ? `rr.*,
          COALESCE(NULLIF(inviter.email, ''), NULLIF(inviter.phone, ''), NULLIF(inviter.display_name, ''), rr.inviter_id) AS inviter_login_name,
@@ -466,7 +467,9 @@ export class ReferralsService {
         ? `${recordColumns},
            COALESCE(NULLIF(record_user.email, ''), NULLIF(record_user.phone, ''), NULLIF(record_user.display_name, ''), ${owner}) AS user_login_name`
         : recordColumns;
-    const source = includeLoginNames && kind === "rewards"
+    const source = kind === "commissions"
+      ? `commission_records cr LEFT JOIN distribution_consumption_settlements dcs ON dcs.consumption_record_id = cr.consumption_record_id${includeLoginNames ? ` LEFT JOIN users record_user ON record_user.id = ${owner}` : ""}`
+      : includeLoginNames && kind === "rewards"
       ? "referral_rewards rr LEFT JOIN users inviter ON inviter.id = rr.inviter_id LEFT JOIN users invited ON invited.id = rr.invited_user_id"
       : includeLoginNames
         ? `${table} ${tableAlias} LEFT JOIN users record_user ON record_user.id = ${owner}`

@@ -801,7 +801,7 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/admin/distribution/config": {
       get: operation({ id: "distributionConfig", tag: "管理分销", summary: "读取分销与邀请配置（configs.manage）", security: true, success: ref("DistributionConfig") }),
-      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。仅按图片/视频生成成功后的积分消耗计提，1积分按人民币1分计算；充值、文本和视频理解等消耗不参与。不重算历史分润。邀请积分奖励与分销开关独立；防刷开启后新奖励待首笔真实支付确认并受北京时间日/月人数上限约束。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
+      patch: operation({ id: "saveDistributionConfig", tag: "管理分销", summary: "保存配置（configs.manage和distribution.manage）", description: "默认关闭分销；开启时比例合计必须大于0且不超过100%。仅按成功图片/视频生成的利润积分计提：实际扣费减去任务创建时的模型成本，最低为0，乘以创建时保存的积分人民币比例及各级分润比例后向下取整到分；不足1分不入账。充值、文本和视频理解等消耗不参与。不重算历史分润。邀请积分奖励与分销开关独立；防刷开启后新奖励待首笔真实支付确认并受北京时间日/月人数上限约束。", security: true, body: ref("DistributionConfig"), success: ref("DistributionConfig") }),
     },
     "/admin/distribution/downloads": {
       get: operation({ id: "softwareDownloadConfig", tag: "管理配置", summary: "读取注册成功页的软件下载安装地址（configs.manage）", security: true, success: ref("SoftwareDownloadConfig") }),

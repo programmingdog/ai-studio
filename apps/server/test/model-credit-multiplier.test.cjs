@@ -52,6 +52,38 @@ test("gateway charges each model's own factor; media uses resolution prices and 
   assert.equal(await service.estimatedCredits(model("VIDEO_GENERATION"), { resolution: "1080p", duration: 10 }), 40);
 });
 
+test("gateway snapshots the unmultiplied resolution cost for profit sharing", async () => {
+  const service = new ModelGatewayService({ query: async () => [{ credit_cost: 3 }] }, {});
+  assert.deepEqual(await service.estimatedPricing(model("IMAGE_GENERATION", 1.2), { resolution: "2K" }), { credits: 4, costCredits: 3 });
+  assert.deepEqual(await service.estimatedPricing(model("VIDEO_GENERATION", 1.2), { resolution: "1080p", duration: 2 }), { credits: 8, costCredits: 6 });
+});
+
+test("new image task stores its cost and exchange rate with the charged credits", async () => {
+  let saved;
+  const connection = {
+    async query(sql) {
+      if (sql.includes("FROM ledger_accounts")) return [[{ id: "account" }]];
+      if (sql.includes("FROM ai_tasks")) return [[]];
+      if (sql.includes("FROM ledger_entries")) return [[{ balance: 100 }]];
+      if (sql.includes("FROM credit_holds")) return [[{ held: 0 }]];
+      if (sql.includes("FROM model_credit_pricing_config")) return [[{ cny_per_credit: "0.100000" }]];
+      throw Error(sql);
+    },
+    async execute(sql, args) { if (sql.includes("INSERT INTO ai_tasks")) saved = { sql, args }; },
+  };
+  const db = { query: async () => [{ credit_cost: 3 }], transaction: async operation => operation(connection) };
+  const gateway = new ModelGatewayService(db, { decrypt: () => "test-key" });
+  gateway.existing = async () => null;
+  gateway.target = async () => ({ ...model("IMAGE_GENERATION", 1.2), provider_id: "provider", provider_code: "demo", supports_async_tasks: 0 });
+  gateway.selectProviderCredential = async () => ({ id: "credential", api_key_ciphertext: "ciphertext" });
+  gateway.request = () => ({ url: "https://example.invalid", method: "POST", headers: {}, body: {} });
+  gateway.call = async () => { throw Error("stop after reservation"); };
+  gateway.release = async () => {};
+  await assert.rejects(gateway.create("user", { idempotencyKey: "profit-snapshot", providerModelId: "m1", payload: { resolution: "2K" }, expectedCredits: 4 }), /stop after reservation/);
+  assert.match(saved.sql, /commission_cost_credits, commission_cny_per_credit/);
+  assert.deepEqual(saved.args.slice(-3), [4, 3, 0.1]);
+});
+
 test("client prices and gateway charges agree for every independently configured model", async () => {
   const rows = [model("TEXT_GENERATION", 2), model("VIDEO_UNDERSTANDING", 0.5), model("IMAGE_GENERATION", 1.5), model("VIDEO_GENERATION", 3)]
     .map((row, index) => ({ ...row, id: `m${index}` }));
@@ -96,7 +128,7 @@ test("admin display, client catalog and gateway agree on a fractional resolution
 test("settlement uses the locked final estimate even if the model factor later changes", async () => {
   const writes = [], commissions = [];
   const connection = { query: async (sql) => {
-    if (sql.includes("FROM ai_tasks")) return [[{ id: "task", user_id: "user", estimated_credits: "12.500000", provider_model_id: "m1", logical_model_code: "demo", capability: "IMAGE_GENERATION" }]];
+    if (sql.includes("FROM ai_tasks")) return [[{ id: "task", user_id: "user", estimated_credits: "12.500000", commission_cost_credits: "10.000000", commission_cny_per_credit: "0.100000", provider_model_id: "m1", logical_model_code: "demo", capability: "IMAGE_GENERATION" }]];
     if (sql.includes("FROM credit_holds")) return [[{ status: "ACTIVE" }]];
     if (sql.includes("FROM ledger_accounts")) return [[{ id: "account" }]];
     throw new Error("Unexpected query");
@@ -109,7 +141,7 @@ test("settlement uses the locked final estimate even if the model factor later c
   const consumption = writes.find(({ sql }) => sql.includes("INSERT INTO credit_consumption_records"));
   assert.match(consumption.sql, /UTC_TIMESTAMP\(3\)/);
   assert.equal(commissions.length, 1);
-  assert.deepEqual(commissions[0].slice(1), [consumption.args[0], "task", "user", "IMAGE_GENERATION", 12.5]);
+  assert.deepEqual(commissions[0].slice(1), [consumption.args[0], "task", "user", "IMAGE_GENERATION", 12.5, 10, 0.1]);
   assert.equal(commissions[0][0], connection);
 });
 

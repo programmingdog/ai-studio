@@ -35,7 +35,7 @@ test('commission notice is editable and generation-only commission rules are exp
   h.edit(notice, '自定义分润说明');
   await h.nodes().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   assert.equal(JSON.parse(calls[1][1].body).commission_notice, '自定义分润说明');
-  assert.ok(h.nodes().some(node => h.text(node).includes('只计算图片生成和视频生成')));
+  assert.ok(h.nodes().some(node => h.text(node).includes('利润积分 = 本次实际扣费积分')));
 });
 test('reward records show inviter and invited user login names', async () => {
   const row = {

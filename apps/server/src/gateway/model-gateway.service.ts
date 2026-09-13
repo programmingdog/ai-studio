@@ -24,6 +24,7 @@ interface TaskRow extends RowDataPacket {
   task_type: string; logical_model_code: string; provider_id: string; provider_model_id: string; provider_credential_id: string | null;
   remote_task_id: string | null; status: string; progress: number | string; revision: number;
   estimated_credits: number | string; settled_credits: number | string; error_code: string | null;
+  commission_cost_credits: number | string | null; commission_cny_per_credit: number | string | null;
   capability: string;
   created_at: Date; updated_at: Date; finished_at: Date | null;
 }
@@ -684,6 +685,10 @@ export class ModelGatewayService {
   }
 
   private async estimatedCredits(target: TargetRow, payload: Record<string, unknown>): Promise<number> {
+    return (await this.estimatedPricing(target, payload)).credits;
+  }
+
+  private async estimatedPricing(target: TargetRow, payload: Record<string, unknown>): Promise<{ credits: number; costCredits: number }> {
     if (wagaProfiles[target.model_code] && target.api_protocol?.toLowerCase() === "lingkeai_media") {
       wagaMediaParams(target.model_code, parseStoredJson(target.parameter_schema_json), parseStoredJson(target.model_config_json), payload);
     }
@@ -705,13 +710,14 @@ export class ModelGatewayService {
       base = Number(prices[0]!.credit_cost);
     }
     if (!Number.isFinite(base) || base < 0) throw new ServiceUnavailableException("模型积分价格配置无效");
-    // Persist only the final estimate on task creation. Settlement never reapplies a later model multiplier.
+    // Keep the unmultiplied cost beside the final charge; settlement must use their creation-time snapshots.
+    const unitCost = base;
     base = roundedModelCredits(base, storedModelCreditMultiplier(target.credit_multiplier));
-    if (target.capability !== "VIDEO_GENERATION") return base;
+    if (target.capability !== "VIDEO_GENERATION") return { credits: base, costCredits: target.capability === "IMAGE_GENERATION" ? unitCost : 0 };
     const params = asObject(payload.params);
     const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration");
-    return Math.ceil(multiplyCredits(base, seconds));
+    return { credits: Math.ceil(multiplyCredits(base, seconds)), costCredits: multiplyCredits(unitCost, seconds) };
   }
 
   private request(target: TargetRow, payload: Record<string, unknown>, apiKey: string): { url: string; method: string; headers: Record<string, string>; body: Record<string, unknown> | FormData } {
@@ -935,7 +941,9 @@ export class ModelGatewayService {
          VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, 'CONFIRMED', ?, UTC_TIMESTAMP(3))`,
         [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount, `${task.logical_model_code} 模型任务`],
       );
-      await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, amount);
+      await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, amount,
+        task.commission_cost_credits == null ? null : Number(task.commission_cost_credits),
+        task.commission_cny_per_credit == null ? null : Number(task.commission_cny_per_credit));
     });
   }
 
@@ -975,9 +983,12 @@ export class ModelGatewayService {
     const replay = await this.existing(userId, input.idempotencyKey, requestHash); if (replay) return replay;
     let target: TargetRow;
     let currentCredits: number;
+    let commissionCostCredits: number | null = null;
     try {
       target = await this.target(input.providerModelId);
-      currentCredits = input.creditOverride === undefined ? await this.estimatedCredits(target, payload) : Number(input.creditOverride);
+      const pricing = input.creditOverride === undefined ? await this.estimatedPricing(target, payload) : null;
+      currentCredits = pricing?.credits ?? Number(input.creditOverride);
+      if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(target.capability)) commissionCostCredits = pricing?.costCredits ?? (await this.estimatedPricing(target, payload)).costCredits;
       if (!Number.isFinite(currentCredits) || currentCredits < 0) throw new ServiceUnavailableException("任务积分价格配置无效");
       const hasWorkflowQuote = Boolean(input.workflowQuoteApprovalId || input.workflowQuoteItemKey);
       if (hasWorkflowQuote && (!input.workflowQuoteApprovalId || !input.workflowQuoteItemKey)) throw new BadRequestException("自动制作锁定报价参数不完整");
@@ -1029,15 +1040,21 @@ export class ModelGatewayService {
         }
         if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) < credits) throw new ConflictException("可用积分不足");
         selectedCredential = await this.selectProviderCredential(connection, target.provider_id);
+        let cnyPerCredit: number | null = null;
+        if (commissionCostCredits !== null) {
+          const [creditRates] = await connection.query<RowDataPacket[]>("SELECT cny_per_credit FROM model_credit_pricing_config WHERE id = 1");
+          cnyPerCredit = Number(creditRates[0]?.cny_per_credit);
+          if (!Number.isFinite(cnyPerCredit) || cnyPerCredit <= 0) throw new ServiceUnavailableException("积分人民币比例配置无效");
+        }
         await connection.execute(
           `INSERT INTO ai_tasks
             (id, user_id, local_task_id, idempotency_key, request_hash, task_type, logical_model_code,
              provider_id, provider_model_id, provider_credential_id, workflow_quote_approval_id, workflow_quote_item_key,
-             status, estimated_credits)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?)`,
+             status, estimated_credits, commission_cost_credits, commission_cny_per_credit)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?, ?, ?)`,
           [taskId, userId, localTaskId, input.idempotencyKey, requestHash, input.taskType || target.capability,
             target.model_code, target.provider_id, target.model_id, selectedCredential.id,
-            input.workflowQuoteApprovalId || null, input.workflowQuoteItemKey || null, credits],
+            input.workflowQuoteApprovalId || null, input.workflowQuoteItemKey || null, credits, commissionCostCredits, cnyPerCredit],
         );
         await connection.execute("INSERT INTO credit_holds (id, user_id, task_id, amount, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 MINUTE))", [randomUUID(), userId, taskId, credits]);
         await connection.execute(

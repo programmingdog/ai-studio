@@ -20,14 +20,13 @@ test('invitation generator produces eight mixed characters; normalizer rejects m
   assert.equal(rules.inviteCode(' abcd2345 '), 'ABCD2345');
   for (const value of ['ABC', 'ABCDEFGH1', 'ABCD/123', '<script>']) assert.throws(() => rules.inviteCode(value));
 });
-test('commission uses integer fen, floors sub-fen, and never rounds via floating point', () => {
-  assert.equal(rules.commissionFen(1000, 1000), 100);
-  assert.equal(rules.commissionFen(1000, 500), 50);
-  assert.equal(rules.commissionFen(799, 3333), 266);
-  assert.equal(rules.commissionFen(1, 9999), 0);
-  assert.equal(rules.commissionFen(Number.MAX_SAFE_INTEGER, 10000), Number.MAX_SAFE_INTEGER);
-  for (const amount of [-1, 1.1, Infinity, NaN, '100', Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => rules.commissionFen(amount, 1000));
-  assert.throws(() => rules.commissionFen(100, 10001));
+test('profit commission converts with the configured credit ratio and floors only the final amount', () => {
+  assert.deepEqual(rules.profitCommission(4, 3, 0.1, 4000), { profitCredits: 1, baseFen: 10, amountFen: 4 });
+  assert.deepEqual(rules.profitCommission(4, 3, 0.1, 1000), { profitCredits: 1, baseFen: 10, amountFen: 1 });
+  assert.deepEqual(rules.profitCommission(4, 3, 0.01, 4000), { profitCredits: 1, baseFen: 1, amountFen: 0 });
+  assert.deepEqual(rules.profitCommission(4, 4.5, 0.1, 4000), { profitCredits: 0, baseFen: 0, amountFen: 0 });
+  assert.equal(rules.profitCommission(1, 0.25, 0.1, 4000).amountFen, 3);
+  assert.throws(() => rules.profitCommission(4, 3, 0, 4000));
 });
 test('recharge only qualifies invitation rewards and never creates commission', async () => {
   const qualified = [], writes = [];
@@ -37,7 +36,7 @@ test('recharge only qualifies invitation rewards and never creates commission', 
   assert.equal(qualified.length, 1);
   assert.equal(writes.some(([sql]) => /commission_records|commission_wallets|distribution_settlements/.test(sql)), false);
 });
-test('only image and video credit consumption creates two-level commission at one fen per credit', async () => {
+test('only profitable image and video credit consumption creates two-level commission', async () => {
   const writes = [];
   const connection = {
     async query(sql) {
@@ -50,14 +49,17 @@ test('only image and video credit consumption creates two-level commission at on
   };
   const service = new ReferralsService({}, {}, {});
   service.config = async () => ({ enabled: true, direct_rate_bps: 1000, indirect_rate_bps: 500, revision: 7 });
-  await service.settleGenerationConsumption(connection, 'consumption-image', 'task-image', 'child', 'IMAGE_GENERATION', 10);
+  await service.settleGenerationConsumption(connection, 'consumption-image', 'task-image', 'child', 'IMAGE_GENERATION', 10, 9, 0.1);
   const commissions = writes.filter(([sql]) => sql.startsWith('INSERT INTO commission_records'));
   assert.equal(commissions.length, 1);
   assert.deepEqual(commissions[0][1].slice(1), ['consumption-image', 'direct', 'child', 'IMAGE_GENERATION', 10, 1, 10, 1000, 1, 7]);
   const beforeText = writes.length;
-  await service.settleGenerationConsumption(connection, 'consumption-text', 'task-text', 'child', 'TEXT_GENERATION', 1000);
+  await service.settleGenerationConsumption(connection, 'consumption-text', 'task-text', 'child', 'TEXT_GENERATION', 1000, 0, 0.1);
   assert.equal(writes.length, beforeText);
-  await service.settleGenerationConsumption(connection, 'consumption-video', 'task-video', 'child', 'VIDEO_GENERATION', 100);
+  await service.settleGenerationConsumption(connection, 'consumption-video', 'task-video', 'child', 'VIDEO_GENERATION', 100, 20, 0.1);
+  assert.equal(writes.filter(([sql]) => sql.startsWith('INSERT INTO commission_records')).length, 3);
+  await service.settleGenerationConsumption(connection, 'consumption-no-profit', 'task-no-profit', 'child', 'IMAGE_GENERATION', 4, 4, 0.1);
+  await service.settleGenerationConsumption(connection, 'consumption-old-task', 'task-old-task', 'child', 'IMAGE_GENERATION', 4, null, null);
   assert.equal(writes.filter(([sql]) => sql.startsWith('INSERT INTO commission_records')).length, 3);
 });
 test('withdrawal opens exactly Friday 00:00 through 23:59:59 China time', () => {
@@ -145,6 +147,7 @@ test('admin commission, withdrawal and payout records include the corresponding 
     assert.match(calls[0][0], new RegExp(`LEFT JOIN users record_user ON record_user\\.id = ${alias}\\.${ownerColumn}`));
     assert.match(calls[0][0], /AS user_login_name/);
     assert.match(calls[0][0], new RegExp(`${alias}\\.${ownerColumn} = \\?`));
+    if (kind === 'commissions') assert.match(calls[0][0], /dcs\.cost_credits, dcs\.profit_credits, dcs\.cny_per_credit/);
     if (kind === 'withdrawals') assert.doesNotMatch(calls[0][0], /payee_ciphertext|request_hash|SELECT \*/);
 
     calls.length = 0;
