@@ -8,9 +8,10 @@ import { workflowTotal } from "../services/workflowBudget";
 import { workflowErrorMessage } from "../services/workflowState";
 import { singleOptionValue } from "../services/singleOption";
 import { ImmediateCreditPurchaseButton, isInsufficientCreditError } from "./CreditPurchaseHost";
+import { resolveVideoDuration } from "../services/videoDuration";
 export { workflowTotal } from "../services/workflowBudget";
 
-export type WorkflowSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string };
+export type WorkflowSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string; durationByKey?: Record<string, number> };
 export type PlannedMedia = { key: string; group: "场景图" | "角色图" | "分镜图" | "分镜视频"; seconds?: number };
 export type WorkflowBudgetItem = PlannedMedia & { provider_model_id: string; resolution: string; credits: number; capability: string };
 export type WorkflowStartChoice = { image: WorkflowSelection; video: WorkflowSelection; items: WorkflowBudgetItem[] };
@@ -32,17 +33,15 @@ export function WorkflowStartModal({ mode, onModeChange, planned, onCancel, onSt
   const imageRes=singleOptionValue(image?.resolution_prices.map(price=>price.resolution)??[],selectedImageRes);
   const videoRes=singleOptionValue(video?.resolution_prices.map(price=>price.resolution)??[],selectedVideoRes);
   const quotes=useQuery({queryKey:["workflow-start-quote",planned,imageId,imageRes,videoId,videoRes],enabled:Boolean(image&&video&&imageRes&&videoRes),retry:false,queryFn:async()=>{
-    const options=video?.video_duration_options??[];
-    const unsupported=options.length?planned.find(item=>item.group==="分镜视频"&&item.seconds!==undefined&&!options.includes(item.seconds)):undefined;
-    if(unsupported) throw new Error(`当前有 ${unsupported.seconds} 秒分镜；该模型仅支持 ${options.join("、")} 秒，请先调整分镜时长。`);
     const cache=new Map<string,ReturnType<typeof getMediaCreditQuote>>();
     return Promise.all(planned.map(async item=>{
       const isVideo=item.group==="分镜视频"; const model=isVideo?video!:image!; const resolution=isVideo?videoRes:imageRes;
-      const key=JSON.stringify([model.id,resolution,item.seconds]);
-      if(!cache.has(key)) cache.set(key,services.getMediaCreditQuote(model.id,resolution,item.seconds));
+      const seconds=isVideo&&item.seconds!==undefined?resolveVideoDuration(item.seconds,model,"automatic"):item.seconds;
+      const key=JSON.stringify([model.id,resolution,seconds]);
+      if(!cache.has(key)) cache.set(key,services.getMediaCreditQuote(model.id,resolution,seconds));
       const quote=await cache.get(key)!;
       if(!Number.isFinite(quote.credits)||quote.credits<0) throw new Error("暂时查不到所需积分，请稍后再试。");
-      return {...item,provider_model_id:model.id,resolution,credits:quote.credits,capability:isVideo?"VIDEO_GENERATION":"IMAGE_GENERATION"};
+      return {...item,seconds,provider_model_id:model.id,resolution,credits:quote.credits,capability:isVideo?"VIDEO_GENERATION":"IMAGE_GENERATION"};
     }));
   }});
   const total=quotes.data?workflowTotal(quotes.data):undefined;
@@ -56,6 +55,7 @@ export function WorkflowStartModal({ mode, onModeChange, planned, onCancel, onSt
   };
   return createPortal(<div className="modal-backdrop"><section className="auto-project-mode-modal" role="dialog" aria-modal="true" aria-labelledby="auto-project-mode-title"><header><div><h2 id="auto-project-mode-title">{restart ? "重启自动制作工作流" : "一键自动创作"}</h2><p>{restart ? "重新选择生成模型，只继续制作尚未完成的内容。" : "选好方案，确认一次，剩下交给我们自动完成。"}</p></div><button className="modal-close" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={18}/></button></header><div className="auto-project-mode-body"><label>制作方式<select value={mode} disabled={busy || restart} onChange={e=>onModeChange(e.target.value as typeof mode)}><option value="fast">快速制作（不生成分镜图）</option><option value="storyboard">先生成分镜图，再制作视频</option></select></label><div className="workflow-model-grid">{picker("image")}{picker("video")}</div><section className="auto-project-credit-card"><header><strong>{restart ? "重启所需积分" : "本次所需积分"}</strong><Coins size={20}/></header><div className="auto-project-credit-lines">{(["场景图","角色图","分镜图","分镜视频"] as const).map(group=>{
     const rows=planned.filter(item=>item.group===group); const priced=quotes.data?.filter(item=>item.group===group);
-    return <div key={group}><span>{group} · {rows.length}{group==="分镜视频"?` 段 / ${creditText(rows.reduce((s,i)=>s+(i.seconds??0),0))} 秒`:" 张"}</span><strong>{priced?creditText(workflowTotal(priced)):"—"} 积分</strong></div>;
-  })}<div><span>完整视频合成</span><strong>免费</strong></div><div className="workflow-credit-total"><strong>合计</strong><strong>{total===undefined?"—":creditText(total)} 积分</strong></div></div><small>已有图片和视频不重复生成、不重复扣分。确认后自动运行，不再弹出积分提醒。失败会自动重试，未成功的积分会退回；已生成的内容不会重复扣分。费用有变化或结果暂时无法确认时，会自动停止并在进度中说明，不额外扣分。</small></section>{quotes.isFetching&&<p><LoaderCircle size={16} className="spin"/>正在计算积分…</p>}{quotes.error&&<p className="error-banner">{workflowErrorMessage(quotes.error)}</p>}{balance.error&&<p className="error-banner">暂时查不到剩余积分，请稍后再试。</p>}{purchaseRequired&&<div className="insufficient-credit-callout"><p className="error-banner">{insufficient?<>积分不够，本次需要 {creditText(total!)} 分，你还有 {creditText(balance.data!.available)} 分。</>:error}</p><ImmediateCreditPurchaseButton onPurchased={()=>{void balance.refetch();onCreditsPurchased?.();}} /></div>}{error&&!purchaseRequired&&<p className="error-banner">{error}</p>}</div><footer><button className="secondary-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary-button" disabled={!ready} onClick={()=>onStart({image:{model:image!,resolution:imageRes,creditCost:image!.resolution_prices.find(p=>p.resolution===imageRes)!.credit_cost},video:{model:video!,resolution:videoRes,creditCost:video!.resolution_prices.find(p=>p.resolution===videoRes)!.credit_cost},items:quotes.data!})}>{busy?"正在准备…":`${restart ? "确认并重启" : "确认并自动创作"}（${total===undefined?"—":creditText(total)} 积分）`}</button></footer></section></div>,document.body);
+    const sourceSeconds=rows.reduce((sum,item)=>sum+(item.seconds??0),0); const generatedSeconds=priced?.reduce((sum,item)=>sum+(item.seconds??0),0);
+    return <div key={group}><span>{group} · {rows.length}{group==="分镜视频"?` 段 / 分镜 ${creditText(sourceSeconds)} 秒${generatedSeconds!==undefined&&generatedSeconds!==sourceSeconds?`，生成 ${creditText(generatedSeconds)} 秒`:""}`:" 张"}</span><strong>{priced?creditText(workflowTotal(priced)):"—"} 积分</strong></div>;
+  })}<div><span>完整视频合成</span><strong>免费</strong></div><div className="workflow-credit-total"><strong>合计</strong><strong>{total===undefined?"—":creditText(total)} 积分</strong></div></div><small>已有图片和视频不重复生成、不重复扣分。确认后自动运行，不再弹出积分提醒。失败会自动重试，未成功的积分会退回；已生成的内容不会重复扣分。费用有变化或结果暂时无法确认时，会自动停止并在进度中说明，不额外扣分。</small></section>{quotes.isFetching&&<p><LoaderCircle size={16} className="spin"/>正在计算积分…</p>}{quotes.error&&<p className="error-banner">{workflowErrorMessage(quotes.error)}</p>}{balance.error&&<p className="error-banner">暂时查不到剩余积分，请稍后再试。</p>}{purchaseRequired&&<div className="insufficient-credit-callout"><p className="error-banner">{insufficient?<>积分不够，本次需要 {creditText(total!)} 分，你还有 {creditText(balance.data!.available)} 分。</>:error}</p><ImmediateCreditPurchaseButton onPurchased={()=>{void balance.refetch();onCreditsPurchased?.();}} /></div>}{error&&!purchaseRequired&&<p className="error-banner">{error}</p>}</div><footer><button className="secondary-button" disabled={busy} onClick={onCancel}>取消</button><button className="primary-button" disabled={!ready} onClick={()=>onStart({image:{model:image!,resolution:imageRes,creditCost:image!.resolution_prices.find(p=>p.resolution===imageRes)!.credit_cost},video:{model:video!,resolution:videoRes,creditCost:video!.resolution_prices.find(p=>p.resolution===videoRes)!.credit_cost,durationByKey:Object.fromEntries(quotes.data!.filter(item=>item.group==="分镜视频"&&item.seconds!==undefined).map(item=>[item.key,item.seconds!]))},items:quotes.data!})}>{busy?"正在准备…":`${restart ? "确认并重启" : "确认并自动创作"}（${total===undefined?"—":creditText(total)} 积分）`}</button></footer></section></div>,document.body);
 }

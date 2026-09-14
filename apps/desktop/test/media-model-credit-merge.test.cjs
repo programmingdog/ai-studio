@@ -8,7 +8,8 @@ const media = fs.readFileSync(path.join(__dirname, '../src-tauri/src/platform_me
 
 test('media model picker includes exact quotes, balance and the only user confirmation', () => {
   assert.match(app, /生成方案与积分确认/);
-  assert.match(app, /getMediaCreditQuote\(selectedModelId, selectedResolution, item\.seconds\)/);
+  assert.match(app, /getMediaCreditQuote\(selectedModelId, selectedResolution, seconds\)/);
+  assert.match(app, /durationByKey: Object\.fromEntries\(quotes\.data/);
   assert.match(app, /queryKey: \["credit-balance"\]/);
   assert.match(app, /确认并开始生成（\$\{creditText\(total\)\} 积分）/);
   assert.match(app, /取消，不扣分/);

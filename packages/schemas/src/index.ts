@@ -569,7 +569,7 @@ export interface UpdateAutomaticWorkflowInput {
   snapshot: AutomaticWorkflowSnapshot;
 }
 
-export interface AutomaticWorkflowMediaSelection { provider_model_id: string; provider_code?: string; model_alias: string; model_code?: string; resolution: string; credit_cost: number; workflow_credit_id?: string }
+export interface AutomaticWorkflowMediaSelection { provider_model_id: string; provider_code?: string; model_alias: string; model_code?: string; resolution: string; credit_cost: number; workflow_credit_id?: string; billing_unit?: "PER_REQUEST" | "PER_SECOND"; video_duration_options?: number[]; duration_by_key?: Record<string, number> }
 export interface AutomaticWorkflowSnapshot {
   items?: AutomaticWorkflowTaskSnapshot[];
   image_model?: AutomaticWorkflowMediaSelection;

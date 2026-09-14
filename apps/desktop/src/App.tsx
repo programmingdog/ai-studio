@@ -36,6 +36,7 @@ import type { AutomaticWorkflowSnapshot } from "@aivs/schemas";
 import { creditRefundCopy, creditRetryCopy, creditText } from "./services/creditCopy";
 import { addManualShot, deleteStoryboardShot, moveStoryboardShot } from "./manualShot";
 import { prepareVideoPromptSubmission, type VideoPromptMention } from "./videoPromptReferences";
+import { resolveVideoDuration, selectableVideoDurations, type VideoDurationMode } from "./services/videoDuration";
 
 const defaultSpec: CreationSpec = {
   project_name: "齐天一小时", input_type: "IDEA", target_duration: 60, aspect_ratio: "9:16",
@@ -48,13 +49,13 @@ const PROJECT_CENTER_GUIDANCE_KEY = "aivs-project-center-guidance-v1";
 type CreateMode = Exclude<ProjectSourceType, "SCRIPT_TEXT"> | "DOUYIN_URL" | "VIDEO_UNDERSTANDING";
 type CookieSource = BrowserCookieSource | "managed" | "file" | "";
 type DouyinTaskReviewState = { script: string; spec: CreationSpec; rootPath: string; fixedSeconds?: FixedStoryboardSeconds };
-type MediaModelSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string };
+type MediaModelSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string; durationByKey?: Record<string, number> };
 type MediaPickerItem = { key: string; seconds?: number };
-type MediaPickerRequest = { id: string; capability: PlatformMediaModel["capability"]; title: string; projectPath: string; items: MediaPickerItem[]; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void };
+type MediaPickerRequest = { id: string; capability: PlatformMediaModel["capability"]; title: string; projectPath: string; items: MediaPickerItem[]; durationMode: VideoDurationMode; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void };
 const MEDIA_PICKER_EVENT = "aivs:pick-media-model";
 
-function requestMediaModel(capability: PlatformMediaModel["capability"], title: string, projectPath: string, items: MediaPickerItem[]): Promise<MediaModelSelection> {
-  return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(MEDIA_PICKER_EVENT, { detail: { id: crypto.randomUUID(), capability, title, projectPath, items, resolve, reject } satisfies MediaPickerRequest })));
+function requestMediaModel(capability: PlatformMediaModel["capability"], title: string, projectPath: string, items: MediaPickerItem[], durationMode: VideoDurationMode = "automatic"): Promise<MediaModelSelection> {
+  return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(MEDIA_PICKER_EVENT, { detail: { id: crypto.randomUUID(), capability, title, projectPath, items, durationMode, resolve, reject } satisfies MediaPickerRequest })));
 }
 
 function mediaImageFields(selection: MediaModelSelection) {
@@ -65,15 +66,19 @@ function mediaVideoFields(selection: MediaModelSelection) {
   return { platform_api_base_url: platformApiBaseUrl, provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, resolution: selection.resolution, workflow_credit_id: selection.workflowCreditId };
 }
 
+function mediaVideoDuration(selection: MediaModelSelection, itemKey: string, shotDuration: number): number {
+  return selection.durationByKey?.[itemKey] ?? shotDuration;
+}
+
 function workflowMediaSnapshot(selections?: { image: MediaModelSelection; video: MediaModelSelection }): AutomaticWorkflowSnapshot {
   if (!selections) return {};
-  const serialize = (selection: MediaModelSelection) => ({ provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, model_code: selection.model.model_code, resolution: selection.resolution, credit_cost: selection.creditCost, workflow_credit_id: selection.workflowCreditId });
+  const serialize = (selection: MediaModelSelection) => ({ provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, model_code: selection.model.model_code, resolution: selection.resolution, credit_cost: selection.creditCost, workflow_credit_id: selection.workflowCreditId, billing_unit: selection.model.billing_unit, video_duration_options: selection.model.video_duration_options, duration_by_key: selection.durationByKey });
   return { image_model: serialize(selections.image), video_model: serialize(selections.video) };
 }
 
 function restoredWorkflowMedia(snapshot: AutomaticWorkflowSnapshot): { image: MediaModelSelection; video: MediaModelSelection } | undefined {
   if (!snapshot.image_model || !snapshot.video_model) return undefined;
-  const restore = (value: NonNullable<AutomaticWorkflowSnapshot["image_model"]>) => ({ model: { id: value.provider_model_id, provider_code: value.provider_code, model_alias: value.model_alias, model_code: value.model_code } as PlatformMediaModel, resolution: value.resolution, creditCost: value.credit_cost, workflowCreditId: value.workflow_credit_id });
+  const restore = (value: NonNullable<AutomaticWorkflowSnapshot["image_model"]>) => ({ model: { id: value.provider_model_id, provider_code: value.provider_code, model_alias: value.model_alias, model_code: value.model_code, billing_unit: value.billing_unit, video_duration_options: value.video_duration_options } as PlatformMediaModel, resolution: value.resolution, creditCost: value.credit_cost, workflowCreditId: value.workflow_credit_id, durationByKey: value.duration_by_key });
   return { image: restore(snapshot.image_model), video: restore(snapshot.video_model) };
 }
 
@@ -82,12 +87,13 @@ function MediaModelSelectionHost() {
   const requestRef = useRef<MediaPickerRequest | undefined>(undefined);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedResolution, setSelectedResolution] = useState("");
+  const [selectedDuration, setSelectedDuration] = useState<number>();
   const [approving, setApproving] = useState(false);
   const [approvalError, setApprovalError] = useState("");
   useEffect(() => {
     const listener = (event: Event) => {
       const detail = (event as CustomEvent<MediaPickerRequest>).detail;
-      setSelectedModelId(""); setSelectedResolution(""); setApprovalError("");
+      setSelectedModelId(""); setSelectedResolution(""); setSelectedDuration(undefined); setApprovalError("");
       setRequest((current) => { current?.reject(new Error("已切换到新的模型选择请求")); return detail; });
       requestRef.current = detail;
     };
@@ -96,34 +102,47 @@ function MediaModelSelectionHost() {
   }, []);
   const models = useQuery({ queryKey: ["platform-media-models", request?.capability], queryFn: () => listMediaModels(request!.capability), enabled: Boolean(request), staleTime: 0 });
   const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance, enabled: Boolean(request), refetchInterval: request ? 5000 : false, retry: false });
+  const selectedModel = models.data?.find((model) => model.id === selectedModelId);
+  const manualShotDuration = request?.capability === "VIDEO_GENERATION" && request.durationMode === "manual" && request.items.length === 1 ? request.items[0]?.seconds : undefined;
+  const manualDurationOptions = manualShotDuration === undefined || !selectedModel ? [] : selectableVideoDurations(manualShotDuration, selectedModel);
+  const manualDurationRequired = manualDurationOptions.length > 0;
+  const selectModel = (model: PlatformMediaModel, resolution: string) => {
+    setSelectedModelId(model.id);
+    setSelectedResolution(resolution);
+    setSelectedDuration(() => {
+      if (manualShotDuration === undefined) return undefined;
+      try { return resolveVideoDuration(manualShotDuration, model, "manual"); }
+      catch { return undefined; }
+    });
+    setApprovalError("");
+  };
   const quotes = useQuery({
-    queryKey: ["media-model-picker-quotes", request?.id, selectedModelId, selectedResolution],
-    enabled: Boolean(request && selectedModelId && selectedResolution),
+    queryKey: ["media-model-picker-quotes", request?.id, selectedModelId, selectedResolution, selectedDuration],
+    enabled: Boolean(request && selectedModelId && selectedResolution && (!manualDurationRequired || selectedDuration !== undefined)),
     retry: false,
     queryFn: async () => {
       const owner = request!;
       const chosen = models.data?.find((model) => model.id === selectedModelId);
-      const options = chosen?.video_duration_options || [];
-      const unsupported = owner.capability === "VIDEO_GENERATION" && options.length
-        ? owner.items.find((item) => item.seconds !== undefined && !options.includes(item.seconds)) : undefined;
-      if (unsupported) throw new Error(`当前有 ${unsupported.seconds} 秒片段；该模型仅支持 ${options.join("、")} 秒，请先调整分镜时长。`);
+      if (!chosen) throw new Error("请选择视频生成模型");
       const cache = new Map<string, ReturnType<typeof getMediaCreditQuote>>();
       return Promise.all(owner.items.map(async (item) => {
-        const cacheKey = String(item.seconds ?? "image");
-        if (!cache.has(cacheKey)) cache.set(cacheKey, getMediaCreditQuote(selectedModelId, selectedResolution, item.seconds));
+        const seconds = item.seconds === undefined ? undefined
+          : owner.durationMode === "manual" && owner.items.length === 1 && selectedDuration !== undefined
+            ? selectedDuration : resolveVideoDuration(item.seconds, chosen, owner.durationMode);
+        const cacheKey = String(seconds ?? "image");
+        if (!cache.has(cacheKey)) cache.set(cacheKey, getMediaCreditQuote(selectedModelId, selectedResolution, seconds));
         const quote = await cache.get(cacheKey)!;
         if (!Number.isFinite(quote.credits) || quote.credits < 0) throw new Error("暂时查不到所需积分，请稍后再试。");
-        return { key: item.key, provider_model_id: selectedModelId, resolution: selectedResolution, seconds: item.seconds, credits: quote.credits, capability: owner.capability };
+        return { key: item.key, provider_model_id: selectedModelId, resolution: selectedResolution, seconds, credits: quote.credits, capability: owner.capability };
       }));
     },
   });
   if (!request) return null;
-  const selectedModel = models.data?.find((model) => model.id === selectedModelId);
   const selectedPrice = selectedModel?.resolution_prices.find((price) => price.resolution === selectedResolution);
   const total = quotes.data ? Math.round(quotes.data.reduce((sum, item) => sum + Math.round(item.credits * 1_000_000), 0)) / 1_000_000 : undefined;
   const insufficient = total !== undefined && balance.data !== undefined && balance.data.available < total;
   const purchaseRequired = insufficient || isInsufficientBalanceError(approvalError);
-  const videoSeconds = request.items.reduce((sum, item) => sum + (item.seconds ?? 0), 0);
+  const videoSeconds = quotes.data?.reduce((sum, item) => sum + (item.seconds ?? 0), 0) ?? request.items.reduce((sum, item) => sum + (item.seconds ?? 0), 0);
   const close = () => { if (approving) return; requestRef.current = undefined; setRequest(undefined); request.reject(new Error("已取消选择生成模型和积分确认")); };
   const confirm = async () => {
     if (!selectedModel || !selectedPrice || !quotes.data || total === undefined || insufficient || !balance.data || approving) return;
@@ -139,14 +158,15 @@ function MediaModelSelectionHost() {
         return;
       }
       requestRef.current = undefined; setRequest(undefined);
-      owner.resolve({ model: selectedModel, resolution: selectedPrice.resolution, creditCost: selectedPrice.credit_cost, workflowCreditId });
+      owner.resolve({ model: selectedModel, resolution: selectedPrice.resolution, creditCost: selectedPrice.credit_cost, workflowCreditId,
+        durationByKey: Object.fromEntries(quotes.data.filter((item) => item.seconds !== undefined).map((item) => [item.key, item.seconds!])) });
     } catch (error) {
       if (workflowCreditId) await invoke("stop_workflow_credit", { projectPath: owner.projectPath, id: workflowCreditId }).catch(() => undefined);
       if (requestRef.current === owner) setApprovalError(readableError(error));
     } finally { setApproving(false); }
   };
   const ready = Boolean(selectedPrice && quotes.data && !quotes.isFetching && !quotes.error && balance.data && !balance.error && !insufficient && !approving);
-  return <div className="modal-backdrop media-model-picker-backdrop"><section className="media-model-picker"><header><div><span className="section-label">生成方案与积分确认</span><h2>{request.title}</h2><p>选择模型和清晰度后，直接在本窗口确认积分并开始生成，不再进行第二次确认。</p></div><button type="button" disabled={approving} onClick={close}><X size={18} /></button></header><div className="media-model-picker-body"><div className="media-model-options">{models.isLoading ? <div className="media-model-empty"><LoaderCircle className="spin" />正在加载可选方案…</div> : models.error ? <div className="error-banner">暂时无法加载，请稍后再试：{readableError(models.error)}</div> : models.data?.length ? models.data.map((model) => <article className={selectedModelId === model.id ? "active" : ""} key={model.id}><button type="button" className="media-model-main" disabled={approving} onClick={() => { setSelectedModelId(model.id); setSelectedResolution(model.resolution_prices[0]?.resolution || ""); setApprovalError(""); }}><strong>{model.model_alias}</strong><small>{model.provider_name} · {model.display_name}</small>{model.generation_notice && <small>{model.generation_notice}</small>}{model.video_duration_options?.length ? <small>可选时长：{model.video_duration_options.join("、")} 秒</small> : null}</button><div className="media-resolution-list">{model.resolution_prices.map((price) => <label key={price.resolution}><input type="radio" name="media-resolution" disabled={approving} checked={selectedModelId === model.id && selectedResolution === price.resolution} onChange={() => { setSelectedModelId(model.id); setSelectedResolution(price.resolution); setApprovalError(""); }} /><span>{price.label || price.resolution}</span><em>{creditText(price.credit_cost)} 积分{request.capability === "VIDEO_GENERATION" ? model.billing_unit === "PER_REQUEST" ? "/次" : "/秒" : "/张"}</em></label>)}</div></article>) : <div className="media-model-empty">暂时没有可用的生成方案，请稍后再试或联系客服。</div>}</div><section className="media-model-credit-summary"><header><div><Coins size={19} /><strong>本次积分确认</strong></div><b>{total === undefined ? "—" : creditText(total)} 积分</b></header><div><span>生成内容</span><strong>{request.capability === "VIDEO_GENERATION" ? `${request.items.length} 段视频 · ${creditText(videoSeconds)} 秒` : `${request.items.length} 张图片`}</strong></div><div><span>剩余可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 分` : "正在查询…"}</strong></div><small>{creditRefundCopy}{creditRetryCopy}</small>{quotes.isFetching && <p><LoaderCircle className="spin" size={15} />正在计算准确积分…</p>}{quotes.error && <p className="error-banner">{readableError(quotes.error)}</p>}{balance.error && <p className="error-banner">暂时查不到剩余积分，请稍后再试。</p>}{purchaseRequired && <div className="insufficient-credit-callout"><p className="error-banner">{insufficient ? <>积分不足，本次需要 {creditText(total!)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : approvalError}</p><ImmediateCreditPurchaseButton onPurchased={() => { setApprovalError(""); void balance.refetch(); }} /></div>}{approvalError && !purchaseRequired && <p className="error-banner">{approvalError}</p>}</section></div><footer><button className="secondary-button" type="button" disabled={approving} onClick={close}>取消，不扣分</button><button className="primary-button" type="button" onClick={() => void confirm()} disabled={!ready}>{approving ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{approving ? "正在确认…" : total === undefined ? "确认并开始生成" : `确认并开始生成（${creditText(total)} 积分）`}</button></footer></section></div>;
+  return <div className="modal-backdrop media-model-picker-backdrop"><section className="media-model-picker"><header><div><span className="section-label">生成方案与积分确认</span><h2>{request.title}</h2><p>选择模型和清晰度后，直接在本窗口确认积分并开始生成，不再进行第二次确认。</p></div><button type="button" disabled={approving} onClick={close}><X size={18} /></button></header><div className="media-model-picker-body"><div className="media-model-options">{models.isLoading ? <div className="media-model-empty"><LoaderCircle className="spin" />正在加载可选方案…</div> : models.error ? <div className="error-banner">暂时无法加载，请稍后再试：{readableError(models.error)}</div> : models.data?.length ? models.data.map((model) => <article className={selectedModelId === model.id ? "active" : ""} key={model.id}><button type="button" className="media-model-main" disabled={approving} onClick={() => selectModel(model, model.resolution_prices[0]?.resolution || "")}><strong>{model.model_alias}</strong><small>{model.provider_name} · {model.display_name}</small>{model.generation_notice && <small>{model.generation_notice}</small>}{model.video_duration_options?.length ? <small>可选时长：{model.video_duration_options.join("、")} 秒</small> : null}</button><div className="media-resolution-list">{model.resolution_prices.map((price) => <label key={price.resolution}><input type="radio" name="media-resolution" disabled={approving} checked={selectedModelId === model.id && selectedResolution === price.resolution} onChange={() => selectModel(model, price.resolution)} /><span>{price.label || price.resolution}</span><em>{creditText(price.credit_cost)} 积分{request.capability === "VIDEO_GENERATION" ? model.billing_unit === "PER_REQUEST" ? "/次" : "/秒" : "/张"}</em></label>)}</div></article>) : <div className="media-model-empty">暂时没有可用的生成方案，请稍后再试或联系客服。</div>}</div>{manualShotDuration !== undefined && selectedModel && <section className="media-video-duration-picker"><header><strong>生成时长</strong><small>当前分镜 {creditText(manualShotDuration)} 秒</small></header>{manualDurationOptions.length ? <select value={selectedDuration ?? ""} disabled={approving} onChange={(event) => { setSelectedDuration(Number(event.target.value)); setApprovalError(""); }}><option value="" disabled>请选择生成时长</option>{manualDurationOptions.map((option) => <option key={option.seconds} value={option.seconds} disabled={option.disabled}>{option.seconds} 秒{option.disabled ? "（短于分镜，不可选）" : ""}</option>)}</select> : <strong>{creditText(manualShotDuration)} 秒（跟随分镜时长）</strong>}{manualDurationOptions.length > 0 && !manualDurationOptions.some((option) => !option.disabled) && <p className="error-banner">该模型没有不短于当前分镜的可选时长，请更换模型。</p>}<small>生成时长不能短于分镜时长；报价、积分确认和提交给大模型的时长将保持一致。</small></section>}<section className="media-model-credit-summary"><header><div><Coins size={19} /><strong>本次积分确认</strong></div><b>{total === undefined ? "—" : creditText(total)} 积分</b></header><div><span>生成内容</span><strong>{request.capability === "VIDEO_GENERATION" ? `${request.items.length} 段视频 · ${creditText(videoSeconds)} 秒` : `${request.items.length} 张图片`}</strong></div><div><span>剩余可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 分` : "正在查询…"}</strong></div><small>{creditRefundCopy}{creditRetryCopy}</small>{quotes.isFetching && <p><LoaderCircle className="spin" size={15} />正在计算准确积分…</p>}{quotes.error && <p className="error-banner">{readableError(quotes.error)}</p>}{balance.error && <p className="error-banner">暂时查不到剩余积分，请稍后再试。</p>}{purchaseRequired && <div className="insufficient-credit-callout"><p className="error-banner">{insufficient ? <>积分不足，本次需要 {creditText(total!)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : approvalError}</p><ImmediateCreditPurchaseButton onPurchased={() => { setApprovalError(""); void balance.refetch(); }} /></div>}{approvalError && !purchaseRequired && <p className="error-banner">{approvalError}</p>}</section></div><footer><button className="secondary-button" type="button" disabled={approving} onClick={close}>取消，不扣分</button><button className="primary-button" type="button" onClick={() => void confirm()} disabled={!ready}>{approving ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{approving ? "正在确认…" : total === undefined ? "确认并开始生成" : `确认并开始生成（${creditText(total)} 积分）`}</button></footer></section></div>;
 }
 
 function readableError(error: unknown): string {
@@ -2246,7 +2266,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
         const latest = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id);
         return latest ? !["COMPLETED", "FAILED"].includes(latest.status) && !activeGeneration(latest) : !firstProjectAsset(shot.video_assets);
       });
-      const creationResults = await Promise.allSettled(queueable.map((shot) => createShotVideoGeneration(buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, mediaSelections.video.model.model_code, { resolution: mediaSelections.video.resolution, shotImageMode: mode === "storyboard" ? "reference" : "none", mediaSelection: mediaSelections.video }))));
+      const creationResults = await Promise.allSettled(queueable.map((shot) => createShotVideoGeneration(buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, mediaSelections.video.model.model_code, { resolution: mediaSelections.video.resolution, duration: mediaVideoDuration(mediaSelections.video, `video:shot:${shot.id}`, shot.duration), shotImageMode: mode === "storyboard" ? "reference" : "none", mediaSelection: mediaSelections.video }))));
       const balanceError = creationResults.find((result): result is PromiseRejectedResult => result.status === "rejected" && chargeStopped(result.reason));
       if (balanceError) await failFastOnInsufficientBalance(balanceError.reason);
       const creationError = creationResults.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -2405,6 +2425,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
         for (const shot of failedShots) {
           const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_code, {
             locale,
+            duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration),
             shotImageMode: workflow.mode === "storyboard" ? "reference" : "none",
             mediaSelection: selection,
           });
@@ -2486,7 +2507,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
       selection = await requestMediaModel("VIDEO_GENERATION", `${replaceRecordId ? "停止并重新生成" : "单独重启"}分镜 ${shotId}`, projectPath, [{ key: `video:shot:${shotId}`, seconds: shot.duration }]);
       const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_code, {
-        locale, shotImageMode: workflow.mode === "storyboard" ? "reference" : "none", mediaSelection: selection,
+        locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), shotImageMode: workflow.mode === "storyboard" ? "reference" : "none", mediaSelection: selection,
       });
       await createShotVideoGeneration({ ...input, replace_record_id: replaceRecordId });
       const nextRecords = await generationRecordsQuery.refetch();
@@ -2930,7 +2951,7 @@ function buildShotVideoGenerationInput(
   imageTasks: ImageGenerationTask[],
   records: GenerationRecord[],
   videoModel?: string,
-  options?: { resolution?: string; shotImageMode?: "existing" | "none" | "reference"; locale?: AppLocale; mediaSelection?: MediaModelSelection },
+  options?: { resolution?: string; duration?: number; shotImageMode?: "existing" | "none" | "reference"; locale?: AppLocale; mediaSelection?: MediaModelSelection },
 ): CreateShotVideoGenerationInput {
   const references = shotReferenceAssets(shot, canonical, imageTasks);
   const shotImagePath = completedShotImagePath(shot, records);
@@ -2967,7 +2988,7 @@ function buildShotVideoGenerationInput(
     shot_id: shot.id,
     prompt: prepared.prompt,
     aspect_ratio: canonical.story.aspect_ratio || shot.aspect_ratio || "9:16",
-    duration: shot.duration,
+    duration: options?.duration ?? shot.duration,
     resolution,
     version: videoModel === "kwvideo-v2-ref" ? version : undefined,
     reference_assets: prepared.references.filter((reference) => reference.kind !== "shot_first_frame"),
@@ -3601,9 +3622,9 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
       const currentImageTasks = refreshedTasks.data ?? tasks;
       const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
       if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
-      const selection = await requestMediaModel("VIDEO_GENERATION", "选择分镜视频生成模型和分辨率", projectPath,
-        [{ key: `video:shot:${selected.id}`, seconds: selected.duration }]);
-      const input = buildShotVideoGenerationInput(selected, canonical, projectPath, projectId, currentImageTasks, records, selection.model.model_alias, { locale, mediaSelection: selection });
+      const selection = await requestMediaModel("VIDEO_GENERATION", "选择分镜视频生成模型、分辨率和时长", projectPath,
+        [{ key: `video:shot:${selected.id}`, seconds: selected.duration }], "manual");
+      const input = buildShotVideoGenerationInput(selected, canonical, projectPath, projectId, currentImageTasks, records, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${selected.id}`, selected.duration), mediaSelection: selection });
       updateShot(selected.id, { video_prompt: videoPrompt, video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
       return createShotVideoGeneration(input);
     },
@@ -3653,7 +3674,7 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
         }
         setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "creating" } }));
         try {
-          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_alias, { locale, mediaSelection: selection });
+          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), mediaSelection: selection });
           updateShot(shot.id, { video_prompt: shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, shotReferenceAssets(shot, canonical, currentImageTasks), locale), video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
           const record = await createShotVideoGeneration(input);
           setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "created", recordId: record.id } }));
