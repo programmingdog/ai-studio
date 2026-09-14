@@ -1425,3 +1425,11 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .shot-media-heading-actions .secondary-button { width: auto; min-width: max-content; min-height: 30px; padding: 5px 9px; font-size: 11px; }
 .shot-media-save-message { overflow: hidden; padding: 10px 14px; border-top: 1px solid var(--ui-border); color: var(--ui-success); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .shot-media-save-message.error { color: var(--ui-danger); }
+.shot-delete-confirm-modal { width: min(560px, 92vw); }
+.shot-delete-modal-icon { color: var(--ui-danger); background: var(--ui-danger-soft); }
+.shot-delete-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--ui-border); border-radius: 10px; background: var(--ui-surface-subtle); }
+.shot-delete-summary > span { padding: 6px 9px; border-radius: 7px; color: var(--ui-accent); background: var(--ui-accent-soft); font: 700 11px ui-monospace, monospace; }
+.shot-delete-summary > strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.shot-delete-summary > small { color: var(--ui-text-muted); font-size: 11px; white-space: nowrap; }
+.shot-delete-warning { color: var(--ui-danger); border-color: var(--ui-danger-border); background: var(--ui-danger-soft); }
+.shot-delete-warning span { color: var(--ui-danger); }

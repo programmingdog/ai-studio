@@ -3365,8 +3365,24 @@ function ShotListRow({ shot, index, total, active, onSelect, onMove, onDelete }:
   </div>;
 }
 
+function DeleteShotConfirmModal({ shot, onCancel, onConfirm }: { shot: Shot; onCancel: () => void; onConfirm: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onCancel]);
+  return createPortal(<div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <section className="bulk-video-confirm-modal shot-delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="shot-delete-title">
+      <header><div className="bulk-video-modal-icon shot-delete-modal-icon"><Trash2 size={23} /></div><div><span className="eyebrow">DELETE SHOT</span><h2 id="shot-delete-title">确认删除当前分镜？</h2><p>确认后将从当前项目的分镜列表中删除此分镜。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭删除确认"><X size={18} /></button></header>
+      <div className="bulk-video-confirm-body"><div className="shot-delete-summary"><span>{shot.id}</span><strong>{shot.action || shot.visual || "未填写分镜内容"}</strong><small>时长 {shot.duration}s</small></div><div className="bulk-video-warning shot-delete-warning"><AlertTriangle size={19} /><div><strong>删除后无法在分镜列表中直接恢复</strong><span>如果删除的是当前选中的分镜，页面会自动选择相邻分镜。</span></div></div></div>
+      <footer><button className="secondary-button" type="button" onClick={onCancel}>取消</button><button className="primary-button danger-button" type="button" onClick={onConfirm}><Trash2 size={16} />确认删除</button></footer>
+    </section>
+  </div>, document.body);
+}
+
 function LegacyStoryboardPage({ canonical, projectPath }: { canonical: CanonicalProject; projectPath: string }) {
   const { selectedShotId, setSelectedShotId, updateCanonical } = useStudioStore();
+  const [shotPendingDeleteId, setShotPendingDeleteId] = useState<string>();
   const imageTasks = useProjectImageTasks(projectPath);
   const selected = canonical.shots.find((shot) => shot.id === selectedShotId) ?? canonical.shots[0];
   const selectedCharacterIds = selected ? shotCharacterIds(selected) : [];
@@ -3376,7 +3392,6 @@ function LegacyStoryboardPage({ canonical, projectPath }: { canonical: Canonical
     setSelectedShotId(id);
   };
   const deleteShot = (id: string) => {
-    if (!window.confirm(`确定删除分镜 ${id} 吗？删除后其余分镜将自动重新排序。`)) return;
     let nextShotId = "";
     updateCanonical((model) => {
       const result = deleteStoryboardShot(model, id);
@@ -3384,6 +3399,7 @@ function LegacyStoryboardPage({ canonical, projectPath }: { canonical: Canonical
       return result.canonical;
     });
     if (selectedShotId === id) setSelectedShotId(nextShotId);
+    setShotPendingDeleteId(undefined);
   };
   const sourceRange = selected?.source_time_range ?? { start: 0, end: selected?.duration ?? 0 };
   const selectScene = (sceneId: string) => {
@@ -3407,8 +3423,10 @@ function LegacyStoryboardPage({ canonical, projectPath }: { canonical: Canonical
     const shotPath = selected.reference_assets?.[0];
     if (shotPath) mentionItems.push({ id: `shot:${selected.id}`, label: "分镜图", detail: `${selected.id} · 当前分镜生成图`, insertText: "@分镜图", relativePath: shotPath });
   }
+  const shotPendingDelete = canonical.shots.find((shot) => shot.id === shotPendingDeleteId);
   return <div className="storyboard-layout">
-    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span></div>{canonical.shots.map((shot, index) => <ShotListRow key={shot.id} shot={shot} index={index} total={canonical.shots.length} active={selected?.id === shot.id} onSelect={() => setSelectedShotId(shot.id)} onMove={(direction) => moveShot(shot.id, direction)} onDelete={() => deleteShot(shot.id)} />)}</section>
+    {shotPendingDelete && <DeleteShotConfirmModal shot={shotPendingDelete} onCancel={() => setShotPendingDeleteId(undefined)} onConfirm={() => deleteShot(shotPendingDelete.id)} />}
+    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span></div>{canonical.shots.map((shot, index) => <ShotListRow key={shot.id} shot={shot} index={index} total={canonical.shots.length} active={selected?.id === shot.id} onSelect={() => setSelectedShotId(shot.id)} onMove={(direction) => moveShot(shot.id, direction)} onDelete={() => setShotPendingDeleteId(shot.id)} />)}</section>
     {selected && <section className="shot-preview"><div className="shot-content-editor"><div className="panel-title"><div><span className="section-label">SHOT CONTENT</span><h3>分镜内容</h3></div></div><div className="shot-editor-row"><label>画面<VisualMentionEditor value={selected.visual} onChange={(visual) => updateShot(selected.id, { visual })} items={mentionItems} projectPath={projectPath} /></label><label>动作<textarea rows={4} value={selected.action} onChange={(e) => updateShot(selected.id, { action: e.target.value })} /></label></div><div className="shot-editor-row"><label>台词<textarea rows={3} value={selected.dialogue} onChange={(e) => updateShot(selected.id, { dialogue: e.target.value })} /></label><label>声音<textarea rows={3} value={selected.sound} onChange={(e) => updateShot(selected.id, { sound: e.target.value })} /></label></div></div><div className="preview-frame"><div className="frame-grid" /><Clapperboard size={54} /><span>{selected.id} · {selected.shot_size}</span><p>{selected.visual}</p></div><div className="shot-summary"><div><span>SCENE</span><strong>{canonical.scenes.find((scene) => scene.id === selected.scene_id)?.name}</strong></div><div><span>SOURCE</span><strong>{sourceRange.start}–{sourceRange.end}s</strong></div><div><span>RATIO</span><strong>{canonical.story.aspect_ratio || selected.aspect_ratio || "—"}</strong></div></div></section>}
     {selected && <section className="inspector">
       <span className="section-label">SHOT INSPECTOR</span>
@@ -3500,6 +3518,7 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const [showBulkVideoProgress, setShowBulkVideoProgress] = useState(false);
   const [showRegenerateAllVideosConfirm, setShowRegenerateAllVideosConfirm] = useState(false);
   const [showVideoPromptEditor, setShowVideoPromptEditor] = useState(false);
+  const [shotPendingDeleteId, setShotPendingDeleteId] = useState<string>();
   const [bulkVideoLaunches, setBulkVideoLaunches] = useState<BulkVideoLaunchMap>({});
   const shotPreviewRef = useRef<HTMLElement>(null);
   const [shotPreviewHeight, setShotPreviewHeight] = useState<number>();
@@ -3521,7 +3540,6 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     setSelectedShotId(id);
   };
   const deleteShot = (id: string) => {
-    if (!window.confirm(`确定删除分镜 ${id} 吗？删除后其余分镜将自动重新排序。`)) return;
     let nextShotId = "";
     updateCanonical((model) => {
       const result = deleteStoryboardShot(model, id);
@@ -3529,6 +3547,7 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
       return result.canonical;
     });
     if (selectedShotId === id) setSelectedShotId(nextShotId);
+    setShotPendingDeleteId(undefined);
   };
   const sourceRange = selected?.source_time_range ?? { start: 0, end: selected?.duration ?? 0 };
   const records = generationRecords.data ?? [];
@@ -3734,6 +3753,7 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const bulkVideoError = bulkVideoGeneration.error && !readableError(bulkVideoGeneration.error).includes("已取消选择生成模型") ? readableError(bulkVideoGeneration.error) : "";
   const visibleShotCount = useProgressiveRenderCount(canonical.shots.length, projectPath, 24, 24);
   const visibleShots = canonical.shots.slice(0, visibleShotCount);
+  const shotPendingDelete = canonical.shots.find((shot) => shot.id === shotPendingDeleteId);
   return <div className="storyboard-layout">
     <section className="project-video-composer">
       <header><div><span className="section-label">PROJECT VIDEO</span><h3>分镜视频合成</h3><p>按照左侧分镜顺序，将每个分镜最新生成成功的视频合成为一个完整视频。</p></div><div className="project-video-actions">{(bulkVideoBusy || hasShotVideoTaskHistory) && <button className={bulkVideoBusy ? "secondary-button batch-video-button" : "secondary-button"} type="button" onClick={() => setShowBulkVideoProgress(true)}>{bulkVideoBusy ? <LoaderCircle className="spin" size={17} /> : <History size={17} />}查看分镜视频任务进度</button>}{!bulkVideoBusy && allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => setShowRegenerateAllVideosConfirm(true)} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={aiSettings.isLoading || !canGenerateShotVideos}><RotateCcw size={17} />重新一键生成所有分镜视频</button>}{!bulkVideoBusy && !allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => startBulkVideoGeneration("missing")} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={canonical.shots.length === 0 || aiSettings.isLoading || !canGenerateShotVideos}><Clapperboard size={17} />一键生成所有分镜视频</button>}{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}<button className="primary-button" type="button" onClick={startComposition} disabled={composeVideo.isPending || activeGeneration(projectVideoRecord) || canonical.shots.length === 0 || missingShotVideoIds.length > 0}>{composeVideo.isPending || activeGeneration(projectVideoRecord) ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{activeGeneration(projectVideoRecord) ? `正在合成 ${Math.round((projectVideoRecord?.progress ?? 0) * 100)}%` : projectVideoPath ? "重新合成视频" : "一键合成视频"}</button></div></header>
@@ -3742,11 +3762,12 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
       {bulkVideoError && <div className="error-banner">批量分镜视频操作失败：{bulkVideoError}</div>}
       {(composeVideo.error || projectVideoRecord?.status === "FAILED") && <div className="error-banner">视频合成失败：{readableError(composeVideo.error ?? projectVideoRecord?.error?.message)}</div>}
     </section>
+    {shotPendingDelete && <DeleteShotConfirmModal shot={shotPendingDelete} onCancel={() => setShotPendingDeleteId(undefined)} onConfirm={() => deleteShot(shotPendingDelete.id)} />}
     {showRegenerateAllVideosConfirm && <RegenerateAllVideosConfirmModal total={canonical.shots.length} onCancel={() => setShowRegenerateAllVideosConfirm(false)} onConfirm={confirmRegenerateAllVideos} />}
     {showBulkVideoProgress && <GenerateAllVideosProgressModal shots={canonical.shots} records={records} launches={bulkVideoLaunches} launching={bulkVideoGeneration.isPending} onClose={() => setShowBulkVideoProgress(false)} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
     {showVideoPromptEditor && selected && <VideoPromptFullscreenEditor shotId={selected.id} value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} onClose={() => setShowVideoPromptEditor(false)} />}
-    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><div className="shot-list-header-actions"><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span><button className="secondary-button shot-list-add-button" type="button" onClick={createManualShot} title={selected ? `在 ${selected.id} 后添加分镜` : "添加第一个分镜"}><Plus size={14} />添加分镜</button></div></div>{visibleShots.map((shot, index) => <ShotListRow key={shot.id} shot={shot} index={index} total={canonical.shots.length} active={selected?.id === shot.id} onSelect={() => setSelectedShotId(shot.id)} onMove={(direction) => moveShot(shot.id, direction)} onDelete={() => deleteShot(shot.id)} />)}<ProgressiveListLoading visible={visibleShotCount} total={canonical.shots.length} label="分镜" /></section>
+    <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><div className="shot-list-header-actions"><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span><button className="secondary-button shot-list-add-button" type="button" onClick={createManualShot} title={selected ? `在 ${selected.id} 后添加分镜` : "添加第一个分镜"}><Plus size={14} />添加分镜</button></div></div>{visibleShots.map((shot, index) => <ShotListRow key={shot.id} shot={shot} index={index} total={canonical.shots.length} active={selected?.id === shot.id} onSelect={() => setSelectedShotId(shot.id)} onMove={(direction) => moveShot(shot.id, direction)} onDelete={() => setShotPendingDeleteId(shot.id)} />)}<ProgressiveListLoading visible={visibleShotCount} total={canonical.shots.length} label="分镜" /></section>
     {selected && <section ref={shotPreviewRef} className="shot-preview">
       <div className="shot-summary"><div><span>SCENE</span><strong>{canonical.scenes.find((scene) => scene.id === selected.scene_id)?.name}</strong></div><div><span>SOURCE</span><strong>{sourceRange.start}–{sourceRange.end}s</strong></div><div><span>RATIO</span><strong>{canonical.story.aspect_ratio || selected.aspect_ratio || "—"}</strong></div></div>
       <div className="shot-content-editor"><div className="panel-title"><div><span className="section-label">SHOT CONTENT</span><h3>分镜内容</h3></div></div><div className="shot-editor-row"><label>画面<VisualMentionEditor value={selected.visual} onChange={(visual) => updateShot(selected.id, { visual })} items={mentionItems} projectPath={projectPath} /></label><label>动作<textarea rows={4} value={selected.action} onChange={(e) => updateShot(selected.id, { action: e.target.value })} /></label></div><div className="shot-editor-row"><label>台词<textarea rows={3} value={selected.dialogue} onChange={(e) => updateShot(selected.id, { dialogue: e.target.value })} /></label><label>声音<textarea rows={3} value={selected.sound} onChange={(e) => updateShot(selected.id, { sound: e.target.value })} /></label></div></div>
