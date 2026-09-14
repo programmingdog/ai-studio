@@ -224,39 +224,39 @@ pub struct CreateImageGenerationTaskItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationReferenceAssetInput {
-    relative_path: String,
-    label: String,
-    kind: String,
+    pub(crate) relative_path: String,
+    pub(crate) label: String,
+    pub(crate) kind: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateShotVideoGenerationInput {
-    workflow_credit_id: Option<String>,
+    pub(crate) workflow_credit_id: Option<String>,
     #[serde(default)]
-    replace_record_id: Option<String>,
-    project_path: String,
-    project_id: String,
-    shot_id: String,
-    prompt: String,
-    aspect_ratio: String,
-    duration: f64,
-    resolution: Option<String>,
-    version: Option<String>,
+    pub(crate) replace_record_id: Option<String>,
+    pub(crate) project_path: String,
+    pub(crate) project_id: String,
+    pub(crate) shot_id: String,
+    pub(crate) prompt: String,
+    pub(crate) aspect_ratio: String,
+    pub(crate) duration: f64,
+    pub(crate) resolution: Option<String>,
+    pub(crate) version: Option<String>,
     #[serde(default)]
-    reference_assets: Vec<GenerationReferenceAssetInput>,
-    first_frame_relative_path: Option<String>,
-    platform_api_base_url: String,
-    provider_model_id: String,
-    provider_code: Option<String>,
-    model_alias: String,
+    pub(crate) reference_assets: Vec<GenerationReferenceAssetInput>,
+    pub(crate) first_frame_relative_path: Option<String>,
+    pub(crate) platform_api_base_url: String,
+    pub(crate) provider_model_id: String,
+    pub(crate) provider_code: Option<String>,
+    pub(crate) model_alias: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ComposeProjectVideoInput {
-    project_path: String,
-    project_id: String,
-    ordered_shot_ids: Vec<String>,
-    aspect_ratio: String,
+    pub(crate) project_path: String,
+    pub(crate) project_id: String,
+    pub(crate) ordered_shot_ids: Vec<String>,
+    pub(crate) aspect_ratio: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -47,6 +47,10 @@ import type {
   VideoRemixTask,
   ScriptAnalysisTask,
   CreateScriptAnalysisTaskInput,
+  FreeCreationWorkspace,
+  FreeCreationTask,
+  CreateFreeCreationVideoInput,
+  ComposeFreeCreationVideosInput,
 } from "@aivs/schemas";
 import { VIDEO_STORYBOARD_DETAILED_PROMPT, VIDEO_STORYBOARD_PROMPT } from "../prompts/videoStoryboard";
 import { CHARACTER_IMAGE_PROMPT } from "../prompts/characterImage";
@@ -664,6 +668,26 @@ export async function composeProjectVideo(input: ComposeProjectVideoInput): Prom
 export async function readProjectAsset(projectPath: string, relativePath: string): Promise<string> {
   if (!isTauri()) return "";
   return invoke<string>("read_project_asset", { projectPath, relativePath });
+}
+
+export async function ensureFreeCreationWorkspace(): Promise<FreeCreationWorkspace> {
+  if (!isTauri()) throw new Error("自由创作仅支持桌面应用");
+  return invoke<FreeCreationWorkspace>("ensure_free_creation_workspace");
+}
+
+export async function createFreeCreationVideo(input: CreateFreeCreationVideoInput): Promise<FreeCreationTask> {
+  if (!isTauri()) throw new Error("自由创作视频生成仅支持桌面应用");
+  return invoke<FreeCreationTask>("create_free_creation_video", { input });
+}
+
+export async function listFreeCreationTasks(): Promise<FreeCreationTask[]> {
+  if (!isTauri()) return [];
+  return invoke<FreeCreationTask[]>("list_free_creation_tasks");
+}
+
+export async function composeFreeCreationVideos(input: ComposeFreeCreationVideosInput): Promise<FreeCreationTask> {
+  if (!isTauri()) throw new Error("自由创作视频合成仅支持桌面应用");
+  return invoke<FreeCreationTask>("compose_free_creation_videos", { input });
 }
 
 export async function saveCanonical(bundle: ProjectBundle): Promise<ProjectBundle> {

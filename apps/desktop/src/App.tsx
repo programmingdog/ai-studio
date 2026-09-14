@@ -26,6 +26,7 @@ import { AgentChatModal } from "./components/AgentChatModal";
 import { VideoUnderstandingPanel } from "./components/VideoUnderstandingPanel";
 import { PromotionPosterModal } from "./components/PromotionPosterModal";
 import { VideoPromptFullscreenEditor, VisualMentionEditor, type VisualMentionItem } from "./components/VisualMentionEditor";
+import { FreeCreationPage } from "./components/FreeCreationPage";
 import { activatePlatformUserContext, bindPlatformSessionUser, getCreditBalance, getMediaCreditQuote, getPlatformUser, getScriptAnalysisQuote, listCreativeTypeCategories, listCreativeTypes, listMediaModels, listVisualStyleCategories, listVisualStyles, loadPlatformSession, platformApiBaseUrl, PlatformApiError, type ModelCreditQuote, type PlatformMediaModel } from "./services/platform";
 import { CHARACTER_IMAGE_PROMPT } from "./prompts/characterImage";
 import { buildVideoUnderstandingPrompt, type FixedStoryboardSeconds, type StoryboardUnderstandingMode, type StoryboardUnderstandingSelection } from "./videoUnderstandingModes";
@@ -397,6 +398,7 @@ export function App() {
   const [showGenerationRecords, setShowGenerationRecords] = useState(false);
   const [showAgentChat, setShowAgentChat] = useState(false);
   const [showProjectCenterGuidance, setShowProjectCenterGuidance] = useState(false);
+  const [freeCreationOpen, setFreeCreationOpen] = useState(false);
   const queryClient = useQueryClient();
   const [renderedPage, setRenderedPage] = useState<WorkspacePage | null>(page);
   const navigationFrame = useRef<number | undefined>(undefined);
@@ -612,7 +614,8 @@ export function App() {
 
   if (authenticationChecking || (authenticated && !mainWindowReady)) return <div className="account-auth-gate" role="status" aria-live="polite">{windowPreparationError ? <><span>{windowPreparationError}</span><button className="primary-button" onClick={() => setWindowPreparationAttempt((attempt) => attempt + 1)}>重试</button></> : <><LoaderCircle className="spin" size={28} aria-hidden="true" /><span>{authenticationChecking ? "正在验证登录状态…" : "正在打开主界面…"}</span></>}</div>;
   if (!authenticated) return <AccountCenterModal required onClose={() => undefined} />;
-  if (!bundle?.canonical) return <><CreateProjectScreen appVersion={appVersion} initialBundle={bundle} onReady={openCreatedProject} onProjectCreatedNotice={showProjectCenterGuidanceOnce} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}{showProjectCenterGuidance && <ProjectCenterGuidanceModal onClose={() => setShowProjectCenterGuidance(false)} />}</>;
+  if (freeCreationOpen) return <div className="studio-shell free-creation-shell"><aside className="sidebar"><AccountEntry /><nav className="workspace-nav"><button className="active" type="button"><Sparkles size={18} /><span>自由创作</span><ChevronRight size={15} className="nav-arrow" /></button></nav><div className="sidebar-footer">当前客户端版本 {appVersion ? `v${appVersion}` : "—"}</div></aside><main className="workspace"><header className="topbar"><div className="top-actions"><button className="secondary-button toolbar-button" onClick={() => setShowAiSettings(true)}><Settings size={15} /> {t("systemSettings")}</button><button className="secondary-button toolbar-button" onClick={() => setFreeCreationOpen(false)}><FolderOpen size={15} />{bundle?.canonical ? "返回项目" : "返回首页"}</button></div></header><div className="page-content free-creation-content"><FreeCreationPage /></div></main>{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}</div>;
+  if (!bundle?.canonical) return <><CreateProjectScreen appVersion={appVersion} initialBundle={bundle} onReady={openCreatedProject} onProjectCreatedNotice={showProjectCenterGuidanceOnce} onOpenAgent={() => setShowAgentChat(true)} onOpenSettings={() => setShowAiSettings(true)} onOpenFreeCreation={() => setFreeCreationOpen(true)} />{showAiSettings && <AiSettingsModal onClose={() => setShowAiSettings(false)} />}{showAgentChat && <AgentChatModal onClose={() => setShowAgentChat(false)} onProjectAction={handleAgentProjectAction} />}{showProjectCenterGuidance && <ProjectCenterGuidanceModal onClose={() => setShowProjectCenterGuidance(false)} />}</>;
 
   return (
     <div className="studio-shell">
@@ -620,6 +623,7 @@ export function App() {
         <AccountEntry />
         <div className="project-chip"><div className="project-avatar">{bundle.project.name.slice(0, 1)}</div><div><strong>{bundle.project.name}</strong><span>{bundle.canonical.story.aspect_ratio ?? bundle.creation_spec.aspect_ratio}{bundle.source_type === "SCRIPT_FILE" ? "" : ` · ${bundle.creation_spec.target_duration}s`}</span></div></div>
         <nav className="workspace-nav">
+          <button type="button" onClick={() => setFreeCreationOpen(true)}><Sparkles size={18} /><span>自由创作</span></button>
           {navItems.map(([id, labelKey, Icon]) => (
             <button key={id} className={page === id ? "active" : ""} onPointerEnter={() => prefetchWorkspacePage(id)} onFocus={() => prefetchWorkspacePage(id)} onClick={() => navigateWorkspacePage(id)}>
               <Icon size={18} /><span>{t(labelKey)}</span>
@@ -660,7 +664,7 @@ export function App() {
   );
 }
 
-function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCreatedNotice, onOpenSettings }: { appVersion: string; initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onProjectCreatedNotice: () => void; onOpenAgent: () => void; onOpenSettings: () => void }) {
+function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCreatedNotice, onOpenSettings, onOpenFreeCreation }: { appVersion: string; initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onProjectCreatedNotice: () => void; onOpenAgent: () => void; onOpenSettings: () => void; onOpenFreeCreation: () => void }) {
   const { t } = useI18n();
   const [spec, setSpec] = useState(defaultSpec);
   const [sourceType, setSourceType] = useState<CreateMode>(() => initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? "IDEA" : "DOUYIN_URL");
@@ -1102,6 +1106,7 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
       <main className="create-layout">
         <aside className="create-navigation" aria-label="创建方式">
           <nav className="source-options">
+            <button onClick={onOpenFreeCreation}><Sparkles size={18} /><span>自由创作<small>无项目限制，多任务并发生成</small></span></button>
             <button className={!showProjectCenter && !showAssetLibrary && sourceType === "DOUYIN_URL" ? "active" : ""} onClick={() => selectSourceType("DOUYIN_URL")}><Link2 size={18} /><span>{t("douyinLink")}<small>{t("douyinHint")}</small></span></button>
             <button className={!showProjectCenter && !showAssetLibrary && sourceType === "VIDEO_UNDERSTANDING" ? "active" : ""} onClick={() => selectSourceType("VIDEO_UNDERSTANDING")}><ScanSearch size={18} /><span>{t("videoUnderstanding")}<small>{t("videoHint")}</small></span></button>
             <button className={!showProjectCenter && !showAssetLibrary && sourceType === "IDEA" ? "active" : ""} onClick={() => selectSourceType("IDEA")}><Lightbulb size={18} /><span>{t("startIdea")}<small>{t("ideaHint")}</small></span></button>

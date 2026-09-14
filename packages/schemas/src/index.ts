@@ -520,6 +520,49 @@ export interface GenerationRecord {
   finished_at?: string;
 }
 
+export interface FreeCreationWorkspace {
+  project_id: string;
+  project_path: string;
+}
+
+export interface FreeCreationAssetReference {
+  asset_id: string;
+}
+
+export interface CreateFreeCreationVideoInput {
+  workspace: FreeCreationWorkspace;
+  task_id: string;
+  workflow_credit_id: string;
+  prompt: string;
+  aspect_ratio: "9:16" | "16:9";
+  duration: number;
+  resolution: string;
+  visual_style_name: string;
+  visual_style_prompt: string;
+  platform_api_base_url: string;
+  provider_model_id: string;
+  provider_code?: string;
+  model_alias: string;
+  references: FreeCreationAssetReference[];
+}
+
+export interface FreeCreationTask {
+  id: string;
+  kind: "generation" | "composition";
+  prompt: string;
+  duration: number;
+  resolution: string;
+  visual_style_name: string;
+  reference_names: string[];
+  source_record_ids: string[];
+  record: GenerationRecord;
+}
+
+export interface ComposeFreeCreationVideosInput {
+  workspace: FreeCreationWorkspace;
+  ordered_record_ids: string[];
+}
+
 export type AutomaticWorkflowMode = "fast" | "storyboard";
 export type AutomaticWorkflowStage = "assets" | "storyboard" | "video" | "composition" | "completed";
 

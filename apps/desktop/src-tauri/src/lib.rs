@@ -7,6 +7,7 @@ mod commands;
 mod credit_confirmation;
 mod database;
 mod douyin_tasks;
+mod free_creation;
 mod guided_idea;
 mod jobs;
 mod logging;
@@ -128,6 +129,10 @@ pub fn run() {
             ai::save_generation_record_asset,
             ai::export_all_generation_assets,
             ai::read_project_asset,
+            free_creation::ensure_free_creation_workspace,
+            free_creation::create_free_creation_video,
+            free_creation::list_free_creation_tasks,
+            free_creation::compose_free_creation_videos,
             agent::list_agent_sessions,
             agent::list_agent_messages,
             agent::list_agent_runs,
