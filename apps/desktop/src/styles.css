@@ -1433,3 +1433,14 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .shot-delete-summary > small { color: var(--ui-text-muted); font-size: 11px; white-space: nowrap; }
 .shot-delete-warning { color: var(--ui-danger); border-color: var(--ui-danger-border); background: var(--ui-danger-soft); }
 .shot-delete-warning span { color: var(--ui-danger); }
+.video-reference-mode-backdrop { z-index: 1500; }
+.video-reference-mode-modal { width: min(640px, 92vw); }
+.video-reference-mode-options { gap: 11px; }
+.video-reference-mode-option { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 13px; width: 100%; padding: 15px; border: 1px solid var(--ui-accent-border); border-radius: 11px; color: var(--ui-text); background: var(--ui-accent-soft); text-align: left; cursor: pointer; }
+.video-reference-mode-option:hover { border-color: var(--ui-accent); box-shadow: 0 8px 24px rgba(111, 85, 202, .12); }
+.video-reference-mode-option.secondary { border-color: var(--ui-border); background: var(--ui-surface-subtle); }
+.video-reference-mode-option > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 10px; color: var(--ui-accent); background: var(--ui-surface); }
+.video-reference-mode-option > div { display: grid; gap: 5px; min-width: 0; }
+.video-reference-mode-option strong { font-size: 13px; }
+.video-reference-mode-option small { color: var(--ui-text-muted); font-size: 11px; line-height: 1.55; }
+.video-reference-mode-option > svg { color: var(--ui-text-muted); }

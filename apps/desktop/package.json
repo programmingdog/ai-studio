@@ -14,6 +14,7 @@
     "test:low-credit": "node --test test/low-credit-reminder.test.cjs",
     "test:credit-copy": "node --test test/credit-copy.test.cjs",
     "test:product-brand": "node --test test/product-brand.test.cjs",
+    "test:video-references": "node --test test/video-reference-mode.test.cjs",
     "test:video-duration": "node --test test/video-duration-selection.test.cjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

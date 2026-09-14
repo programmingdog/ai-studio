@@ -6,6 +6,21 @@ export interface VideoPromptMention {
   kind: GenerationReferenceAssetInput["kind"];
 }
 
+export type VideoReferenceMode = "pure_text" | "references";
+
+export function videoReferenceContext<T>(mode: VideoReferenceMode, references: T[], shotImagePath?: string): { references: T[]; shotImagePath?: string } {
+  return mode === "pure_text" ? { references: [], shotImagePath: undefined } : { references, shotImagePath };
+}
+
+export function pureTextVideoPrompt(prompt: string): string {
+  return prompt
+    .split("\n")
+    .filter((line) => !["场景参考图：", "角色参考图：", "道具参考图：", "首帧要求：", "分镜图参考要求："].some((prefix) => line.trim().startsWith(prefix)))
+    .join("\n")
+    .replace(/@(场景图|角色图\d*|道具图\d*|分镜图)/g, "")
+    .replace("角色、场景与参考图一致", "角色与场景在视频中保持一致");
+}
+
 const kindOrder: Record<GenerationReferenceAssetInput["kind"], number> = {
   scene: 0,
   character: 1,

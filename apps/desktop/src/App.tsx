@@ -35,7 +35,7 @@ import { useProductBrand } from "./brand";
 import type { AutomaticWorkflowSnapshot } from "@aivs/schemas";
 import { creditRefundCopy, creditRetryCopy, creditText } from "./services/creditCopy";
 import { addManualShot, deleteStoryboardShot, moveStoryboardShot } from "./manualShot";
-import { prepareVideoPromptSubmission, type VideoPromptMention } from "./videoPromptReferences";
+import { prepareVideoPromptSubmission, pureTextVideoPrompt, videoReferenceContext, type VideoPromptMention, type VideoReferenceMode } from "./videoPromptReferences";
 import { resolveVideoDuration, selectableVideoDurations, type VideoDurationMode } from "./services/videoDuration";
 
 const defaultSpec: CreationSpec = {
@@ -51,6 +51,7 @@ type CookieSource = BrowserCookieSource | "managed" | "file" | "";
 type DouyinTaskReviewState = { script: string; spec: CreationSpec; rootPath: string; fixedSeconds?: FixedStoryboardSeconds };
 type MediaModelSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string; durationByKey?: Record<string, number> };
 type MediaPickerItem = { key: string; seconds?: number };
+type WorkflowMediaSelections = { image: MediaModelSelection; video: MediaModelSelection; videoReferenceMode: VideoReferenceMode };
 type MediaPickerRequest = { id: string; capability: PlatformMediaModel["capability"]; title: string; projectPath: string; items: MediaPickerItem[]; durationMode: VideoDurationMode; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void };
 const MEDIA_PICKER_EVENT = "aivs:pick-media-model";
 
@@ -70,16 +71,16 @@ function mediaVideoDuration(selection: MediaModelSelection, itemKey: string, sho
   return selection.durationByKey?.[itemKey] ?? shotDuration;
 }
 
-function workflowMediaSnapshot(selections?: { image: MediaModelSelection; video: MediaModelSelection }): AutomaticWorkflowSnapshot {
+function workflowMediaSnapshot(selections?: WorkflowMediaSelections): AutomaticWorkflowSnapshot {
   if (!selections) return {};
   const serialize = (selection: MediaModelSelection) => ({ provider_model_id: selection.model.id, provider_code: selection.model.provider_code, model_alias: selection.model.model_alias, model_code: selection.model.model_code, resolution: selection.resolution, credit_cost: selection.creditCost, workflow_credit_id: selection.workflowCreditId, billing_unit: selection.model.billing_unit, video_duration_options: selection.model.video_duration_options, duration_by_key: selection.durationByKey });
-  return { image_model: serialize(selections.image), video_model: serialize(selections.video) };
+  return { image_model: serialize(selections.image), video_model: serialize(selections.video), video_reference_mode: selections.videoReferenceMode };
 }
 
-function restoredWorkflowMedia(snapshot: AutomaticWorkflowSnapshot): { image: MediaModelSelection; video: MediaModelSelection } | undefined {
+function restoredWorkflowMedia(snapshot: AutomaticWorkflowSnapshot): WorkflowMediaSelections | undefined {
   if (!snapshot.image_model || !snapshot.video_model) return undefined;
   const restore = (value: NonNullable<AutomaticWorkflowSnapshot["image_model"]>) => ({ model: { id: value.provider_model_id, provider_code: value.provider_code, model_alias: value.model_alias, model_code: value.model_code, billing_unit: value.billing_unit, video_duration_options: value.video_duration_options } as PlatformMediaModel, resolution: value.resolution, creditCost: value.credit_cost, workflowCreditId: value.workflow_credit_id, durationByKey: value.duration_by_key });
-  return { image: restore(snapshot.image_model), video: restore(snapshot.video_model) };
+  return { image: restore(snapshot.image_model), video: restore(snapshot.video_model), videoReferenceMode: snapshot.video_reference_mode ?? "pure_text" };
 }
 
 function MediaModelSelectionHost() {
@@ -2037,6 +2038,7 @@ function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, ret
 function StoryPage({ canonical, projectPath, projectId }: { canonical: CanonicalProject; projectPath: string; projectId: string }) {
   const queryClient = useQueryClient();
   const { t, locale } = useI18n();
+  const videoReferenceModePrompt = useVideoReferenceModePrompt();
   const update = useStudioStore((state) => state.updateCanonical);
   const pendingAgentProduction = useStudioStore((state) => state.pendingAgentProduction);
   const setPendingAgentProduction = useStudioStore((state) => state.setPendingAgentProduction);
@@ -2067,7 +2069,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
   const stoppedWorkflowIds = useRef(new Set<string>());
   const agentWorkflowHandled = useRef(false);
   const workflowPersistenceQueue = useRef<Promise<unknown>>(Promise.resolve());
-  const workflowMediaSelections = useRef<{ image: MediaModelSelection; video: MediaModelSelection } | undefined>(undefined);
+  const workflowMediaSelections = useRef<WorkflowMediaSelections | undefined>(undefined);
   const story = canonical.story;
   const projectEpisodes = canonical.episodes ?? [];
   const setStory = (patch: Partial<typeof story>) => update((model) => ({ ...model, story: { ...model.story, ...patch } }));
@@ -2259,14 +2261,14 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
 
     setProgress({ stage: "video", imageTasks: currentImageTasks, records: currentRecords, message: "并发启动全部未完成的分镜视频任务" });
     ensureWorkflowRunning();
-    update((model) => ({ ...model, shots: model.shots.map((shot) => ({ ...shot, video_resolution: resolution === "default" ? undefined : resolution, use_image_as_video_first_frame: false, use_image_as_video_reference: mode === "storyboard" })) }));
+    update((model) => ({ ...model, shots: model.shots.map((shot) => ({ ...shot, video_resolution: resolution === "default" ? undefined : resolution, use_image_as_video_first_frame: false, use_image_as_video_reference: mediaSelections.videoReferenceMode === "references" && mode === "storyboard" })) }));
     const createMissingVideos = async () => {
       ensureWorkflowRunning();
       const queueable = canonical.shots.filter((shot) => {
         const latest = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id);
         return latest ? !["COMPLETED", "FAILED"].includes(latest.status) && !activeGeneration(latest) : !firstProjectAsset(shot.video_assets);
       });
-      const creationResults = await Promise.allSettled(queueable.map((shot) => createShotVideoGeneration(buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, mediaSelections.video.model.model_code, { resolution: mediaSelections.video.resolution, duration: mediaVideoDuration(mediaSelections.video, `video:shot:${shot.id}`, shot.duration), shotImageMode: mode === "storyboard" ? "reference" : "none", mediaSelection: mediaSelections.video }))));
+      const creationResults = await Promise.allSettled(queueable.map((shot) => createShotVideoGeneration(buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, mediaSelections.video.model.model_code, { resolution: mediaSelections.video.resolution, duration: mediaVideoDuration(mediaSelections.video, `video:shot:${shot.id}`, shot.duration), shotImageMode: mode === "storyboard" ? "reference" : "none", referenceMode: mediaSelections.videoReferenceMode, mediaSelection: mediaSelections.video }))));
       const balanceError = creationResults.find((result): result is PromiseRejectedResult => result.status === "rejected" && chargeStopped(result.reason));
       if (balanceError) await failFastOnInsufficientBalance(balanceError.reason);
       const creationError = creationResults.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -2418,8 +2420,8 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
           return latest?.status === "FAILED";
         });
         if (!failedShots.length) throw new Error("分镜视频区域当前没有失败任务。");
-        const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
-        if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
+        const referenceMode = await videoReferenceModePrompt.requestMode("重启失败的分镜视频", failedShots.length);
+        if (!referenceMode) return;
         const selection = await requestMediaModel("VIDEO_GENERATION", `重启 ${failedShots.length} 个失败的分镜视频`, projectPath,
           failedShots.map((shot) => ({ key: `video:shot:${shot.id}`, seconds: shot.duration })));
         for (const shot of failedShots) {
@@ -2427,6 +2429,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
             locale,
             duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration),
             shotImageMode: workflow.mode === "storyboard" ? "reference" : "none",
+            referenceMode,
             mediaSelection: selection,
           });
           await createShotVideoGeneration(input);
@@ -2494,6 +2497,8 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     const shot = canonical.shots.find((item) => item.id === shotId);
     if (!shot) return;
     if (replaceRecordId && !window.confirm(`确定停止分镜 ${shotId} 当前的视频任务并创建新任务吗？\n\n旧任务可能已提交给模型，停止不保证退还已消耗的积分；新任务会再次消耗积分。下一步会显示新任务的准确积分，确认后才会停止旧任务。`)) return;
+    const referenceMode = await videoReferenceModePrompt.requestMode(`${replaceRecordId ? "停止并重新生成" : "单独重启"}分镜 ${shotId}`, 1);
+    if (!referenceMode) return;
     setRetryingShotVideoId(shotId);
     setWorkflowRegionMessage(undefined);
     let selection: MediaModelSelection | undefined;
@@ -2503,11 +2508,9 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       const currentRecords = refreshedRecords.data ?? records;
       const latest = currentRecords.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shotId);
       if (replaceRecordId ? latest?.id !== replaceRecordId || !latest || !activeGeneration(latest) : latest?.status !== "FAILED") throw new Error("该分镜任务状态已变化，请刷新后重试。");
-      const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
-      if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
       selection = await requestMediaModel("VIDEO_GENERATION", `${replaceRecordId ? "停止并重新生成" : "单独重启"}分镜 ${shotId}`, projectPath, [{ key: `video:shot:${shotId}`, seconds: shot.duration }]);
       const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_code, {
-        locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), shotImageMode: workflow.mode === "storyboard" ? "reference" : "none", mediaSelection: selection,
+        locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), shotImageMode: workflow.mode === "storyboard" ? "reference" : "none", referenceMode, mediaSelection: selection,
       });
       await createShotVideoGeneration({ ...input, replace_record_id: replaceRecordId });
       const nextRecords = await generationRecordsQuery.refetch();
@@ -2527,7 +2530,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     setRestartWorkflowId(undefined);
     setWorkflow((current) => ({ ...current, visible: true }));
   };
-  const startAutoWorkflow = async (choice: WorkflowStartChoice) => {
+  const startAutoWorkflow = async (choice: WorkflowStartChoice, videoReferenceMode: VideoReferenceMode) => {
     if (startingWorkflow) return;
     const restarting = Boolean(restartWorkflowId);
     const selectedMode = restarting ? workflow.mode : autoMode;
@@ -2542,7 +2545,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       creditId = await invoke<string>("approve_workflow_credit",{projectPath,apiBase:platformApiBaseUrl,items:choice.items});
       const image = {...choice.image,workflowCreditId:creditId};
       const video = {...choice.video,workflowCreditId:creditId};
-      workflowMediaSelections.current = { image, video };
+      workflowMediaSelections.current = { image, video, videoReferenceMode };
       const selectedResolution = video.resolution;
       setAutoResolution(selectedResolution);
       const created = await createAutomaticWorkflow({ project_path: projectPath, project_id: projectId, mode: selectedMode, resolution: selectedResolution });
@@ -2561,6 +2564,15 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     } finally {
       setStartingWorkflow(false);
     }
+  };
+  const confirmAndStartAutoWorkflow = async (choice: WorkflowStartChoice) => {
+    const videoCount = choice.items.filter((item) => item.group === "分镜视频").length;
+    if (videoCount === 0) {
+      await startAutoWorkflow(choice, "pure_text");
+      return;
+    }
+    const referenceMode = await videoReferenceModePrompt.requestMode("一键自动创作", videoCount);
+    if (referenceMode) await startAutoWorkflow(choice, referenceMode);
   };
   useEffect(() => {
     if(agentWorkflowHandled.current || !pendingAgentProduction || pendingAgentProduction.project_id!==projectId || activeWorkflowQuery.isLoading) return;
@@ -2627,9 +2639,10 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     <label>{t("synopsis")}<textarea value={story.synopsis} rows={7} onChange={(e) => setStory({ synopsis: e.target.value })} /></label>
     {projectEpisodes.length > 0 && <section className="story-episodes"><header><div><span className="section-label">EPISODES</span><h3>分集内容</h3></div></header><div>{projectEpisodes.map((episode, index) => <article key={episode.id}><header><span>{String(index + 1).padStart(2, "0")}</span><input value={episode.title} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, title: event.target.value } : item))} /><em>{Math.round(episode.duration)}秒</em></header><textarea rows={7} value={episode.content} onChange={(event) => setEpisodes(projectEpisodes.map((item) => item.id === episode.id ? { ...item, content: event.target.value } : item))} /></article>)}</div></section>}
     <label>{t("projectStyle")}<textarea rows={4} value={story.visual_style ?? canonical.shots[0]?.visual_style ?? ""} onChange={(e) => setVisualStyle(e.target.value)} /><small>默认采用视频理解结果；选择预设或直接编辑后，会同步到全部分镜。</small></label>
-    {showAutoMode && settings.data && <WorkflowStartModal mode={autoMode} planned={planned} onModeChange={setAutoMode} onCancel={closeWorkflowStart} onCreditsPurchased={() => setWorkflowStartError("")} onStart={choice=>void startAutoWorkflow(choice)} busy={startingWorkflow} error={workflowStartError} restart={Boolean(restartWorkflowId)} />}
+    {showAutoMode && settings.data && <WorkflowStartModal mode={autoMode} planned={planned} onModeChange={setAutoMode} onCancel={closeWorkflowStart} onCreditsPurchased={() => setWorkflowStartError("")} onStart={choice => void confirmAndStartAutoWorkflow(choice)} busy={startingWorkflow || videoReferenceModePrompt.prompting} error={workflowStartError} restart={Boolean(restartWorkflowId)} />}
     {workflow.visible && <AutoProjectWorkflowModal canonical={canonical} projectPath={projectPath} state={workflow} stopping={stoppingWorkflow} retryingRegion={retryingWorkflowRegion} retryingShotVideoId={retryingShotVideoId} retryRegionMessage={workflowRegionMessage} onStop={() => void stopAutomaticWorkflow()} onRestart={openRestartWorkflow} onRetryFailedRegion={(region) => void retryFailedWorkflowRegion(region)} onRegenerateShotVideo={(shotId, replaceRecordId) => void regenerateShotVideo(shotId, replaceRecordId)} onClose={() => setWorkflow((current) => ({ ...current, visible: false }))} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
+    {videoReferenceModePrompt.modal}
   </section></div>;
 }
 
@@ -2846,32 +2859,6 @@ function characterStateImage(character: Character, state: CharacterState, imageT
       : undefined);
 }
 
-interface VideoAssetPrerequisite {
-  ready: boolean;
-  missingScenes: string[];
-  missingCharacterStates: string[];
-}
-
-function videoAssetPrerequisite(canonical: CanonicalProject, imageTasks: ImageGenerationTask[]): VideoAssetPrerequisite {
-  const missingScenes = canonical.scenes
-    .filter((scene) => !preferredProjectAsset(scene.reference_assets, latestTargetImage(imageTasks, "scene", scene.id)))
-    .map((scene) => `${scene.id} · ${scene.name}`);
-  const missingCharacterStates = canonical.characters.flatMap((character) => characterStates(character)
-    .filter((state) => !characterStateImage(character, state, imageTasks))
-    .map((state) => `${character.name} · ${state.name}`));
-  return { ready: missingScenes.length === 0 && missingCharacterStates.length === 0, missingScenes, missingCharacterStates };
-}
-
-function videoAssetPrerequisiteMessage(prerequisite: VideoAssetPrerequisite): string {
-  const details = [
-    prerequisite.missingScenes.length ? `${prerequisite.missingScenes.length} 个场景图` : "",
-    prerequisite.missingCharacterStates.length ? `${prerequisite.missingCharacterStates.length} 个角色状态图` : "",
-  ].filter(Boolean).join("、");
-  const examples = [...prerequisite.missingScenes, ...prerequisite.missingCharacterStates].slice(0, 3).join("、");
-  const remaining = prerequisite.missingScenes.length + prerequisite.missingCharacterStates.length - Math.min(3, prerequisite.missingScenes.length + prerequisite.missingCharacterStates.length);
-  return `请先完成全部场景图和角色图，再生成分镜视频。当前还缺少${details || "必需素材"}${examples ? `（${examples}${remaining > 0 ? `等 ${remaining + 3} 项` : ""}）` : ""}。`;
-}
-
 function normalizedShotCharacterStates(characterIds: string[], current: Record<string, string> | undefined, canonical: CanonicalProject): Record<string, string> {
   return Object.fromEntries(characterIds.flatMap((characterId) => {
     const character = canonical.characters.find((item) => item.id === characterId);
@@ -2951,17 +2938,20 @@ function buildShotVideoGenerationInput(
   imageTasks: ImageGenerationTask[],
   records: GenerationRecord[],
   videoModel?: string,
-  options?: { resolution?: string; duration?: number; shotImageMode?: "existing" | "none" | "reference"; locale?: AppLocale; mediaSelection?: MediaModelSelection },
+  options?: { resolution?: string; duration?: number; shotImageMode?: "existing" | "none" | "reference"; referenceMode?: VideoReferenceMode; locale?: AppLocale; mediaSelection?: MediaModelSelection },
 ): CreateShotVideoGenerationInput {
-  const references = shotReferenceAssets(shot, canonical, imageTasks);
-  const shotImagePath = completedShotImagePath(shot, records);
+  const pureText = options?.referenceMode === "pure_text";
+  const referenceContext = videoReferenceContext(options?.referenceMode ?? "references", shotReferenceAssets(shot, canonical, imageTasks), completedShotImagePath(shot, records));
+  const references = referenceContext.references;
+  const shotImagePath = referenceContext.shotImagePath;
   const useFirstFrame = options?.shotImageMode === "existing" || !options?.shotImageMode ? Boolean(shot.use_image_as_video_first_frame && shotImagePath) : false;
   const useShotReference = options?.shotImageMode === "reference"
     ? Boolean(shotImagePath)
     : options?.shotImageMode === "none"
       ? false
       : Boolean(shot.use_image_as_video_reference && !useFirstFrame && shotImagePath);
-  const basePrompt = shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, references, options?.locale);
+  const storedPrompt = shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, references, options?.locale);
+  const basePrompt = pureText ? pureTextVideoPrompt(storedPrompt) : storedPrompt;
   const mentionRequestsShotReference = Boolean(shotImagePath && basePrompt.includes("@分镜图") && !useFirstFrame);
   const includeShotReference = useShotReference || mentionRequestsShotReference;
   const mode = useFirstFrame ? "first_frame" : includeShotReference ? "reference" : undefined;
@@ -2974,7 +2964,7 @@ function buildShotVideoGenerationInput(
   const prepared = prepareVideoPromptSubmission(
     withShotImageInstruction(basePrompt, mode),
     ordinalReferences,
-    shotVideoPromptMentions(shot, canonical, imageTasks, records, useFirstFrame ? "shot_first_frame" : "shot_reference"),
+    pureText ? [] : shotVideoPromptMentions(shot, canonical, imageTasks, records, useFirstFrame ? "shot_first_frame" : "shot_reference"),
   );
   const requestedResolution = options?.mediaSelection?.resolution ?? options?.resolution;
   const requiresStandardSeedance = videoModel === "kwvideo-v2-ref" && ["1080p", "4K"].includes(requestedResolution ?? "");
@@ -3380,6 +3370,43 @@ function DeleteShotConfirmModal({ shot, onCancel, onConfirm }: { shot: Shot; onC
   </div>, document.body);
 }
 
+function VideoReferenceModeConfirmModal({ title, total, onCancel, onSelect }: { title: string; total: number; onCancel: () => void; onSelect: (mode: VideoReferenceMode) => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onCancel]);
+  return createPortal(<div className="modal-backdrop video-reference-mode-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <section className="bulk-video-confirm-modal video-reference-mode-modal" role="dialog" aria-modal="true" aria-labelledby="video-reference-mode-title">
+      <header><div className="bulk-video-modal-icon"><Clapperboard size={23} /></div><div><span className="eyebrow">VIDEO GENERATION MODE</span><h2 id="video-reference-mode-title">是否直接使用纯文字生成？</h2><p>{title}将生成 {total} 个分镜视频，请选择本次视频任务是否携带参考图。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭生成方式选择"><X size={18} /></button></header>
+      <div className="bulk-video-confirm-body video-reference-mode-options"><button className="video-reference-mode-option" type="button" onClick={() => onSelect("pure_text")}><span><FileText size={21} /></span><div><strong>直接纯文字生成</strong><small>只发送视频提示词，不上传分镜图、首帧、场景图、角色图或道具图。</small></div><ChevronRight size={18} /></button><button className="video-reference-mode-option secondary" type="button" onClick={() => onSelect("references")}><span><Images size={21} /></span><div><strong>使用已有参考图生成</strong><small>仅上传当前已经存在的参考图；素材不齐全也允许继续生成。</small></div><ChevronRight size={18} /></button></div>
+      <footer><button className="secondary-button" type="button" onClick={onCancel}>取消生成</button></footer>
+    </section>
+  </div>, document.body);
+}
+
+function useVideoReferenceModePrompt() {
+  const [request, setRequest] = useState<{ title: string; total: number }>();
+  const resolver = useRef<((mode: VideoReferenceMode | undefined) => void) | undefined>(undefined);
+  const requestMode = useCallback((title: string, total: number) => new Promise<VideoReferenceMode | undefined>((resolve) => {
+    resolver.current?.(undefined);
+    resolver.current = resolve;
+    setRequest({ title, total });
+  }), []);
+  const respond = useCallback((mode: VideoReferenceMode | undefined) => {
+    const resolve = resolver.current;
+    resolver.current = undefined;
+    setRequest(undefined);
+    resolve?.(mode);
+  }, []);
+  useEffect(() => () => resolver.current?.(undefined), []);
+  return {
+    requestMode,
+    prompting: Boolean(request),
+    modal: request ? <VideoReferenceModeConfirmModal title={request.title} total={request.total} onCancel={() => respond(undefined)} onSelect={respond} /> : null,
+  };
+}
+
 function LegacyStoryboardPage({ canonical, projectPath }: { canonical: CanonicalProject; projectPath: string }) {
   const { selectedShotId, setSelectedShotId, updateCanonical } = useStudioStore();
   const [shotPendingDeleteId, setShotPendingDeleteId] = useState<string>();
@@ -3509,6 +3536,7 @@ function GenerateAllVideosProgressModal({ shots, records, launches, launching, o
 
 function StoryboardPage({ canonical, projectPath, projectId }: { canonical: CanonicalProject; projectPath: string; projectId: string }) {
   const { locale } = useI18n();
+  const videoReferenceModePrompt = useVideoReferenceModePrompt();
   const { selectedShotId, setSelectedShotId, updateCanonical } = useStudioStore();
   const imageTasks = useProjectImageTasks(projectPath);
   const generationRecords = useProjectGenerationRecords(projectPath);
@@ -3592,8 +3620,6 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const videoMentionItems: VisualMentionItem[] = [];
   const referenceAssets: GenerationReferenceAssetInput[] = [];
   const tasks = imageTasks.data ?? [];
-  const currentVideoAssetPrerequisite = videoAssetPrerequisite(canonical, tasks);
-  const canGenerateShotVideos = !imageTasks.isLoading && currentVideoAssetPrerequisite.ready;
   if (selected) {
     const scene = canonical.scenes.find((item) => item.id === selected.scene_id);
     const scenePath = scene ? preferredProjectAsset(scene.reference_assets, latestTargetImage(tasks, "scene", scene.id)) : undefined;
@@ -3635,25 +3661,28 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     onSuccess: async () => { await Promise.all([imageTasks.refetch(), generationRecords.refetch()]); },
   });
   const generateVideo = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (referenceMode: VideoReferenceMode) => {
       if (!selected) throw new Error("请先选择分镜");
       const refreshedTasks = await imageTasks.refetch();
       const currentImageTasks = refreshedTasks.data ?? tasks;
-      const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
-      if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
       const selection = await requestMediaModel("VIDEO_GENERATION", "选择分镜视频生成模型、分辨率和时长", projectPath,
         [{ key: `video:shot:${selected.id}`, seconds: selected.duration }], "manual");
-      const input = buildShotVideoGenerationInput(selected, canonical, projectPath, projectId, currentImageTasks, records, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${selected.id}`, selected.duration), mediaSelection: selection });
-      updateShot(selected.id, { video_prompt: videoPrompt, video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
+      const input = buildShotVideoGenerationInput(selected, canonical, projectPath, projectId, currentImageTasks, records, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${selected.id}`, selected.duration), referenceMode, mediaSelection: selection });
+      updateShot(selected.id, { video_prompt: referenceMode === "pure_text" ? pureTextVideoPrompt(videoPrompt) : videoPrompt, video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
       return createShotVideoGeneration(input);
     },
     onSuccess: async () => { await generationRecords.refetch(); },
   });
+  const startShotVideoGeneration = async () => {
+    if (!selected) return;
+    const referenceMode = await videoReferenceModePrompt.requestMode(`生成分镜 ${selected.id} 的视频`, 1);
+    if (referenceMode) generateVideo.mutate(referenceMode);
+  };
   const saveShotVideo = useMutation({
     mutationFn: (record: GenerationRecord) => saveGenerationRecordAsset(projectPath, record),
   });
   const bulkVideoGeneration = useMutation({
-    mutationFn: async (mode: BulkVideoGenerationMode) => {
+    mutationFn: async ({ mode, referenceMode }: { mode: BulkVideoGenerationMode; referenceMode: VideoReferenceMode }) => {
       const [refreshedRecords, refreshedTasks] = await Promise.all([generationRecords.refetch(), imageTasks.refetch()]);
       let currentRecords = refreshedRecords.data ?? records;
       const currentImageTasks = refreshedTasks.data ?? tasks;
@@ -3668,8 +3697,6 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
         return !completed && !active && !shot.video_assets?.[0];
       });
       if (!plannedShots.length) return;
-      const prerequisite = videoAssetPrerequisite(canonical, currentImageTasks);
-      if (!prerequisite.ready) throw new Error(videoAssetPrerequisiteMessage(prerequisite));
       const selection = await requestMediaModel("VIDEO_GENERATION", mode === "regenerate" ? "重新生成所有分镜视频" : "生成所有分镜视频", projectPath,
         plannedShots.map((shot) => ({ key: `video:shot:${shot.id}`, seconds: shot.duration })));
       const initial: BulkVideoLaunchMap = {};
@@ -3693,8 +3720,8 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
         }
         setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "creating" } }));
         try {
-          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), mediaSelection: selection });
-          updateShot(shot.id, { video_prompt: shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, shotReferenceAssets(shot, canonical, currentImageTasks), locale), video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
+          const input = buildShotVideoGenerationInput(shot, canonical, projectPath, projectId, currentImageTasks, currentRecords, selection.model.model_alias, { locale, duration: mediaVideoDuration(selection, `video:shot:${shot.id}`, shot.duration), referenceMode, mediaSelection: selection });
+          updateShot(shot.id, { video_prompt: referenceMode === "pure_text" ? pureTextVideoPrompt(shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, [], locale)) : shot.video_prompt_customized ? shot.video_prompt : defaultShotVideoPrompt(shot, canonical, shotReferenceAssets(shot, canonical, currentImageTasks), locale), video_prompt_customized: true, video_resolution: input.resolution, video_version: input.version });
           const record = await createShotVideoGeneration(input);
           setBulkVideoLaunches((current) => ({ ...current, [shot.id]: { phase: "created", recordId: record.id } }));
           const latest = await generationRecords.refetch();
@@ -3738,14 +3765,16 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     if (["created", "existing"].includes(launch.phase)) return !record;
     return false;
   });
-  const startBulkVideoGeneration = (mode: BulkVideoGenerationMode) => {
+  const startBulkVideoGeneration = async (mode: BulkVideoGenerationMode) => {
+    const referenceMode = await videoReferenceModePrompt.requestMode(mode === "regenerate" ? "重新生成所有分镜视频" : "一键生成所有分镜视频", mode === "regenerate" ? canonical.shots.length : missingShotVideoIds.length);
+    if (!referenceMode) return;
     setBulkVideoLaunches({});
     bulkVideoGeneration.reset();
-    bulkVideoGeneration.mutate(mode);
+    bulkVideoGeneration.mutate({ mode, referenceMode });
   };
   const confirmRegenerateAllVideos = () => {
     setShowRegenerateAllVideosConfirm(false);
-    startBulkVideoGeneration("regenerate");
+    void startBulkVideoGeneration("regenerate");
   };
   const bulkVideoBusy = bulkVideoGeneration.isPending || bulkVideoSessionActive;
   const allShotVideosReady = canonical.shots.length > 0 && missingShotVideoIds.length === 0;
@@ -3756,8 +3785,7 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
   const shotPendingDelete = canonical.shots.find((shot) => shot.id === shotPendingDeleteId);
   return <div className="storyboard-layout">
     <section className="project-video-composer">
-      <header><div><span className="section-label">PROJECT VIDEO</span><h3>分镜视频合成</h3><p>按照左侧分镜顺序，将每个分镜最新生成成功的视频合成为一个完整视频。</p></div><div className="project-video-actions">{(bulkVideoBusy || hasShotVideoTaskHistory) && <button className={bulkVideoBusy ? "secondary-button batch-video-button" : "secondary-button"} type="button" onClick={() => setShowBulkVideoProgress(true)}>{bulkVideoBusy ? <LoaderCircle className="spin" size={17} /> : <History size={17} />}查看分镜视频任务进度</button>}{!bulkVideoBusy && allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => setShowRegenerateAllVideosConfirm(true)} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={aiSettings.isLoading || !canGenerateShotVideos}><RotateCcw size={17} />重新一键生成所有分镜视频</button>}{!bulkVideoBusy && !allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => startBulkVideoGeneration("missing")} title={!canGenerateShotVideos ? videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite) : undefined} disabled={canonical.shots.length === 0 || aiSettings.isLoading || !canGenerateShotVideos}><Clapperboard size={17} />一键生成所有分镜视频</button>}{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}<button className="primary-button" type="button" onClick={startComposition} disabled={composeVideo.isPending || activeGeneration(projectVideoRecord) || canonical.shots.length === 0 || missingShotVideoIds.length > 0}>{composeVideo.isPending || activeGeneration(projectVideoRecord) ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{activeGeneration(projectVideoRecord) ? `正在合成 ${Math.round((projectVideoRecord?.progress ?? 0) * 100)}%` : projectVideoPath ? "重新合成视频" : "一键合成视频"}</button></div></header>
-      {!imageTasks.isLoading && !currentVideoAssetPrerequisite.ready && <div className="project-video-readiness missing"><AlertTriangle size={17} /><span>{videoAssetPrerequisiteMessage(currentVideoAssetPrerequisite)}</span></div>}
+      <header><div><span className="section-label">PROJECT VIDEO</span><h3>分镜视频合成</h3><p>按照左侧分镜顺序，将每个分镜最新生成成功的视频合成为一个完整视频。</p></div><div className="project-video-actions">{(bulkVideoBusy || hasShotVideoTaskHistory) && <button className={bulkVideoBusy ? "secondary-button batch-video-button" : "secondary-button"} type="button" onClick={() => setShowBulkVideoProgress(true)}>{bulkVideoBusy ? <LoaderCircle className="spin" size={17} /> : <History size={17} />}查看分镜视频任务进度</button>}{!bulkVideoBusy && allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => setShowRegenerateAllVideosConfirm(true)} disabled={aiSettings.isLoading}><RotateCcw size={17} />重新一键生成所有分镜视频</button>}{!bulkVideoBusy && !allShotVideosReady && <button className="secondary-button batch-video-button" type="button" onClick={() => void startBulkVideoGeneration("missing")} disabled={canonical.shots.length === 0 || aiSettings.isLoading}><Clapperboard size={17} />一键生成所有分镜视频</button>}{projectVideoPath && <button className="secondary-button" type="button" onClick={() => setShowProjectVideo(true)}><Play size={17} />播放合成视频</button>}<button className="primary-button" type="button" onClick={startComposition} disabled={composeVideo.isPending || activeGeneration(projectVideoRecord) || canonical.shots.length === 0 || missingShotVideoIds.length > 0}>{composeVideo.isPending || activeGeneration(projectVideoRecord) ? <LoaderCircle className="spin" size={17} /> : <Clapperboard size={17} />}{activeGeneration(projectVideoRecord) ? `正在合成 ${Math.round((projectVideoRecord?.progress ?? 0) * 100)}%` : projectVideoPath ? "重新合成视频" : "一键合成视频"}</button></div></header>
       <div className={missingShotVideoIds.length > 0 ? "project-video-readiness missing" : "project-video-readiness ready"}>{missingShotVideoIds.length > 0 ? <><AlertTriangle size={17} /><span>还有 {missingShotVideoIds.length} 个分镜没有可用视频：{missingShotVideoIds.join("、")}</span></> : <><CheckCircle2 size={17} /><span>全部 {canonical.shots.length} 个分镜视频已就绪，将按当前分镜顺序合成。</span></>}</div>
       {bulkVideoError && <div className="error-banner">批量分镜视频操作失败：{bulkVideoError}</div>}
       {(composeVideo.error || projectVideoRecord?.status === "FAILED") && <div className="error-banner">视频合成失败：{readableError(composeVideo.error ?? projectVideoRecord?.error?.message)}</div>}
@@ -3766,12 +3794,13 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
     {showRegenerateAllVideosConfirm && <RegenerateAllVideosConfirmModal total={canonical.shots.length} onCancel={() => setShowRegenerateAllVideosConfirm(false)} onConfirm={confirmRegenerateAllVideos} />}
     {showBulkVideoProgress && <GenerateAllVideosProgressModal shots={canonical.shots} records={records} launches={bulkVideoLaunches} launching={bulkVideoGeneration.isPending} onClose={() => setShowBulkVideoProgress(false)} />}
     {showProjectVideo && projectVideoPath && completedProjectVideoRecord && <ProjectVideoPlayerModal projectPath={projectPath} record={completedProjectVideoRecord} aspectRatio={canonical.story.aspect_ratio || "9:16"} shotCount={canonical.shots.length} onClose={() => setShowProjectVideo(false)} />}
+    {videoReferenceModePrompt.modal}
     {showVideoPromptEditor && selected && <VideoPromptFullscreenEditor shotId={selected.id} value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} onClose={() => setShowVideoPromptEditor(false)} />}
     <section className="shot-list"><div className="panel-title"><div><span className="section-label">SHOT LIST</span><h3>{canonical.shots.length} 镜</h3></div><div className="shot-list-header-actions"><span>{canonical.shots.reduce((sum, shot) => sum + shot.duration, 0).toFixed(1)}s</span><button className="secondary-button shot-list-add-button" type="button" onClick={createManualShot} title={selected ? `在 ${selected.id} 后添加分镜` : "添加第一个分镜"}><Plus size={14} />添加分镜</button></div></div>{visibleShots.map((shot, index) => <ShotListRow key={shot.id} shot={shot} index={index} total={canonical.shots.length} active={selected?.id === shot.id} onSelect={() => setSelectedShotId(shot.id)} onMove={(direction) => moveShot(shot.id, direction)} onDelete={() => setShotPendingDeleteId(shot.id)} />)}<ProgressiveListLoading visible={visibleShotCount} total={canonical.shots.length} label="分镜" /></section>
     {selected && <section ref={shotPreviewRef} className="shot-preview">
       <div className="shot-summary"><div><span>SCENE</span><strong>{canonical.scenes.find((scene) => scene.id === selected.scene_id)?.name}</strong></div><div><span>SOURCE</span><strong>{sourceRange.start}–{sourceRange.end}s</strong></div><div><span>RATIO</span><strong>{canonical.story.aspect_ratio || selected.aspect_ratio || "—"}</strong></div></div>
       <div className="shot-content-editor"><div className="panel-title"><div><span className="section-label">SHOT CONTENT</span><h3>分镜内容</h3></div></div><div className="shot-editor-row"><label>画面<VisualMentionEditor value={selected.visual} onChange={(visual) => updateShot(selected.id, { visual })} items={mentionItems} projectPath={projectPath} /></label><label>动作<textarea rows={4} value={selected.action} onChange={(e) => updateShot(selected.id, { action: e.target.value })} /></label></div><div className="shot-editor-row"><label>台词<textarea rows={3} value={selected.dialogue} onChange={(e) => updateShot(selected.id, { dialogue: e.target.value })} /></label><label>声音<textarea rows={3} value={selected.sound} onChange={(e) => updateShot(selected.id, { sound: e.target.value })} /></label></div></div>
-      <section className="shot-generation-panel"><div className="shot-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD IMAGE</span><strong>分镜图生成提示词</strong></div></div><textarea rows={6} value={imagePrompt} onChange={(event) => updateShot(selected.id, { image_prompt: event.target.value, image_prompt_customized: true })} /><div className="shot-prompt-actions"><div className="shot-image-reference-options"><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，并要求模型从此画面开始运动。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsFirstFrame} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_first_frame: checked, use_image_as_video_reference: checked ? false : useShotImageAsReference, video_prompt: withShotImageInstruction(videoPrompt, checked ? "first_frame" : useShotImageAsReference ? "reference" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频首帧</span></label><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，整体参考其角色、场景、构图、光影和风格。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsReference} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_reference: checked, use_image_as_video_first_frame: checked ? false : useShotImageAsFirstFrame, video_prompt: withShotImageInstruction(videoPrompt, checked ? "reference" : useShotImageAsFirstFrame ? "first_frame" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频生成参考图</span></label></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateImage.mutate()} disabled={generateImage.isPending || activeGeneration(shotImageRecord)}>{generateImage.isPending || activeGeneration(shotImageRecord) ? <LoaderCircle className="spin" size={14} /> : <ImageIcon size={14} />}{activeGeneration(shotImageRecord) ? `生成中 ${Math.round((shotImageRecord?.progress ?? 0) * 100)}%` : shotImagePath ? "重新生成分镜图" : "生成分镜图"}</button></div></div><div className="shot-prompt-card video-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD VIDEO</span><strong>视频生成提示词</strong></div></div><VisualMentionEditor value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} rich placeholder="输入视频生成提示词；输入 @ 引用关联图片" ariaLabel="视频生成提示词" /><div className="shot-prompt-actions"><div className="shot-video-options"><button className="secondary-button shot-prompt-action-button" type="button" onClick={() => setShowVideoPromptEditor(true)}><Maximize2 size={14} />全屏编辑</button></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateVideo.mutate()} disabled={generateVideo.isPending || activeGeneration(shotVideoRecord) || !canGenerateShotVideos}>{generateVideo.isPending || activeGeneration(shotVideoRecord) ? <LoaderCircle className="spin" size={14} /> : <Clapperboard size={14} />}{activeGeneration(shotVideoRecord) ? `生成中 ${Math.round((shotVideoRecord?.progress ?? 0) * 100)}%` : shotVideoPath ? "重新生成视频" : "生成分镜视频"}</button></div></div>{(generateImage.error || shotImageRecord?.status === "FAILED") && <div className="error-banner">分镜图生成失败：{readableError(generateImage.error ?? shotImageRecord?.error?.message)}</div>}{isPlatformSessionExpired(shotVideoRecord?.error) && <div className="error-banner">登录已过期，已提交的视频任务正在等待重新登录，登录后会继续查询且不会重新生成。</div>}{(generateVideo.error || (shotVideoRecord?.status === "FAILED" && !isPlatformSessionExpired(shotVideoRecord.error))) && <div className="error-banner">分镜视频生成失败：{readableError(generateVideo.error ?? shotVideoRecord?.error?.message)}</div>}</section>
+      <section className="shot-generation-panel"><div className="shot-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD IMAGE</span><strong>分镜图生成提示词</strong></div></div><textarea rows={6} value={imagePrompt} onChange={(event) => updateShot(selected.id, { image_prompt: event.target.value, image_prompt_customized: true })} /><div className="shot-prompt-actions"><div className="shot-image-reference-options"><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，并要求模型从此画面开始运动。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsFirstFrame} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_first_frame: checked, use_image_as_video_reference: checked ? false : useShotImageAsReference, video_prompt: withShotImageInstruction(videoPrompt, checked ? "first_frame" : useShotImageAsReference ? "reference" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频首帧</span></label><label className="shot-first-frame-option" title={shotImagePath ? "生成视频时会上传该分镜图，整体参考其角色、场景、构图、光影和风格。" : "请先生成分镜图后再启用。"}><input type="checkbox" checked={useShotImageAsReference} disabled={!shotImagePath} onChange={(event) => { const checked = event.target.checked; updateShot(selected.id, { use_image_as_video_reference: checked, use_image_as_video_first_frame: checked ? false : useShotImageAsFirstFrame, video_prompt: withShotImageInstruction(videoPrompt, checked ? "reference" : useShotImageAsFirstFrame ? "first_frame" : undefined), video_prompt_customized: selected.video_prompt_customized }); }} /><span>使用分镜图作为视频生成参考图</span></label></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => generateImage.mutate()} disabled={generateImage.isPending || activeGeneration(shotImageRecord)}>{generateImage.isPending || activeGeneration(shotImageRecord) ? <LoaderCircle className="spin" size={14} /> : <ImageIcon size={14} />}{activeGeneration(shotImageRecord) ? `生成中 ${Math.round((shotImageRecord?.progress ?? 0) * 100)}%` : shotImagePath ? "重新生成分镜图" : "生成分镜图"}</button></div></div><div className="shot-prompt-card video-prompt-card"><div className="shot-prompt-heading"><div><span className="section-label">STORYBOARD VIDEO</span><strong>视频生成提示词</strong></div></div><VisualMentionEditor value={videoPrompt} onChange={(prompt) => updateShot(selected.id, { video_prompt: prompt, video_prompt_customized: true })} items={videoMentionItems} projectPath={projectPath} rich placeholder="输入视频生成提示词；输入 @ 引用关联图片" ariaLabel="视频生成提示词" /><div className="shot-prompt-actions"><div className="shot-video-options"><button className="secondary-button shot-prompt-action-button" type="button" onClick={() => setShowVideoPromptEditor(true)}><Maximize2 size={14} />全屏编辑</button></div><button className="primary-button shot-prompt-action-button" type="button" onClick={() => void startShotVideoGeneration()} disabled={generateVideo.isPending || activeGeneration(shotVideoRecord) || videoReferenceModePrompt.prompting}>{generateVideo.isPending || activeGeneration(shotVideoRecord) ? <LoaderCircle className="spin" size={14} /> : <Clapperboard size={14} />}{activeGeneration(shotVideoRecord) ? `生成中 ${Math.round((shotVideoRecord?.progress ?? 0) * 100)}%` : shotVideoPath ? "重新生成视频" : "生成分镜视频"}</button></div></div>{(generateImage.error || shotImageRecord?.status === "FAILED") && <div className="error-banner">分镜图生成失败：{readableError(generateImage.error ?? shotImageRecord?.error?.message)}</div>}{isPlatformSessionExpired(shotVideoRecord?.error) && <div className="error-banner">登录已过期，已提交的视频任务正在等待重新登录，登录后会继续查询且不会重新生成。</div>}{(generateVideo.error || (shotVideoRecord?.status === "FAILED" && !isPlatformSessionExpired(shotVideoRecord.error))) && <div className="error-banner">分镜视频生成失败：{readableError(generateVideo.error ?? shotVideoRecord?.error?.message)}</div>}</section>
       <div className="shot-media-grid">
         <article className="shot-media-card"><header><span>STORYBOARD IMAGE</span><strong>分镜图</strong></header><div className="shot-media-stage"><ShotGeneratedMedia projectPath={projectPath} relativePath={shotImagePath} mediaType="image" /></div></article>
         <article className="shot-media-card">

@@ -574,6 +574,7 @@ export interface AutomaticWorkflowSnapshot {
   items?: AutomaticWorkflowTaskSnapshot[];
   image_model?: AutomaticWorkflowMediaSelection;
   video_model?: AutomaticWorkflowMediaSelection;
+  video_reference_mode?: "pure_text" | "references";
 }
 
 export type ApplicationLogLevel = "critical" | "error" | "info" | "debug";
