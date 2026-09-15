@@ -13,32 +13,31 @@ function section(start, end) {
   return app.slice(startIndex, endIndex);
 }
 
-test('shot video generation requires every scene and character state image', () => {
-  const prerequisite = section('function videoAssetPrerequisite(', 'function videoAssetPrerequisiteMessage(');
-  assert.match(prerequisite, /canonical\.scenes[\s\S]*preferredProjectAsset/);
-  assert.match(prerequisite, /canonical\.characters\.flatMap[\s\S]*characterStates[\s\S]*characterStateImage/);
-
+test('shot video generation refreshes assets and carries the selected reference mode', () => {
   const singleGeneration = section('const generateVideo = useMutation({', 'const bulkVideoGeneration = useMutation({');
+  assert.match(singleGeneration, /mutationFn: async \(referenceMode: VideoReferenceMode\)/);
   assert.match(singleGeneration, /await imageTasks\.refetch\(\)/);
-  assert.match(singleGeneration, /videoAssetPrerequisite\(canonical, currentImageTasks\)/);
-  assert.ok(singleGeneration.indexOf('if (!prerequisite.ready) throw') < singleGeneration.indexOf('requestMediaModel("VIDEO_GENERATION"'));
+  assert.ok(singleGeneration.indexOf('await imageTasks.refetch()') < singleGeneration.indexOf('requestMediaModel("VIDEO_GENERATION"'));
+  assert.match(singleGeneration, /buildShotVideoGenerationInput\([\s\S]*referenceMode, mediaSelection: selection/);
+  assert.match(singleGeneration, /referenceMode === "pure_text" \? pureTextVideoPrompt\(videoPrompt\) : videoPrompt/);
 });
 
 test('bulk generation and full regeneration always use a fresh model and credit confirmation', () => {
   const bulkGeneration = section('const bulkVideoGeneration = useMutation({', 'const composeVideo = useMutation({');
   const selectionIndex = bulkGeneration.indexOf('await requestMediaModel("VIDEO_GENERATION"');
   assert.ok(selectionIndex >= 0);
-  assert.match(bulkGeneration, /mutationFn: async \(mode: BulkVideoGenerationMode\)/);
+  assert.match(bulkGeneration, /mutationFn: async \(\{ mode, referenceMode \}: \{ mode: BulkVideoGenerationMode; referenceMode: VideoReferenceMode \}\)/);
   assert.match(bulkGeneration, /mode === "regenerate" \? "重新生成所有分镜视频" : "生成所有分镜视频"/);
   assert.match(bulkGeneration, /if \(mode === "regenerate"\) return true/);
   assert.match(bulkGeneration, /mode === "missing" && \(completedRecord \|\| shot\.video_assets\?\.\[0\]\)/);
-  assert.ok(bulkGeneration.indexOf('videoAssetPrerequisite(canonical, currentImageTasks)') < selectionIndex);
+  assert.match(bulkGeneration, /buildShotVideoGenerationInput\([\s\S]*referenceMode, mediaSelection: selection/);
   assert.ok(bulkGeneration.indexOf('setBulkVideoLaunches(initial)') > selectionIndex);
   assert.ok(bulkGeneration.indexOf('setShowBulkVideoProgress(true)') > selectionIndex);
 
-  const entry = section('const startBulkVideoGeneration = (mode: BulkVideoGenerationMode) => {', 'const bulkVideoBusy =');
+  const entry = section('const startBulkVideoGeneration = async (mode: BulkVideoGenerationMode) => {', 'const bulkVideoBusy =');
+  assert.match(entry, /await videoReferenceModePrompt\.requestMode\(/);
   assert.match(entry, /bulkVideoGeneration\.reset\(\)/);
-  assert.match(entry, /bulkVideoGeneration\.mutate\(mode\)/);
+  assert.match(entry, /bulkVideoGeneration\.mutate\(\{ mode, referenceMode \}\)/);
   assert.doesNotMatch(app, /GenerateAllVideosConfirmModal|showBulkVideoConfirm/);
   assert.match(app, /setSelectedModelId\(""\); setSelectedResolution\(""\); setSelectedDuration\(undefined\); setApprovalError\(""\)/);
   assert.match(app, /queryKey: \["media-model-picker-quotes", request\?\.id/);
