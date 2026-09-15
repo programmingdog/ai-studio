@@ -38,6 +38,7 @@ interface ClientModelRow extends RowDataPacket {
   supports_real_person: number;
   supports_async_tasks: number;
   sort_order: number;
+  recommended: number;
   description: string;
   parameter_schema_json: unknown;
   config_json: unknown;
@@ -55,6 +56,11 @@ const promptConfigKeys = {
   "prompt.video_storyboard.detailed": "video_storyboard_detailed_prompt",
   "prompt.character_image.default": "character_image_prompt",
 } as const;
+
+function configuredStringOptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()))];
+}
 
 @Injectable()
 export class ClientConfigService {
@@ -92,13 +98,15 @@ export class ClientConfigService {
               pm.model_code, pm.display_name, pm.model_alias, pm.capability, pm.credit_cost, pm.billing_unit, pm.credit_multiplier,
               pm.max_reference_images, pm.supports_reference_video, pm.supports_real_person,
               pm.supports_async_tasks,
-              pm.sort_order, pm.description, pm.parameter_schema_json, pm.config_json, pm.api_protocol
+              COALESCE(dm.sort_order, pm.sort_order) AS sort_order,
+              CASE WHEN dm.recommended = TRUE THEN 1 ELSE 0 END AS recommended,
+              pm.description, pm.parameter_schema_json, pm.config_json, pm.api_protocol
        FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
+       LEFT JOIN ai_default_media_models dm ON dm.provider_model_id = pm.id AND dm.capability = pm.capability
        WHERE p.status = 'ACTIVE' AND pm.status = 'ACTIVE'
          AND EXISTS (SELECT 1 FROM provider_credentials pc WHERE pc.provider_id = p.id AND pc.status = 'ACTIVE' AND pc.api_key_ciphertext IS NOT NULL AND LENGTH(pc.api_key_ciphertext) > 0)
-         AND (pm.capability NOT IN ('IMAGE_GENERATION', 'VIDEO_GENERATION') OR EXISTS
-              (SELECT 1 FROM ai_default_media_models dm WHERE dm.provider_model_id = pm.id AND dm.capability = pm.capability))
-       ORDER BY pm.capability, pm.sort_order, pm.display_name`,
+         AND (pm.capability NOT IN ('IMAGE_GENERATION', 'VIDEO_GENERATION') OR dm.provider_model_id IS NOT NULL)
+       ORDER BY pm.capability, COALESCE(dm.sort_order, pm.sort_order), pm.display_name`,
     ), this.database.query<RowDataPacket[]>(
       `SELECT rp.provider_model_id, rp.resolution, rp.credit_cost, rp.sort_order
        FROM provider_model_resolution_prices rp
@@ -121,13 +129,15 @@ export class ClientConfigService {
         credit_cost: roundedModelCredits(Number(row.credit_cost), creditMultiplier),
         billing_unit: row.capability === "VIDEO_GENERATION" ? modelBillingUnit(row.capability, row.billing_unit) : "PER_REQUEST",
         video_duration_options: row.capability === "VIDEO_GENERATION" ? videoDurationOptions(parseStoredJson(row.config_json)) : [],
+        aspect_ratio_options: configuredStringOptions((parseStoredJson<Record<string, unknown>>(row.config_json) || {}).aspect_ratio_options),
         max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
-        generation_notice: row.model_code === "viduq3" ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
+        generation_notice: ["viduq3", "viduq3-turbo-cankaosheng"].includes(row.model_code) ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
           : row.model_code === "omni_flash-10s" ? "此方案固定生成 10 秒视频。"
           : wagaProfiles[row.model_code]?.resolution === false ? "此方案由供应商决定输出清晰度，不支持指定分辨率。" : undefined,
         supports_reference_video: Boolean(row.supports_reference_video),
         supports_real_person: Boolean(row.supports_real_person),
         supports_async_tasks: Boolean(row.supports_async_tasks),
+        recommended: Boolean(row.recommended),
         sort_order: Number(row.sort_order),
         parameter_schema: parseStoredJson(row.parameter_schema_json),
         parameter_schema_json: undefined,

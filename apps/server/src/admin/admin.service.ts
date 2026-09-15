@@ -529,7 +529,7 @@ export class AdminService {
         "SELECT text_model_id, video_understanding_model_id FROM ai_default_model_config WHERE id = 1",
       ),
       this.database.query<RowDataPacket[]>(
-        "SELECT capability, provider_model_id FROM ai_default_media_models ORDER BY capability, sort_order, provider_model_id",
+        "SELECT capability, provider_model_id, sort_order, recommended FROM ai_default_media_models ORDER BY capability, sort_order, provider_model_id",
       ),
     ]);
     const eligibleIds = new Set(candidates.map((model) => model.id));
@@ -545,13 +545,18 @@ export class AdminService {
       video_model_ids: mediaRows
         .filter((row) => row.capability === "VIDEO_GENERATION" && eligibleIds.has(String(row.provider_model_id)))
         .map((row) => String(row.provider_model_id)),
+      recommended_image_model_id: mediaRows.find((row) => row.capability === "IMAGE_GENERATION" && Number(row.recommended) === 1
+        && eligibleIds.has(String(row.provider_model_id)))?.provider_model_id ?? null,
+      recommended_video_model_id: mediaRows.find((row) => row.capability === "VIDEO_GENERATION" && Number(row.recommended) === 1
+        && eligibleIds.has(String(row.provider_model_id)))?.provider_model_id ?? null,
       candidates,
     };
   }
 
   async updateDefaultModelConfig(
     adminUserId: string,
-    input: { textModelId: string; videoUnderstandingModelId: string; imageModelIds: string[]; videoModelIds: string[] },
+    input: { textModelId: string; videoUnderstandingModelId: string; imageModelIds: string[]; videoModelIds: string[];
+      recommendedImageModelId: string | null; recommendedVideoModelId: string | null },
   ): Promise<{ updated: true }> {
     await this.database.transaction(async (connection) => {
       const candidates = await this.eligibleDefaultModels(connection);
@@ -566,6 +571,13 @@ export class AdminService {
       assertCapability(input.videoUnderstandingModelId, "VIDEO_UNDERSTANDING", "默认视频理解大模型");
       input.imageModelIds.forEach((id) => assertCapability(id, "IMAGE_GENERATION", "图片生成大模型"));
       input.videoModelIds.forEach((id) => assertCapability(id, "VIDEO_GENERATION", "视频生成大模型"));
+      const assertRecommendation = (modelId: string | null, selectedIds: string[], capability: string, label: string) => {
+        if (!modelId) return;
+        assertCapability(modelId, capability, label);
+        if (!selectedIds.includes(modelId)) throw new BadRequestException(`${label}必须是已启用的客户端模型`);
+      };
+      assertRecommendation(input.recommendedImageModelId, input.imageModelIds, "IMAGE_GENERATION", "推荐图片生成大模型");
+      assertRecommendation(input.recommendedVideoModelId, input.videoModelIds, "VIDEO_GENERATION", "推荐视频生成大模型");
 
       await connection.execute(
         `INSERT INTO ai_default_model_config (id, text_model_id, video_understanding_model_id, updated_by)
@@ -580,9 +592,12 @@ export class AdminService {
         ["VIDEO_GENERATION", input.videoModelIds],
       ] as const) {
         for (const [sortOrder, modelId] of ids.entries()) {
+          const recommended = capability === "IMAGE_GENERATION"
+            ? modelId === input.recommendedImageModelId
+            : modelId === input.recommendedVideoModelId;
           await connection.execute(
-            "INSERT INTO ai_default_media_models (capability, provider_model_id, sort_order) VALUES (?, ?, ?)",
-            [capability, modelId, sortOrder],
+            "INSERT INTO ai_default_media_models (capability, provider_model_id, sort_order, recommended) VALUES (?, ?, ?, ?)",
+            [capability, modelId, sortOrder, recommended ? 1 : 0],
           );
         }
       }
@@ -597,6 +612,8 @@ export class AdminService {
         videoUnderstandingModelId: input.videoUnderstandingModelId,
         imageModelIds: input.imageModelIds,
         videoModelIds: input.videoModelIds,
+        recommendedImageModelId: input.recommendedImageModelId,
+        recommendedVideoModelId: input.recommendedVideoModelId,
       },
     });
     return { updated: true };

@@ -16,11 +16,16 @@ pub struct CreateDouyinUnderstandingTaskInput {
     managed: bool,
     browser_cookie_source: Option<String>,
     cookie_file_path: Option<String>,
+    #[serde(default)]
     video_info: Value,
     mode: String,
     fixed_seconds: Option<u64>,
     #[serde(default = "default_video_submission_mode")]
     video_submission_mode: String,
+    #[serde(default)]
+    provider_model_id: Option<String>,
+    #[serde(default)]
+    expected_credits: Option<f64>,
     #[serde(default)]
     platform_api_base_url: Option<String>,
 }
@@ -243,6 +248,92 @@ fn update_progress(
     }
 }
 
+async fn resolve_link_video(
+    app: &tauri::AppHandle,
+    input: &CreateDouyinUnderstandingTaskInput,
+) -> Result<Value, String> {
+    let share_text = input.share_text.clone();
+    let managed = input.managed;
+    let browser_cookie_source = input.browser_cookie_source.clone();
+    let cookie_file_path = input.cookie_file_path.clone();
+    let profile_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("douyin-managed-chrome");
+    let resolve = tauri::async_runtime::spawn_blocking(move || {
+        let events = if managed {
+            crate::worker::python::resolve_douyin_auto(&share_text, &profile_root)?
+        } else {
+            crate::worker::python::resolve_douyin(
+                &share_text,
+                browser_cookie_source.as_deref(),
+                cookie_file_path.as_deref(),
+            )?
+        };
+        for event in events {
+            match event {
+                crate::worker::python::WorkerEvent::Result(value) => return Ok(value),
+                crate::worker::python::WorkerEvent::Error(error) => {
+                    return Err(error.to_string())
+                }
+                crate::worker::python::WorkerEvent::Progress { .. } => {}
+            }
+        }
+        Err(json!({
+            "code": "VIDEO_LINK_EMPTY_RESULT",
+            "message": "自动识别与解析没有返回视频信息",
+            "retryable": true
+        })
+        .to_string())
+    });
+    match tokio::time::timeout(Duration::from_secs(10 * 60), resolve).await {
+        Ok(result) => result.map_err(|error| format!("视频链接自动识别任务异常：{error}"))?,
+        Err(_) => Err(json!({
+            "code": "VIDEO_LINK_RESOLVE_TIMEOUT",
+            "message": "自动识别与解析视频链接超过 10 分钟，任务已停止，积分不会扣除或会自动回补。",
+            "retryable": true
+        })
+        .to_string()),
+    }
+}
+
+fn save_resolved_video(
+    app: &tauri::AppHandle,
+    task_id: &str,
+    input: &CreateDouyinUnderstandingTaskInput,
+) -> Result<(), String> {
+    let connection = open(app)?;
+    let input_json = serde_json::to_string(input).map_err(|error| error.to_string())?;
+    let title = value_text(&input.video_info, "title");
+    let uploader = value_text(&input.video_info, "uploader");
+    let platform = match value_text(&input.video_info, "platform") {
+        value if value.is_empty() => "UNKNOWN".to_owned(),
+        value => value,
+    };
+    connection
+        .execute(
+            "UPDATE douyin_understanding_tasks SET title = ?2, uploader = ?3, platform = ?4,
+             thumbnail = ?5, duration = ?6, width = ?7, height = ?8, aspect_ratio = ?9,
+             input_json = ?10, updated_at = ?11 WHERE id = ?1",
+            params![
+                task_id,
+                title,
+                uploader,
+                platform,
+                input.video_info.get("thumbnail").and_then(Value::as_str),
+                input.video_info.get("duration").and_then(Value::as_f64),
+                input.video_info.get("width").and_then(Value::as_u64),
+                input.video_info.get("height").and_then(Value::as_u64),
+                input.aspect_ratio,
+                input_json,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn link_analysis_prompt(input: &CreateDouyinUnderstandingTaskInput) -> Result<String, String> {
     let aspect_ratio = match input.aspect_ratio.as_deref() {
         Some("9:16") => Some("9:16"),
@@ -294,7 +385,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 )
                 .map_err(|error| error.to_string())
         });
-        let input = match input_json.and_then(|value| {
+        let mut input = match input_json.and_then(|value| {
             serde_json::from_str::<CreateDouyinUnderstandingTaskInput>(&value)
                 .map_err(|error| error.to_string())
         }) {
@@ -304,6 +395,48 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 return;
             }
         };
+        let execution_key = uuid::Uuid::new_v4().to_string();
+        if value_text(&input.video_info, "download_url").is_empty() {
+            update_progress(
+                &app,
+                &task_id,
+                "resolving",
+                0.06,
+                "正在自动识别视频平台并解析链接",
+            );
+            input.video_info = match resolve_link_video(&app, &input).await {
+                Ok(value) => value,
+                Err(error) => {
+                    finish_failed(&app, &task_id, error);
+                    return;
+                }
+            };
+            if input.source_width.is_none() {
+                input.source_width = input.video_info.get("width").and_then(Value::as_u64);
+            }
+            if input.source_height.is_none() {
+                input.source_height = input.video_info.get("height").and_then(Value::as_u64);
+            }
+            if input.aspect_ratio.is_none() {
+                input.aspect_ratio = match (input.source_width, input.source_height) {
+                    (Some(width), Some(height)) if width > 0 && height > 0 => {
+                        Some(if width > height { "16:9" } else { "9:16" }.to_owned())
+                    }
+                    _ => None,
+                };
+            }
+            if let Err(error) = save_resolved_video(&app, &task_id, &input) {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            update_progress(
+                &app,
+                &task_id,
+                "preparing",
+                0.14,
+                "链接解析完成，正在准备视频理解与分镜生成",
+            );
+        }
         let ext = value_text(&input.video_info, "ext").to_ascii_lowercase();
         let prompt = match link_analysis_prompt(&input) {
             Ok(value) => value,
@@ -324,38 +457,58 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 .ok()
                 .filter(|url| url.scheme() == "https");
             if valid_url.is_none() {
-                finish_failed(
+                update_progress(
                     &app,
                     &task_id,
-                    json!({
-                        "code": "FAST_VIDEO_URL_INVALID",
-                        "message": "极速模式需要可供大模型读取的 HTTPS 视频地址。当前解析地址无效或已失效，请重新解析，或改用详细模式。",
-                        "retryable": true
-                    })
-                    .to_string(),
+                    "fallback",
+                    0.3,
+                    "极速模式地址无效，正在自动切换详细模式重试",
                 );
-                return;
+            } else {
+                update_progress(
+                    &app,
+                    &task_id,
+                    "fast_analyzing",
+                    0.24,
+                    "正在分析理解视频",
+                );
+                let analysis = match (&input.provider_model_id, input.expected_credits) {
+                    (Some(provider_model_id), Some(expected_credits)) => {
+                        crate::platform_video_understanding::understand_public_url_confirmed(
+                            input.platform_api_base_url.as_deref(),
+                            &video_url,
+                            video_mime_type(&ext),
+                            &prompt,
+                            video_name.clone(),
+                            provider_model_id,
+                            expected_credits,
+                            &format!("{task_id}-{execution_key}-fast"),
+                        )
+                        .await
+                    }
+                    _ => crate::platform_video_understanding::understand_public_url(
+                        input.platform_api_base_url.as_deref(),
+                        &video_url,
+                        video_mime_type(&ext),
+                        &prompt,
+                        video_name.clone(),
+                    )
+                    .await,
+                };
+                match analysis {
+                    Ok(result) => {
+                        finish_completed(&app, &task_id, &result);
+                        return;
+                    }
+                    Err(_) => update_progress(
+                        &app,
+                        &task_id,
+                        "fallback",
+                        0.3,
+                        "极速模式失败或超时，正在自动切换详细模式重试一次",
+                    ),
+                }
             }
-            update_progress(
-                &app,
-                &task_id,
-                "analyzing",
-                0.32,
-                "极速模式：正在将解析后的视频地址提交给 AI",
-            );
-            let analysis = crate::platform_video_understanding::understand_public_url(
-                input.platform_api_base_url.as_deref(),
-                &video_url,
-                video_mime_type(&ext),
-                &prompt,
-                video_name,
-            )
-            .await;
-            match analysis {
-                Ok(result) => finish_completed(&app, &task_id, &result),
-                Err(error) => finish_failed(&app, &task_id, error),
-            }
-            return;
         }
         let temp_dir = match app.path().app_cache_dir() {
             Ok(path) => path.join("video-understanding-upload"),
@@ -389,8 +542,8 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             &app,
             &task_id,
             "downloading",
-            0.18,
-            "正在下载真实视频并固化分析副本",
+            0.4,
+            "详细模式：正在下载真实视频并固化分析副本",
         );
         let download = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
             let events = if managed {
@@ -462,7 +615,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 &app,
                 &task_id,
                 "compressing",
-                0.42,
+                0.58,
                 "视频较大，正在压缩服务端分析副本",
             );
             let compression_source = downloaded_path.clone();
@@ -514,17 +667,32 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             &app,
             &task_id,
             "analyzing",
-            0.58,
-            "正在上传视频文件，服务端 AI 随后会理解视频并生成分镜脚本",
+            0.74,
+            "详细模式：正在上传视频并生成分镜，最长等待 10 分钟",
         );
-        let analysis = crate::platform_video_understanding::understand_uploaded_file(
-            input.platform_api_base_url.as_deref(),
-            &analysis_path,
-            &prompt,
-            video_name,
-            downloaded_size,
-        )
-        .await;
+        let analysis = match (&input.provider_model_id, input.expected_credits) {
+            (Some(provider_model_id), Some(expected_credits)) => {
+                crate::platform_video_understanding::understand_uploaded_file_confirmed(
+                    input.platform_api_base_url.as_deref(),
+                    &analysis_path,
+                    &prompt,
+                    video_name,
+                    downloaded_size,
+                    provider_model_id,
+                    expected_credits,
+                    &format!("{task_id}-{execution_key}-detailed"),
+                )
+                .await
+            }
+            _ => crate::platform_video_understanding::understand_uploaded_file(
+                input.platform_api_base_url.as_deref(),
+                &analysis_path,
+                &prompt,
+                video_name,
+                downloaded_size,
+            )
+            .await,
+        };
         let _ = tokio::fs::remove_file(&downloaded_path).await;
         let _ = tokio::fs::remove_file(&compressed_path).await;
         match analysis {
@@ -673,6 +841,16 @@ pub fn create_douyin_understanding_task(
     if !matches!(input.video_submission_mode.as_str(), "url" | "upload") {
         return Err("视频提交方式无效".to_owned());
     }
+    if input
+        .provider_model_id
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        || input
+            .expected_credits
+            .is_none_or(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err("请先确认本次视频理解所需积分".to_owned());
+    }
     input.fixed_seconds = normalized_fixed_seconds(&input.mode, input.fixed_seconds)?;
     let connection = open(&app)?;
     let id = format!("DYTASK_{}", uuid::Uuid::new_v4().simple());
@@ -694,7 +872,7 @@ pub fn create_douyin_understanding_task(
                 id, share_text, title, uploader, platform, thumbnail, duration, width, height, aspect_ratio,
                 mode, fixed_seconds, status, stage, progress, message, input_json, created_at, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'PENDING', 'queued', 0,
-                '已加入队列，等待后台执行', ?13, ?14, ?14)",
+                '已加入队列，准备自动识别并解析视频', ?13, ?14, ?14)",
             params![id, input.share_text, title, uploader, platform, thumbnail, duration, width, height,
                 input.aspect_ratio, input.mode, input.fixed_seconds, input_json, now],
         )

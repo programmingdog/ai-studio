@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, Check, Clapperboard, Coins, Download, Grid2X2, Image as ImageIcon, List, LoaderCircle, Play, Sparkles, Trash2, X } from "lucide-react";
-import type { AssetLibraryItem, FreeCreationTask, FreeCreationWorkspace, VisualStylePreset } from "@aivs/schemas";
+import { ArrowDown, ArrowUp, Check, Clapperboard, Coins, Download, Grid2X2, List, LoaderCircle, Play, Sparkles, Trash2, X } from "lucide-react";
+import type { AssetLibraryItem, FreeCreationAspectRatio, FreeCreationTask, FreeCreationWorkspace, VisualStylePreset } from "@aivs/schemas";
 import { composeFreeCreationVideos, createFreeCreationVideo, ensureFreeCreationWorkspace, listAssetLibrary, listFreeCreationTasks, saveGenerationRecordAsset } from "../services/backend";
 import { getCreditBalance, getMediaCreditQuote, listMediaModels, listVisualStyles, platformApiBaseUrl } from "../services/platform";
 import { creditText } from "../services/creditCopy";
 import { workflowErrorMessage } from "../services/workflowState";
+import { VisualMentionEditor, type VisualMentionItem } from "./VisualMentionEditor";
+import { VideoContentReviewTip } from "./VideoContentReviewTip";
 
 type AssetTab = "all" | AssetLibraryItem["asset_type"];
 type TaskView = "grid" | "list";
+const fallbackAspectRatios: FreeCreationAspectRatio[] = ["9:16", "16:9"];
+const aspectRatioLabels: Record<FreeCreationAspectRatio, string> = {
+  "9:16": "9:16 竖屏", "16:9": "16:9 横屏", "3:4": "3:4 竖向", "4:3": "4:3 横向", "1:1": "1:1 正方形",
+};
 
 const statusLabels: Record<FreeCreationTask["record"]["status"], string> = {
   PENDING: "等待生成", RUNNING: "正在生成", REMOTE_PROCESSING: "模型处理中", DOWNLOADING: "正在下载",
@@ -20,47 +26,30 @@ const assetTabLabels: Record<AssetTab, string> = { all: "全部", scene: "场景
 const tokenForAsset = (asset: AssetLibraryItem, duplicates: Map<string, number>) => `@${asset.name}${(duplicates.get(asset.name) ?? 0) > 1 ? `（${assetTabLabels[asset.asset_type]}·${asset.id.slice(-4)}）` : ""}`;
 const errorText = (error: unknown) => workflowErrorMessage(error);
 
-function FreePromptEditor({ value, onChange, assets }: { value: string; onChange: (value: string) => void; assets: AssetLibraryItem[] }) {
-  const textarea = useRef<HTMLTextAreaElement>(null);
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<AssetTab>("all");
-  const [query, setQuery] = useState("");
-  const [trigger, setTrigger] = useState(-1);
+function FreePromptEditor({ value, onChange, assets, projectPath }: { value: string; onChange: (value: string) => void; assets: AssetLibraryItem[]; projectPath: string }) {
   const duplicates = useMemo(() => assets.reduce((map, asset) => map.set(asset.name, (map.get(asset.name) ?? 0) + 1), new Map<string, number>()), [assets]);
-  const visible = assets.filter((asset) => (tab === "all" || asset.asset_type === tab) && (!query || `${asset.name}${asset.prompt}`.toLowerCase().includes(query.toLowerCase())));
-  const updateMention = (text: string, caret: number) => {
-    const at = text.slice(0, caret).lastIndexOf("@");
-    const candidate = at < 0 ? "" : text.slice(at + 1, caret);
-    if (at < 0 || /[\s，。！？；：,!?;:\n]/.test(candidate) || candidate.length > 30) { setOpen(false); return; }
-    setTrigger(at); setQuery(candidate); setOpen(true);
-  };
-  const insert = (asset: AssetLibraryItem) => {
-    const element = textarea.current;
-    if (!element) return;
-    const end = element.selectionStart;
-    const start = trigger >= 0 ? trigger : end;
-    const token = tokenForAsset(asset, duplicates);
-    const space = value[end] && !/\s/.test(value[end]!) ? " " : "";
-    const next = `${value.slice(0, start)}${token}${space}${value.slice(end)}`;
-    onChange(next); setOpen(false); setQuery("");
-    requestAnimationFrame(() => { element.focus(); element.setSelectionRange(start + token.length + space.length, start + token.length + space.length); });
-  };
+  const items = useMemo<VisualMentionItem[]>(() => assets.map((asset) => ({
+    id: asset.id,
+    label: asset.name,
+    detail: asset.prompt || assetTabLabels[asset.asset_type],
+    insertText: tokenForAsset(asset, duplicates),
+    relativePath: asset.image_path,
+    imageSource: convertFileSrc(asset.image_path),
+    group: asset.asset_type,
+  })), [assets, duplicates]);
   return <div className="free-prompt-editor">
-    <textarea ref={textarea} rows={9} value={value} placeholder="描述想生成的视频；输入 @ 调用资产库中的图片" onChange={(event) => { onChange(event.target.value); updateMention(event.target.value, event.target.selectionStart); }} onClick={(event) => updateMention(event.currentTarget.value, event.currentTarget.selectionStart)} onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }} />
-    <small>输入 @ 可选择场景、角色或道具图片作为参考图。</small>
-    {open && <section className="free-mention-menu">
-      <header><strong><ImageIcon size={15} />选择资产图片</strong><button type="button" onClick={() => setOpen(false)} aria-label="关闭"><X size={14} /></button></header>
-      <nav>{(["all", "scene", "character", "prop"] as AssetTab[]).map((item) => <button type="button" key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{assetTabLabels[item]}</button>)}</nav>
-      <div>{visible.length ? visible.map((asset) => <button type="button" key={asset.id} onClick={() => insert(asset)} title={asset.prompt}><img src={convertFileSrc(asset.image_path)} alt="" /><span><strong>{asset.name}</strong><small>{assetTabLabels[asset.asset_type]}</small></span></button>) : <p>当前分类没有匹配图片</p>}</div>
-    </section>}
+    <VisualMentionEditor value={value} onChange={onChange} items={items} projectPath={projectPath} rich picker="asset-modal" placeholder="描述想生成的视频；输入 @ 调用资产库中的图片" ariaLabel="自由创作视频提示词" />
+    <VideoContentReviewTip />
+    <small>输入 @ 可选择场景、角色或道具图片；可点击标签右侧 ×，或在标签旁按 Backspace / Delete 删除引用。</small>
   </div>;
 }
 
 function TaskVideo({ task, controls = false }: { task: FreeCreationTask; controls?: boolean }) {
   const source = task.record.status === "COMPLETED" && task.record.result_absolute_path ? convertFileSrc(task.record.result_absolute_path) : "";
   if (source) return <video src={source} controls={controls} preload="metadata" playsInline />;
+  const coverText = Array.from(task.prompt.trim()).slice(0, 2).join("") || (task.kind === "composition" ? "合成" : "视频");
   return <div className={`free-task-placeholder ${task.record.status.toLowerCase()}`}>
-    {task.record.status === "FAILED" ? <X size={28} /> : <Clapperboard size={28} />}
+    <strong className="free-task-text-cover" aria-label={`文字封面：${coverText}`}>{coverText}</strong>
     <span>{statusLabels[task.record.status]}</span>
     {!(["COMPLETED", "FAILED", "CANCELLED"] as string[]).includes(task.record.status) && <i><b style={{ width: `${Math.round(task.record.progress * 100)}%` }} /></i>}
   </div>;
@@ -113,14 +102,17 @@ export function FreeCreationPage() {
   const [modelId, setModelId] = useState("");
   const [resolution, setResolution] = useState("");
   const [duration, setDuration] = useState(10);
-  const [aspectRatio, setAspectRatio] = useState<"9:16" | "16:9">("9:16");
+  const [aspectRatio, setAspectRatio] = useState<FreeCreationAspectRatio>("9:16");
   const [styleId, setStyleId] = useState("");
   const [view, setView] = useState<TaskView>("grid");
   const [confirming, setConfirming] = useState(false);
   const [preview, setPreview] = useState<FreeCreationTask>();
   const [showCompose, setShowCompose] = useState(false);
+  const [savingTaskId, setSavingTaskId] = useState("");
+  const [taskSaveResult, setTaskSaveResult] = useState<{ taskId: string; message: string; error: boolean }>();
   const model = models.data?.find((item) => item.id === modelId);
   const style = styles.data?.find((item) => item.id === styleId);
+  const aspectRatioOptions = model?.aspect_ratio_options?.length ? model.aspect_ratio_options : fallbackAspectRatios;
   useEffect(() => { if (!modelId && models.data?.[0]) { setModelId(models.data[0].id); setResolution(models.data[0].resolution_prices[0]?.resolution ?? ""); setDuration(models.data[0].video_duration_options?.[0] ?? 10); } }, [modelId, models.data]);
   const durationOptions = model?.video_duration_options ?? [];
   const quote = useQuery({ queryKey: ["free-creation-quote", modelId, resolution, duration], queryFn: () => getMediaCreditQuote(modelId, resolution, duration), enabled: Boolean(modelId && resolution && duration >= 1 && duration <= 60), retry: false });
@@ -129,7 +121,8 @@ export function FreeCreationPage() {
   const tooManyReferences = Boolean(model && selectedAssets.length > model.max_reference_images);
   const resetForm = () => {
     const first = models.data?.[0];
-    setPrompt(""); setStyleId(""); setAspectRatio("9:16");
+    const firstRatios = first?.aspect_ratio_options?.length ? first.aspect_ratio_options : fallbackAspectRatios;
+    setPrompt(""); setStyleId(""); setAspectRatio(firstRatios.includes("9:16") ? "9:16" : firstRatios[0]!);
     setModelId(first?.id ?? ""); setResolution(first?.resolution_prices[0]?.resolution ?? ""); setDuration(first?.video_duration_options?.[0] ?? 10);
   };
   const create = useMutation({
@@ -149,18 +142,30 @@ export function FreeCreationPage() {
     },
     onSuccess: (task) => { queryClient.setQueryData<FreeCreationTask[]>(["free-creation-tasks"], (current = []) => [task, ...current]); resetForm(); setConfirming(false); void balance.refetch(); },
   });
+  const downloadTask = async (task: FreeCreationTask) => {
+    if (!workspace.data) return;
+    setSavingTaskId(task.id);
+    setTaskSaveResult(undefined);
+    try {
+      const path = await saveGenerationRecordAsset(workspace.data.project_path, task.record);
+      if (path) setTaskSaveResult({ taskId: task.id, message: `已保存：${path}`, error: false });
+    } catch (error) {
+      setTaskSaveResult({ taskId: task.id, message: errorText(error), error: true });
+    } finally {
+      setSavingTaskId("");
+    }
+  };
   const ready = Boolean(workspace.data && model && resolution && duration >= 1 && duration <= 60 && prompt.trim().length >= 10 && quote.data && !quote.isFetching && !quote.error && !tooManyReferences);
   const taskRows = tasks.data ?? [];
   return <div className="free-creation-page">
-    <section className="free-creation-form"><header><span className="section-label">FREE CREATION</span><h1>自由创作</h1><p>描述画面、选择生成参数后即可提交；任务会在后台并发执行。</p></header><label>视频提示词<FreePromptEditor value={prompt} onChange={setPrompt} assets={assets.data ?? []} /></label>
-      <div className="free-creation-fields"><label>视频大模型<select value={modelId} onChange={(event) => { const next = models.data?.find((item) => item.id === event.target.value); setModelId(event.target.value); setResolution(next?.resolution_prices[0]?.resolution ?? ""); setDuration(next?.video_duration_options?.[0] ?? 10); }}><option value="">请选择</option>{models.data?.map((item) => <option key={item.id} value={item.id}>{item.model_alias}</option>)}</select></label><label>时长{durationOptions.length ? <select value={duration} onChange={(event) => setDuration(Number(event.target.value))}>{durationOptions.map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}</select> : <span className="unit-input"><input type="number" min={1} max={60} step={1} value={duration} onChange={(event) => setDuration(Number(event.target.value))} /><span>秒</span></span>}</label><label>分辨率<select value={resolution} onChange={(event) => setResolution(event.target.value)}>{model?.resolution_prices.map((item) => <option key={item.resolution} value={item.resolution}>{item.label || item.resolution}</option>)}</select></label><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as "9:16" | "16:9")}><option value="9:16">9:16 竖屏</option><option value="16:9">16:9 横屏</option></select></label><label className="free-style-field">画风<select value={styleId} onChange={(event) => setStyleId(event.target.value)}><option value="">默认画风</option>{Array.from(new Set(styles.data?.map((item) => item.category) ?? [])).flatMap((category) => [<option disabled key={`group-${category}`}>{category}</option>, ...(styles.data ?? []).filter((item) => item.category === category).map((item: VisualStylePreset) => <option key={item.id} value={item.id}>　{item.name}</option>)])}</select></label></div>
-      {selectedAssets.length > 0 && <div className="free-reference-summary"><strong>参考图 · {selectedAssets.length}</strong>{selectedAssets.map((asset) => <span key={asset.id}><img src={convertFileSrc(asset.image_path)} alt="" />{asset.name}</span>)}</div>}
+    <section className="free-creation-form"><header><span className="section-label">FREE CREATION</span><h1>自由创作</h1><p>描述画面、选择生成参数后即可提交；任务会在后台并发执行。</p></header><label>视频提示词<FreePromptEditor value={prompt} onChange={setPrompt} assets={assets.data ?? []} projectPath={workspace.data?.project_path ?? ""} /></label>
+      <div className="free-creation-fields"><label>视频大模型<select value={modelId} onChange={(event) => { const next = models.data?.find((item) => item.id === event.target.value); const nextRatios = next?.aspect_ratio_options?.length ? next.aspect_ratio_options : fallbackAspectRatios; setModelId(event.target.value); setResolution(next?.resolution_prices[0]?.resolution ?? ""); setDuration(next?.video_duration_options?.[0] ?? 10); setAspectRatio((current) => nextRatios.includes(current) ? current : nextRatios[0]!); }}><option value="">请选择</option>{models.data?.map((item) => <option key={item.id} value={item.id}>{item.model_alias}{item.recommended ? "（推荐）" : ""}</option>)}</select></label><label>时长{durationOptions.length ? <select value={duration} onChange={(event) => setDuration(Number(event.target.value))}>{durationOptions.map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}</select> : <span className="unit-input"><input type="number" min={1} max={60} step={1} value={duration} onChange={(event) => setDuration(Number(event.target.value))} /><span>秒</span></span>}</label><label>分辨率<select value={resolution} onChange={(event) => setResolution(event.target.value)}>{model?.resolution_prices.map((item) => <option key={item.resolution} value={item.resolution}>{item.label || item.resolution.toUpperCase()}</option>)}</select></label><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as FreeCreationAspectRatio)}>{aspectRatioOptions.map((ratio) => <option key={ratio} value={ratio}>{aspectRatioLabels[ratio] ?? ratio}</option>)}</select></label><label className="free-style-field">画风<select value={styleId} onChange={(event) => setStyleId(event.target.value)}><option value="">默认画风</option>{Array.from(new Set(styles.data?.map((item) => item.category) ?? [])).flatMap((category) => [<option disabled key={`group-${category}`}>{category}</option>, ...(styles.data ?? []).filter((item) => item.category === category).map((item: VisualStylePreset) => <option key={item.id} value={item.id}>　{item.name}</option>)])}</select></label></div>
       {tooManyReferences && <p className="error-banner">当前模型最多支持 {model?.max_reference_images} 张参考图，请从提示词中移除多余的 @ 图片。</p>}
       <div className="free-credit-total"><span><Coins size={20} />本次预计消耗</span><strong>{quote.isFetching ? "计算中…" : quote.data ? `${creditText(quote.data.credits)} 积分` : "—"}</strong></div>{quote.error && <p className="error-banner">{errorText(quote.error)}</p>}{create.error && !confirming && <p className="error-banner">{errorText(create.error)}</p>}
       <button className="primary-button free-generate-button" type="button" disabled={!ready} onClick={() => { create.reset(); setConfirming(true); }}><Sparkles size={18} />生成视频</button>
     </section>
     <section className="free-task-area"><header><div><span className="section-label">TASK CENTER</span><h2>创作任务</h2><p>{taskRows.length} 个任务 · 可同时生成多个视频</p></div><div><button className="secondary-button" type="button" onClick={() => setShowCompose(true)}><Clapperboard size={16} />合成视频</button><span className="free-view-toggle"><button type="button" className={view === "grid" ? "active" : ""} onClick={() => setView("grid")} title="卡片视图"><Grid2X2 size={15} /></button><button type="button" className={view === "list" ? "active" : ""} onClick={() => setView("list")} title="列表视图"><List size={16} /></button></span></div></header>
-      {tasks.isLoading ? <div className="free-task-empty"><LoaderCircle className="spin" size={28} /><span>正在读取任务…</span></div> : tasks.error ? <p className="error-banner">{errorText(tasks.error)}</p> : !taskRows.length ? <div className="free-task-empty"><Clapperboard size={34} /><strong>还没有创作任务</strong><span>在左侧填写提示词并生成，第一个任务会显示在这里。</span></div> : <div className={`free-task-list ${view}`}>{taskRows.map((task) => <article key={task.id} className={`free-task-card ${task.record.status.toLowerCase()}`}><button className="free-task-media" type="button" disabled={task.record.status !== "COMPLETED"} onClick={() => setPreview(task)}><TaskVideo task={task} />{task.record.status === "COMPLETED" && <span><Play size={16} />预览</span>}</button><div className="free-task-copy"><header><strong>{task.kind === "composition" ? "合成视频" : task.prompt}</strong><em>{statusLabels[task.record.status]}</em></header><p>{task.record.model}{task.duration ? ` · ${task.duration} 秒` : ""}{task.resolution ? ` · ${task.resolution}` : ""} · {task.record.aspect_ratio}</p>{task.visual_style_name && <small>画风：{task.visual_style_name}</small>}{task.reference_names.length > 0 && <small>参考图：{task.reference_names.join("、")}</small>}{task.record.error?.message && <small className="error">{task.record.error.message}</small>}<time>{new Date(task.record.created_at).toLocaleString("zh-CN")}</time></div></article>)}</div>}
+      {tasks.isLoading ? <div className="free-task-empty"><LoaderCircle className="spin" size={28} /><span>正在读取任务…</span></div> : tasks.error ? <p className="error-banner">{errorText(tasks.error)}</p> : !taskRows.length ? <div className="free-task-empty"><Clapperboard size={34} /><strong>还没有创作任务</strong><span>在左侧填写提示词并生成，第一个任务会显示在这里。</span></div> : <div className={`free-task-list ${view}`}>{taskRows.map((task) => <article key={task.id} className={`free-task-card ${task.record.status.toLowerCase()}`}><button className="free-task-media" type="button" disabled={task.record.status !== "COMPLETED"} onClick={() => setPreview(task)}><TaskVideo task={task} />{task.record.status === "COMPLETED" && <span><Play size={16} />预览</span>}</button><div className="free-task-copy"><header><strong>{task.kind === "composition" ? "合成视频" : task.prompt}</strong><em>{statusLabels[task.record.status]}</em></header><p>{task.record.model}{task.duration ? ` · ${task.duration} 秒` : ""}{task.resolution ? ` · ${task.resolution}` : ""} · {task.record.aspect_ratio}</p>{task.visual_style_name && <small>画风：{task.visual_style_name}</small>}{task.reference_names.length > 0 && <small>参考图：{task.reference_names.join("、")}</small>}{task.record.error?.message && <small className="error">{task.record.error.message}</small>}{taskSaveResult?.taskId === task.id && <small className={taskSaveResult.error ? "error" : "success"}>{taskSaveResult.message}</small>}<footer className="free-task-card-footer"><time>{new Date(task.record.created_at).toLocaleString("zh-CN")}</time>{task.record.status === "COMPLETED" && <button className="free-task-download" type="button" disabled={savingTaskId === task.id} onClick={() => void downloadTask(task)}>{savingTaskId === task.id ? <LoaderCircle className="spin" size={13} /> : <Download size={13} />}{savingTaskId === task.id ? "保存中…" : "下载"}</button>}</footer></div></article>)}</div>}
     </section>
     {confirming && quote.data && <ConfirmGenerationModal credits={quote.data.credits} balance={balance.data?.available} busy={create.isPending} error={create.error} onCancel={() => { if (!create.isPending) setConfirming(false); }} onConfirm={() => create.mutate()} />}
     {preview && workspace.data && <PreviewModal task={preview} workspace={workspace.data} onClose={() => setPreview(undefined)} />}

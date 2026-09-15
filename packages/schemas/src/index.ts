@@ -529,12 +529,14 @@ export interface FreeCreationAssetReference {
   asset_id: string;
 }
 
+export type FreeCreationAspectRatio = "9:16" | "16:9" | "3:4" | "4:3" | "1:1";
+
 export interface CreateFreeCreationVideoInput {
   workspace: FreeCreationWorkspace;
   task_id: string;
   workflow_credit_id: string;
   prompt: string;
-  aspect_ratio: "9:16" | "16:9";
+  aspect_ratio: FreeCreationAspectRatio;
   duration: number;
   resolution: string;
   visual_style_name: string;
@@ -618,6 +620,7 @@ export interface AutomaticWorkflowSnapshot {
   image_model?: AutomaticWorkflowMediaSelection;
   video_model?: AutomaticWorkflowMediaSelection;
   video_reference_mode?: "pure_text" | "references";
+  video_retry_counts?: Record<string, number>;
 }
 
 export type ApplicationLogLevel = "critical" | "error" | "info" | "debug";
@@ -742,10 +745,12 @@ export interface DouyinUnderstandingTask {
 }
 
 export interface CreateDouyinUnderstandingTaskInput extends DouyinStoryboardInput {
-  video_info: DouyinVideoInfo;
+  video_info?: DouyinVideoInfo;
   mode: DouyinUnderstandingTask["mode"];
   fixed_seconds?: number;
   video_submission_mode: VideoSubmissionMode;
+  provider_model_id: string;
+  expected_credits: number;
 }
 
 export interface SaveLocalVideoUnderstandingTaskInput {

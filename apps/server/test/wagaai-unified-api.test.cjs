@@ -48,6 +48,8 @@ test('sync and migration keep the WagaAI universal API contract aligned', () => 
   const sync = fs.readFileSync(path.join(__dirname, '../src/scripts/sync-wagaai-models.ts'), 'utf8');
   const migration = fs.readFileSync(path.join(__dirname, '../src/database/migrations/035_wagaai_unified_api.sql'), 'utf8');
   const ttImage25 = fs.readFileSync(path.join(__dirname, '../src/database/migrations/045_wagaai_tt_image_2_5.sql'), 'utf8');
+  const newVideoModels = fs.readFileSync(path.join(__dirname, '../src/database/migrations/046_wagaai_gk_video_3_omni_flash.sql'), 'utf8');
+  const viduTurbo = fs.readFileSync(path.join(__dirname, '../src/database/migrations/048_wagaai_viduq3_turbo_reference.sql'), 'utf8');
   assert.match(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai"/);
   assert.doesNotMatch(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai\/api"/);
   assert.match(sync, /requestJson<Record<string, unknown>>\("\/v1\/skills\/guide"/);
@@ -62,4 +64,16 @@ test('sync and migration keep the WagaAI universal API contract aligned', () => 
   assert.match(ttImage25, /'\/v1\/skills\/task-status'/);
   assert.match(ttImage25, /'version', 'flare'/);
   assert.match(ttImage25, /'1K'[\s\S]*'2K'[\s\S]*'4K'/);
+  assert.match(sync, /name: "gk-video-3"[\s\S]*initialResolutions: \["720P"\][\s\S]*videoDurationOptions: \[6, 10\]/);
+  assert.match(sync, /name: "omni-flash"[\s\S]*videoDurationOptions: \[4, 6, 8, 10\][\s\S]*fixedOutputResolution: true/);
+  assert.doesNotMatch(sync, /replacedModelCodes[\s\S]*"omni-flash"/);
+  assert.match(newVideoModels, /'gk-video-3'/);
+  assert.match(newVideoModels, /'omni-flash'/);
+  assert.match(newVideoModels, /'resolution_parameter', 'size'/);
+  assert.match(newVideoModels, /'fixed_output_resolution', TRUE/);
+  assert.match(sync, /name: "viduq3-turbo-cankaosheng"[\s\S]*maxReferenceImages: 7[\s\S]*initialResolutions: \["540p", "720p", "1080p"\][\s\S]*videoDurationOptions: range\(3, 16\)/);
+  assert.match(viduTurbo, /'viduq3-turbo-cankaosheng'/);
+  assert.match(viduTurbo, /'PER_SECOND'/);
+  assert.match(viduTurbo, /JSON_ARRAY\('9:16', '16:9', '3:4', '4:3', '1:1'\)/);
+  assert.match(viduTurbo, /UNION ALL SELECT '720p', 23, 1[\s\S]*UNION ALL SELECT '1080p', 28, 2/);
 });

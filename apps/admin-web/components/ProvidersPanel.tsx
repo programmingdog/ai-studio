@@ -90,6 +90,8 @@ type DefaultModelConfig = {
   video_understanding_model_id: string | null;
   image_model_ids: string[];
   video_model_ids: string[];
+  recommended_image_model_id: string | null;
+  recommended_video_model_id: string | null;
   candidates: DefaultModelCandidate[];
 };
 
@@ -272,6 +274,8 @@ export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string
     video_understanding_model_id: "",
     image_model_ids: [] as string[],
     video_model_ids: [] as string[],
+    recommended_image_model_id: "",
+    recommended_video_model_id: "",
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -290,6 +294,8 @@ export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string
           video_understanding_model_id: result.video_understanding_model_id || "",
           image_model_ids: result.image_model_ids,
           video_model_ids: result.video_model_ids,
+          recommended_image_model_id: result.recommended_image_model_id || "",
+          recommended_video_model_id: result.recommended_video_model_id || "",
         });
         setError("");
       })
@@ -303,7 +309,19 @@ export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string
     setForm((current) => ({
       ...current,
       [field]: current[field].includes(id) ? current[field].filter((item) => item !== id) : [...current[field], id],
+      ...(field === "image_model_ids" && current[field].includes(id) && current.recommended_image_model_id === id ? { recommended_image_model_id: "" } : {}),
+      ...(field === "video_model_ids" && current[field].includes(id) && current.recommended_video_model_id === id ? { recommended_video_model_id: "" } : {}),
     }));
+  };
+  const move = (field: "image_model_ids" | "video_model_ids", id: string, offset: -1 | 1) => {
+    setForm((current) => {
+      const items = [...current[field]];
+      const index = items.indexOf(id);
+      const destination = index + offset;
+      if (index < 0 || destination < 0 || destination >= items.length) return current;
+      [items[index], items[destination]] = [items[destination]!, items[index]!];
+      return { ...current, [field]: items };
+    });
   };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setSaving(true); setError(""); setMessage("");
@@ -322,8 +340,8 @@ export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string
         <label>默认视频理解大模型<select value={form.video_understanding_model_id} onChange={(event) => setForm({ ...form, video_understanding_model_id: event.target.value })} required><option value="">请选择视频理解大模型</option>{candidates("VIDEO_UNDERSTANDING").map((model) => <option key={model.id} value={model.id}>{defaultModelLabel(model)}</option>)}</select><small>{candidates("VIDEO_UNDERSTANDING").length ? "视频解析和分镜理解默认使用此模型" : "当前没有符合条件的视频理解模型"}</small></label>
       </div>
       <div className="default-model-check-groups">
-        <ModelCheckboxGroup title="图片生成大模型" empty="当前没有符合条件的图片生成模型" models={candidates("IMAGE_GENERATION")} selected={form.image_model_ids} onToggle={(id) => toggle("image_model_ids", id)} />
-        <ModelCheckboxGroup title="视频生成大模型" empty="当前没有符合条件的视频生成模型" models={candidates("VIDEO_GENERATION")} selected={form.video_model_ids} onToggle={(id) => toggle("video_model_ids", id)} />
+        <ModelRoutingGroup title="图片生成大模型" empty="当前没有符合条件的图片生成模型" models={candidates("IMAGE_GENERATION")} selected={form.image_model_ids} recommendedId={form.recommended_image_model_id} radioName="recommended-image-model" onToggle={(id) => toggle("image_model_ids", id)} onMove={(id, offset) => move("image_model_ids", id, offset)} onRecommend={(id) => setForm((current) => ({ ...current, recommended_image_model_id: id }))} />
+        <ModelRoutingGroup title="视频生成大模型" empty="当前没有符合条件的视频生成模型" models={candidates("VIDEO_GENERATION")} selected={form.video_model_ids} recommendedId={form.recommended_video_model_id} radioName="recommended-video-model" onToggle={(id) => toggle("video_model_ids", id)} onMove={(id, offset) => move("video_model_ids", id, offset)} onRecommend={(id) => setForm((current) => ({ ...current, recommended_video_model_id: id }))} />
       </div>
       {error && <div className="form-error">{error}</div>}{message && <div className="form-success">{message}</div>}
       <footer><button className="primary" disabled={saving || !form.text_model_id || !form.video_understanding_model_id}>{saving ? "保存中…" : "保存默认模型配置"}</button></footer>
@@ -331,14 +349,27 @@ export function DefaultModelConfigPanel({ token, revision = 0 }: { token: string
   </section>;
 }
 
-function ModelCheckboxGroup({ title, empty, models, selected, onToggle }: {
+function ModelRoutingGroup({ title, empty, models, selected, recommendedId, radioName, onToggle, onMove, onRecommend }: {
   title: string;
   empty: string;
   models: DefaultModelCandidate[];
   selected: string[];
+  recommendedId: string;
+  radioName: string;
   onToggle: (id: string) => void;
+  onMove: (id: string, offset: -1 | 1) => void;
+  onRecommend: (id: string) => void;
 }) {
-  return <fieldset><legend>{title}<small>可多选</small></legend>{models.length ? <div className="default-model-options">{models.map((model) => <label key={model.id}><input type="checkbox" checked={selected.includes(model.id)} onChange={() => onToggle(model.id)} /><span><strong>{defaultModelLabel(model)}</strong><small>{model.model_code}</small></span></label>)}</div> : <div className="empty-model">{empty}</div>}</fieldset>;
+  const byId = new Map(models.map((model) => [model.id, model]));
+  const ordered = [...selected.map((id) => byId.get(id)).filter((model): model is DefaultModelCandidate => Boolean(model)), ...models.filter((model) => !selected.includes(model.id))];
+  return <fieldset><legend>{title}<small>可多选 · 已选顺序即客户端顺序</small></legend>{ordered.length ? <div className="default-model-options">{ordered.map((model) => {
+    const index = selected.indexOf(model.id);
+    const checked = index >= 0;
+    return <article className={checked ? "selected" : ""} key={model.id}>
+      <label><input type="checkbox" checked={checked} onChange={() => onToggle(model.id)} /><span><strong>{defaultModelLabel(model)}</strong><small>{model.model_code}</small></span></label>
+      {checked && <div className="model-routing-actions"><span>第 {index + 1} 位</span><button type="button" disabled={index === 0} onClick={() => onMove(model.id, -1)} aria-label={`上移 ${model.model_alias}`}>↑</button><button type="button" disabled={index === selected.length - 1} onClick={() => onMove(model.id, 1)} aria-label={`下移 ${model.model_alias}`}>↓</button><label className={recommendedId === model.id ? "recommended" : ""}><input type="radio" name={radioName} checked={recommendedId === model.id} onChange={() => onRecommend(model.id)} />推荐</label></div>}
+    </article>;
+  })}</div> : <div className="empty-model">{empty}</div>}</fieldset>;
 }
 
 function defaultTestPayload(model: ProviderModel): Record<string, unknown> {

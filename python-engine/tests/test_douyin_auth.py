@@ -1,15 +1,28 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ENGINE_ROOT not in sys.path:
     sys.path.insert(0, ENGINE_ROOT)
 
 from core.engine import dispatch
-from inputs.douyin_auth import _write_netscape_cookie_file, browser_availability, find_managed_browser, has_managed_profile, managed_cookie_file
+from inputs.douyin_auth import (
+    DouyinAuthError,
+    _acquire_profile_session,
+    _profile_session_path,
+    _release_profile_session,
+    _remove_stale_profile_locks,
+    _start_managed_browser,
+    _write_netscape_cookie_file,
+    browser_availability,
+    find_managed_browser,
+    has_managed_profile,
+    managed_cookie_file,
+)
 from inputs.douyin_input import DouyinResolverError
 
 
@@ -123,6 +136,55 @@ class DouyinAuthTests(unittest.TestCase):
             self.assertIn(".douyin.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\tsecret-value", content)
             self.assertNotIn("example.com", content)
 
+    def test_stale_managed_browser_session_is_recovered(self):
+        with tempfile.TemporaryDirectory() as profile_root:
+            os.makedirs(profile_root, exist_ok=True)
+            with open(_profile_session_path(profile_root), "w", encoding="utf-8") as session_file:
+                session_file.write('{"token":"old","owner_pid":99999999,"started_at":1}')
+            with patch("inputs.douyin_auth._terminate_profile_browser_processes"):
+                token = _acquire_profile_session(profile_root, 300)
+            self.assertTrue(token)
+            _release_profile_session(profile_root, token)
+            self.assertFalse(os.path.exists(_profile_session_path(profile_root)))
+
+    def test_active_managed_browser_session_is_not_killed_by_parallel_task(self):
+        with tempfile.TemporaryDirectory() as profile_root:
+            with open(_profile_session_path(profile_root), "w", encoding="utf-8") as session_file:
+                session_file.write('{{"token":"active","owner_pid":{},"started_at":{}}}'.format(os.getpid(), time.time()))
+            with self.assertRaises(DouyinAuthError) as context:
+                _acquire_profile_session(profile_root, 300)
+            self.assertEqual(context.exception.code, "MANAGED_BROWSER_LOGIN_IN_PROGRESS")
+
+    def test_stale_profile_lock_files_are_removed_before_restart(self):
+        with tempfile.TemporaryDirectory() as profile_root:
+            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+                with open(os.path.join(profile_root, name), "w", encoding="utf-8") as lock_file:
+                    lock_file.write("stale")
+            _remove_stale_profile_locks(profile_root)
+            self.assertFalse(any(os.path.exists(os.path.join(profile_root, name)) for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile")))
+
+    @patch("inputs.douyin_auth.time.sleep")
+    @patch("inputs.douyin_auth._remove_stale_profile_locks")
+    @patch("inputs.douyin_auth._terminate_profile_browser_processes")
+    @patch("inputs.douyin_auth._terminate_browser_process")
+    @patch("inputs.douyin_auth._wait_for_debugger")
+    @patch("inputs.douyin_auth.subprocess.Popen")
+    def test_browser_start_failure_cleans_up_and_retries_once(self, popen, wait_for_debugger, terminate, terminate_profile, remove_locks, _sleep):
+        first = Mock(pid=101)
+        second = Mock(pid=102)
+        popen.side_effect = [first, second]
+        wait_for_debugger.side_effect = [
+            DouyinAuthError("DOUYIN_BROWSER_START_FAILED", "failed", retryable=True),
+            "ws://127.0.0.1:9222/devtools/browser/test",
+        ]
+        process, websocket_url = _start_managed_browser("C:\\managed-profile", "chrome", "chrome.exe", "https://v.douyin.com")
+        self.assertIs(process, second)
+        self.assertEqual(websocket_url, "ws://127.0.0.1:9222/devtools/browser/test")
+        self.assertEqual(popen.call_count, 2)
+        terminate.assert_called_once_with(first)
+        terminate_profile.assert_called_once_with("C:\\managed-profile")
+        remove_locks.assert_called_once_with("C:\\managed-profile")
+
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
     @patch("core.engine.login_douyin")
@@ -198,6 +260,29 @@ class DouyinAuthTests(unittest.TestCase):
     @patch("inputs.douyin_auth.find_chrome", return_value=None)
     def test_falls_back_to_edge_when_chrome_is_missing(self, _find_chrome, _find_edge):
         self.assertEqual(find_managed_browser(), ("edge", "msedge.exe"))
+
+    @patch("inputs.douyin_auth.find_edge", return_value="msedge.exe")
+    @patch("inputs.douyin_auth._login_douyin_once")
+    def test_falls_back_to_edge_when_chrome_cannot_start(self, login_once, _find_edge):
+        from inputs.douyin_auth import login_douyin
+        login_once.side_effect = [
+            DouyinAuthError("DOUYIN_BROWSER_START_FAILED", "chrome failed", retryable=True),
+            {"authenticated": True, "browser": "edge"},
+        ]
+        result = login_douyin(
+            "C:\\managed-profile\\chrome",
+            "chrome",
+            "chrome.exe",
+            target_url="https://www.douyin.com/video/123",
+        )
+        self.assertEqual(result["browser"], "edge")
+        login_once.assert_called_with(
+            "C:\\managed-profile\\edge",
+            "edge",
+            "msedge.exe",
+            "https://www.douyin.com/video/123",
+            300,
+        )
 
     @patch("inputs.douyin_auth.find_edge", return_value=None)
     @patch("inputs.douyin_auth.find_chrome", return_value=None)

@@ -8,6 +8,7 @@ export const wagaProfiles: Record<string, { video?: boolean; images: string; max
   "banana-pro": { images: "images", max: 14, ratio: "aspectRatio" },
   "doubao-seedream-5-0-pro-260628": { images: "images", max: 10, ratio: "aspect_ratio" },
   "mj_imagine": { images: "images", max: 4, ratio: "aspectRatio", resolution: false, defaults: { botType: "MID_JOURNEY" } },
+  "gk-video-3": { video: true, images: "images", max: 1, ratio: "aspect_ratio", duration: [6, 10] },
   "gk-video-3.5": { video: true, images: "images", max: 1, ratio: "aspect_ratio", duration: range(1, 15) },
   "doubao-seedance-2-5-quannengcankao": { video: true, images: "image_url", max: 30, ratio: "aspect_ratio", duration: range(4, 30) },
   "seedance-2.5-anmiao": { video: true, images: "images", max: 30, ratio: "aspect_ratio", duration: range(4, 30) },
@@ -16,7 +17,9 @@ export const wagaProfiles: Record<string, { video?: boolean; images: string; max
   "seedance-2.0-anmiao-quannengcankao": { video: true, images: "image_url", max: 9, ratio: "aspect_ratio", duration: range(4, 15), defaults: { version: "Mini" } },
   "wan3.0-video-quannengcankao": { video: true, images: "image_url", max: 10, ratio: "ratio", duration: range(2, 30), defaults: { version: "standard" } },
   "omni_flash-10s": { video: true, images: "images", max: 7, ratio: "aspect_ratio", fixed: 10, resolution: false },
+  "omni-flash": { video: true, images: "images", max: 3, ratio: "aspect_ratio", duration: [4, 6, 8, 10], resolution: false },
   "kling-v3-video": { video: true, images: "images", max: 2, ratio: "aspect_ratio", duration: [5, 10, 15], resolution: false, defaults: { mode: "pro" } },
+  "viduq3-turbo-cankaosheng": { video: true, images: "images", max: 7, ratio: "aspect_ratio", duration: range(3, 16), defaults: { off_peak: "false" } },
   "viduq3": { video: true, images: "images", max: 2, ratio: "aspect_ratio", duration: [4, 8, 12, 16], defaults: { model_variant: "turbo", off_peak: "false" } },
 };
 function range(min: number, max: number) { return Array.from({ length: max - min + 1 }, (_, i) => min + i); }
@@ -47,7 +50,7 @@ export function wagaMediaParams(model: string, schema: unknown, config: unknown,
     }
     return choice ? choice.value : value;
   };
-  const policyFields = ["version", "mode", "model_variant", "off_peak", "botType", "quality", "background", "stylize", "chaos", "style", "audio", "prompt_extend", "web_search"];
+  const policyFields = ["version", "mode", "model_variant", "off_peak", "botType", "quality", "background", "stylize", "chaos", "style", "audio", "prompt_extend", "web_search", "enhance_prompt", "enable_upsample"];
   for (const name of policyFields) {
     if (!fields.some(f => f.name === name) && !(name in (profile.defaults || {}))) continue;
     let value = plan[name] ?? source[name] ?? profile.defaults?.[name];

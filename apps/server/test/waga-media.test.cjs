@@ -14,6 +14,7 @@ const schemas = {
   'banana-pro': [field('images'), field('aspectRatio',['9:16']),field('imageSize',['2K'])],
   'doubao-seedream-5-0-pro-260628': [field('images'),field('aspect_ratio',['9:16']),field('size',['2K'])],
   'mj_imagine': [field('images'),field('botType',['MID_JOURNEY','NIJI_JOURNEY']),field('aspectRatio',['9:16'])],
+  'gk-video-3': [field('images',undefined,false),field('aspect_ratio',['9:16']),field('size',['720P']),field('duration',['6','10'])],
   'gk-video-3.5': [field('images'),field('aspect_ratio',['9:16']),field('resolution',['720p']),field('duration',['10'])],
   'doubao-seedance-2-5-quannengcankao': [field('image_url'),field('aspect_ratio',['9:16']),field('resolution',[{value:'480p',currently_unavailable:true},'720p']),field('duration',['10'])],
   'seedance-2.5-anmiao': [field('images'),field('aspect_ratio',['9:16'],false),field('resolution',['720p']),field('duration',['10'])],
@@ -22,7 +23,9 @@ const schemas = {
   'seedance-2.0-anmiao-quannengcankao': [field('image_url',undefined,false),field('aspect_ratio',['9:16'],false),field('resolution',['720p',{value:'1080p',requires:{version:['标准']}}]),field('duration',['10']),field('version',['Mini','快速','标准']),field('video_url',undefined,false)],
   'wan3.0-video-quannengcankao': [field('image_url'),field('ratio',['9:16']),field('resolution',['720P']),field('duration',['10']),field('version',['standard','prime'])],
   'omni_flash-10s': [field('images'),field('aspect_ratio',['9:16'])],
+  'omni-flash': [field('images',undefined,false),field('aspect_ratio',['9:16','16:9']),field('duration',['4','6','8','10']),field('enhance_prompt',['false','true'],false),field('enable_upsample',['false','true'],false)],
   'kling-v3-video': [field('images'),field('aspect_ratio',['9:16']),field('duration',[{value:'5',currently_unavailable:true},'10','15']),field('mode',[{value:'std',currently_unavailable:true},'pro'])],
+  'viduq3-turbo-cankaosheng': [field('images',undefined,false),field('resolution',['540p','720p','1080p']),field('duration',Array.from({length:14},(_,index)=>String(index+3))),field('aspect_ratio',['9:16','16:9','3:4','4:3','1:1']),field('off_peak',['false','true'],false)],
   'viduq3': [field('images'),field('aspect_ratio',['9:16']),field('resolution',['720p']),field('duration',['4','8','12','16']),field('model_variant',['turbo','pro']),field('off_peak',['false','true'])],
 };
 function target(code) { return { model_code:code, model_id:'model', model_alias:code, capability:wagaProfiles[code].video?'VIDEO_GENERATION':'IMAGE_GENERATION',
@@ -82,6 +85,34 @@ test('Seedance 2.5 requires images and sends the current images field', () => {
   assert.equal(body.params.image_url,undefined);
   assert.equal(body.params.version,undefined);
   assert.throws(()=>gateway.request(target(code),{...payload(code),reference_images:[],audio_url:'https://example.com/ref.mp3'},'fixture'),/至少需要一张参考图/);
+});
+test('GK-video-3 and Omni-Flash follow their documented duration, resolution and reference limits', () => {
+  const gateway=new ModelGatewayService({},{});
+  const gk=gateway.request(target('gk-video-3'),{...payload('gk-video-3'),resolution:'720p',seconds:6,reference_images:[]},'fixture').body;
+  assert.equal(gk.params.size,'720P');
+  assert.equal(gk.params.duration,'6');
+  assert.equal(gk.params.images,undefined);
+
+  const omni=gateway.request(target('omni-flash'),{...payload('omni-flash'),resolution:'default',seconds:8,enhance_prompt:'true',enable_upsample:'true'},'fixture').body;
+  assert.equal(omni.params.resolution,undefined);
+  assert.equal(omni.params.duration,'8');
+  assert.equal(omni.params.enhance_prompt,'true');
+  assert.equal(omni.params.enable_upsample,'true');
+  assert.throws(()=>wagaMediaParams('omni-flash',schemas['omni-flash'],{},payload('omni-flash'),{submit:true,references:Array(4).fill({url:ref})}),/最多支持 3 张/);
+});
+test('Vidu Q3 Turbo reference mode supports text fallback, seven images and all documented output choices', () => {
+  const code='viduq3-turbo-cankaosheng', gateway=new ModelGatewayService({},{});
+  const textBody=gateway.request(target(code),{...payload(code),reference_images:[],seconds:3,resolution:'540P',aspect_ratio:'3:4'},'fixture').body;
+  assert.equal(textBody.params.images,undefined);
+  assert.equal(textBody.params.resolution,'540p');
+  assert.equal(textBody.params.duration,'3');
+  assert.equal(textBody.params.aspect_ratio,'3:4');
+  assert.equal(textBody.params.off_peak,'false');
+  const referenceBody=gateway.request(target(code),{...payload(code),reference_images:Array(7).fill(ref),seconds:16,resolution:'1080p',aspect_ratio:'1:1'},'fixture').body;
+  assert.equal(referenceBody.params.images.length,7);
+  assert.equal(referenceBody.params.duration,'16');
+  assert.throws(()=>wagaMediaParams(code,schemas[code],{},payload(code),{submit:true,references:Array(8).fill({url:ref})}),/最多支持 7 张/);
+  assert.throws(()=>wagaMediaParams(code,schemas[code],{},{...payload(code),seconds:2}),/3～16 秒/);
 });
 test('first frame is first in both the provider array and reference label guide', () => {
   const code='kling-v3-video';

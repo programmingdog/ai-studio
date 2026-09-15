@@ -385,6 +385,8 @@ export class AdminController {
       videoUnderstandingModelId: requiredString(body, "video_understanding_model_id", 36),
       imageModelIds: this.modelIdArray(body, "image_model_ids"),
       videoModelIds: this.modelIdArray(body, "video_model_ids"),
+      recommendedImageModelId: optionalString(body, "recommended_image_model_id", 36) || null,
+      recommendedVideoModelId: optionalString(body, "recommended_video_model_id", 36) || null,
     });
   }
 

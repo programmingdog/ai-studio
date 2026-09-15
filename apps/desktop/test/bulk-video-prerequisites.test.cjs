@@ -39,7 +39,7 @@ test('bulk generation and full regeneration always use a fresh model and credit 
   assert.match(entry, /bulkVideoGeneration\.reset\(\)/);
   assert.match(entry, /bulkVideoGeneration\.mutate\(\{ mode, referenceMode \}\)/);
   assert.doesNotMatch(app, /GenerateAllVideosConfirmModal|showBulkVideoConfirm/);
-  assert.match(app, /setSelectedModelId\(""\); setSelectedResolution\(""\); setSelectedDuration\(undefined\); setApprovalError\(""\)/);
+  assert.match(app, /setSelectedModelId\(detail\.preset\?\.modelId \?\? ""\); setSelectedResolution\(detail\.preset\?\.resolution \?\? ""\); setSelectedDuration\(undefined\); setApprovalError\(""\)/);
   assert.match(app, /queryKey: \["media-model-picker-quotes", request\?\.id/);
 });
 

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { platformApiBaseUrl, platformApiEnvironment } from "./apiConfig";
-import type { CreativeTypePreset, VisualStylePreset } from "@aivs/schemas";
+import type { CreativeTypePreset, FreeCreationAspectRatio, VisualStylePreset } from "@aivs/schemas";
 
 export { platformApiBaseUrl } from "./apiConfig";
 const BROWSER_SESSION_KEY = "aivs.platform-session";
@@ -84,7 +84,9 @@ export interface PlatformMediaResolutionPrice { resolution: string; credit_cost:
 export interface PlatformMediaModel {
   id: string; provider_id: string; provider_code?: string; provider_name: string; model_code: string; display_name: string; model_alias: string;
   capability: "IMAGE_GENERATION" | "VIDEO_GENERATION"; billing_unit: "PER_REQUEST" | "PER_SECOND";
+  recommended: boolean; sort_order: number;
   video_duration_options?: number[];
+  aspect_ratio_options?: FreeCreationAspectRatio[];
   max_reference_images: number; supports_reference_video: boolean; supports_real_person: boolean;
   resolution_prices: PlatformMediaResolutionPrice[];
   generation_notice?: string;
@@ -276,7 +278,8 @@ export const listCreativeTypeCategories = () => publicRequest<CatalogCategory[]>
 export const listCreativeTypes = () => publicRequest<CreativeTypePreset[]>("/client-config/creative-types");
 export async function listMediaModels(capability: PlatformMediaModel["capability"]): Promise<PlatformMediaModel[]> {
   const models = await publicRequest<PlatformMediaModel[]>("/client-config/models");
-  return models.filter((model) => model.capability === capability && model.resolution_prices.length > 0);
+  return models.filter((model) => model.capability === capability && model.resolution_prices.length > 0)
+    .sort((left, right) => Number(left.sort_order) - Number(right.sort_order) || left.model_alias.localeCompare(right.model_alias, "zh-CN"));
 }
 export const pollWechatQrSession = async (state: string, shouldAccept: () => boolean = () => true) => {
   const result = await publicRequest<Record<string, unknown>>(`/auth/wechat/qr-sessions/status?state=${encodeURIComponent(state)}&device_name=${encodeURIComponent("逐梦帧客户端")}`);

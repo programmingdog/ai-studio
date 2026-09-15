@@ -18,6 +18,12 @@ interface CatalogModel {
   supportsRealPerson?: boolean;
   sortOrder: number;
   initialResolutions?: string[];
+  initialResolutionCredits?: Record<string, number>;
+  videoDurationOptions?: number[];
+  aspectRatioOptions?: string[];
+  generationParametersByResolution?: Record<string, Record<string, string>>;
+  fixedOutputResolution?: boolean;
+  resolutionParameter?: "resolution" | "size";
 }
 
 interface ProviderRow extends RowDataPacket {
@@ -74,21 +80,27 @@ const catalog: CatalogModel[] = [
   { name: "banana-pro", alias: "Banana Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 14, supportsReferenceVideo: false, sortOrder: 20 },
   { name: "doubao-seedream-5-0-pro-260628", alias: "Seedream 5.0 Pro", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 30 },
   { name: "mj_imagine", alias: "Midjourney", capability: "IMAGE_GENERATION", initialCreditCost: 3, maxReferenceImages: 4, supportsReferenceVideo: false, sortOrder: 40 },
+  { name: "gk-video-3", alias: "GK-video-3", capability: "VIDEO_GENERATION", initialCreditCost: 6, maxReferenceImages: 1, supportsReferenceVideo: false, sortOrder: 15, initialResolutions: ["720P"], videoDurationOptions: [6, 10], resolutionParameter: "size" },
   { name: "gk-video-3.5", alias: "GK Video 3.5", capability: "VIDEO_GENERATION", initialCreditCost: 6, maxReferenceImages: 1, supportsReferenceVideo: false, sortOrder: 10 },
   { name: "seedance-2.5-anmiao", alias: "Seedance 2.5 按秒图生视频", capability: "VIDEO_GENERATION", initialCreditCost: 14, maxReferenceImages: 30, supportsReferenceVideo: false, sortOrder: 20 },
   { name: "hailuo-h3-quannengcankao", alias: "海螺 H3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 8, maxReferenceImages: 9, supportsReferenceVideo: true, sortOrder: 30 },
   { name: "seedance-2.0-anmiao-quannengcankao", alias: "Seedance 2.0 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 12, maxReferenceImages: 9, supportsReferenceVideo: true, supportsRealPerson: true, sortOrder: 40 },
   { name: "wan3.0-video-quannengcankao", alias: "Wan3 全能参考", capability: "VIDEO_GENERATION", initialCreditCost: 10, maxReferenceImages: 10, supportsReferenceVideo: true, sortOrder: 50 },
   { name: "omni_flash-10s", alias: "Omni Flash 10s", capability: "VIDEO_GENERATION", initialCreditCost: 10, maxReferenceImages: 7, supportsReferenceVideo: false, sortOrder: 60 },
+  { name: "omni-flash", alias: "Omni-Flash", capability: "VIDEO_GENERATION", initialCreditCost: 8, maxReferenceImages: 3, supportsReferenceVideo: false, sortOrder: 65, initialResolutions: ["default"], videoDurationOptions: [4, 6, 8, 10], fixedOutputResolution: true },
   { name: "kling-v3-video", alias: "Kling V3", capability: "VIDEO_GENERATION", initialCreditCost: 18, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 70 },
+  { name: "viduq3-turbo-cankaosheng", alias: "Vidu Q3 Turbo 参考生", capability: "VIDEO_GENERATION", initialCreditCost: 15, maxReferenceImages: 7, supportsReferenceVideo: false, sortOrder: 75, initialResolutions: ["540p", "720p", "1080p"], initialResolutionCredits: { "540p": 15, "720p": 23, "1080p": 28 }, videoDurationOptions: range(3, 16), aspectRatioOptions: ["9:16", "16:9", "3:4", "4:3", "1:1"], generationParametersByResolution: { "540p": { resolution: "540p", off_peak: "false" }, "720p": { resolution: "720p", off_peak: "false" }, "1080p": { resolution: "1080p", off_peak: "false" } } },
   { name: "viduq3", alias: "Vidu Q3", capability: "VIDEO_GENERATION", initialCreditCost: 8, maxReferenceImages: 2, supportsReferenceVideo: false, sortOrder: 80 },
 ];
+
+function range(min: number, max: number): number[] {
+  return Array.from({ length: max - min + 1 }, (_, index) => min + index);
+}
 
 const replacedModelCodes = [
   "doubao-seedance-2-5-260628",
   "hailuo-h3-cankaosheng",
   "kwvideo-v2",
-  "omni-flash",
 ];
 
 function decryptSecret(payload: string): string {
@@ -217,6 +229,11 @@ async function main(): Promise<void> {
           input_hint: detail.input_hint || "",
           api_endpoints: detail.api_endpoints || [],
           params_note: detail.params_note || "",
+          ...(selected.videoDurationOptions ? { video_duration_options: selected.videoDurationOptions } : {}),
+          ...(selected.aspectRatioOptions ? { aspect_ratio_options: selected.aspectRatioOptions } : {}),
+          ...(selected.generationParametersByResolution ? { generation_parameters_by_resolution: selected.generationParametersByResolution } : {}),
+          ...(selected.fixedOutputResolution ? { fixed_output_resolution: true } : {}),
+          ...(selected.resolutionParameter ? { resolution_parameter: selected.resolutionParameter } : {}),
           pricing: pricingSummary(pricing),
           pricing_synced_at: syncedAt,
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
@@ -259,11 +276,12 @@ async function main(): Promise<void> {
             : selected.name === "omni_flash-10s" ? "default"
             : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K";
           for (const [sortOrder, resolution] of (selected.initialResolutions || [defaultResolution]).entries()) {
+            const initialResolutionCredit = selected.initialResolutionCredits?.[resolution] ?? selected.initialCreditCost;
             await connection.execute(
               `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
-               SELECT id, ?, credit_cost, ? FROM provider_models
+               SELECT id, ?, ?, ? FROM provider_models
                WHERE provider_id = ? AND model_code = ? AND capability = ?`,
-              [resolution, sortOrder, provider.id, selected.name, selected.capability],
+              [resolution, initialResolutionCredit, sortOrder, provider.id, selected.name, selected.capability],
             );
           }
         }

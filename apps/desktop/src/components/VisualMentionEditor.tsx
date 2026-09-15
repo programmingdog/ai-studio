@@ -10,8 +10,12 @@ export interface VisualMentionItem {
   detail: string;
   insertText: string;
   relativePath?: string;
+  imageSource?: string;
   group?: "scene" | "character" | "prop" | "shot";
 }
+
+type MentionPickerMode = "inline" | "asset-modal";
+const mentionGroupLabels: Record<"all" | NonNullable<VisualMentionItem["group"]>, string> = { all: "全部", scene: "场景", character: "角色", prop: "道具", shot: "分镜" };
 
 function editorText(element: HTMLElement): string {
   const read = (node: Node): string => {
@@ -96,7 +100,7 @@ function decorateEditor(element: HTMLElement, text: string, items: VisualMention
     if (rich) {
       mention.contentEditable = "false";
       const item = items.find((candidate) => candidate.insertText === nextToken);
-      const source = item?.relativePath ? assetSources.get(item.relativePath) : undefined;
+      const source = item?.imageSource || (item?.relativePath ? assetSources.get(item.relativePath) : undefined);
       const avatar = source ? document.createElement("img") : document.createElement("i");
       if (source && avatar instanceof HTMLImageElement) {
         avatar.src = source;
@@ -127,32 +131,37 @@ function MentionImage({ projectPath, item, large = false }: { projectPath: strin
   const asset = useQuery({
     queryKey: ["project-asset", projectPath, item.relativePath],
     queryFn: () => readProjectAsset(projectPath, item.relativePath!),
-    enabled: Boolean(item.relativePath),
+    enabled: Boolean(item.relativePath && !item.imageSource),
     staleTime: Infinity,
   });
-  if (!asset.data) return <span className={large ? "visual-mention-image large loading" : "visual-mention-image loading"}><ImageIcon size={large ? 34 : 18} />{large && <small>图片尚未生成</small>}</span>;
-  return <img className={large ? "visual-mention-image large" : "visual-mention-image"} src={asset.data} alt={item.label} />;
+  const source = item.imageSource || asset.data;
+  if (!source) return <span className={large ? "visual-mention-image large loading" : "visual-mention-image loading"}><ImageIcon size={large ? 34 : 18} />{large && <small>图片尚未生成</small>}</span>;
+  return <img className={large ? "visual-mention-image large" : "visual-mention-image"} src={source} alt={item.label} />;
 }
 
-export function VisualMentionEditor({ value, onChange, items, projectPath, rich = false, fill = false, placeholder = "描述画面；输入 @ 引用关联图片", ariaLabel = "画面" }: { value: string; onChange: (value: string) => void; items: VisualMentionItem[]; projectPath: string; rich?: boolean; fill?: boolean; placeholder?: string; ariaLabel?: string }) {
+export function VisualMentionEditor({ value, onChange, items, projectPath, rich = false, fill = false, picker = "inline", placeholder = "描述画面；输入 @ 引用关联图片", ariaLabel = "画面" }: { value: string; onChange: (value: string) => void; items: VisualMentionItem[]; projectPath: string; rich?: boolean; fill?: boolean; picker?: MentionPickerMode; placeholder?: string; ariaLabel?: string }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const triggerRef = useRef(-1);
+  const mentionEndRef = useRef(-1);
   const decoratedTokenKeyRef = useRef("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [menuPosition, setMenuPosition] = useState({ left: 12, top: 42 });
   const [hovered, setHovered] = useState<{ item: VisualMentionItem; left: number; top: number }>();
+  const [modalTab, setModalTab] = useState<"all" | NonNullable<VisualMentionItem["group"]>>("all");
   const assetQueries = useQueries({ queries: items.map((item) => ({
     queryKey: ["project-asset", projectPath, item.relativePath],
     queryFn: () => readProjectAsset(projectPath, item.relativePath!),
-    enabled: rich && Boolean(item.relativePath),
+    enabled: rich && Boolean(item.relativePath && !item.imageSource),
     staleTime: Infinity,
   })) });
   const assetSources = new Map(items.flatMap((item, index) => item.relativePath && assetQueries[index]?.data ? [[item.relativePath, assetQueries[index].data] as const] : []));
   const filtered = items.filter((item) => !query || `${item.label}${item.detail}${item.insertText}`.toLowerCase().includes(query.toLowerCase()));
-  const tokenKey = items.map((item) => `${item.insertText}:${item.relativePath ?? "pending"}`).join("|");
+  const modalItems = filtered.filter((item) => modalTab === "all" || item.group === modalTab);
+  const modalTabs = (["all", "scene", "character", "prop", "shot"] as const).filter((group) => group === "all" || items.some((item) => item.group === group));
+  const tokenKey = items.map((item) => `${item.insertText}:${item.imageSource ?? item.relativePath ?? "pending"}`).join("|");
   const decorationKey = `${tokenKey}|${assetQueries.map((query) => query.data ? "ready" : "pending").join(",")}`;
 
   useLayoutEffect(() => {
@@ -176,6 +185,7 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
       return;
     }
     triggerRef.current = at;
+    mentionEndRef.current = offset;
     setQuery(candidate);
     const nextItems = items.filter((item) => !candidate || `${item.label}${item.detail}${item.insertText}`.toLowerCase().includes(candidate.toLowerCase()));
     const firstEnabled = nextItems.findIndex((item) => Boolean(item.relativePath));
@@ -207,7 +217,7 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
     const editor = editorRef.current;
     if (!editor) return;
     const text = editorText(editor);
-    const end = caretOffset(editor);
+    const end = menuOpen && mentionEndRef.current >= 0 ? mentionEndRef.current : caretOffset(editor);
     const start = triggerRef.current >= 0 ? triggerRef.current : end;
     const suffixSpace = text[end] && !/\s/.test(text[end]!) ? " " : "";
     const next = `${text.slice(0, start)}${item.insertText}${suffixSpace}${text.slice(end)}`;
@@ -218,8 +228,21 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
     setMenuOpen(false);
     setQuery("");
     triggerRef.current = -1;
+    mentionEndRef.current = -1;
     editor.focus();
   };
+
+  useEffect(() => {
+    if (!menuOpen || picker !== "asset-modal") return;
+    const close = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [menuOpen, picker]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (menuOpen && event.key === "ArrowDown") {
@@ -314,7 +337,7 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
       onCompositionEnd={(event) => { composingRef.current = false; handleInput(event); }}
       onBlur={() => window.setTimeout(() => setMenuOpen(false), 120)}
     />
-    {menuOpen && <div className="visual-mention-menu" style={menuPosition} role="listbox" aria-label="可引用图片">
+    {menuOpen && picker === "inline" && <div className="visual-mention-menu" style={menuPosition} role="listbox" aria-label="可引用图片">
       <header><strong>引用关联图片</strong><small>↑↓ 选择 · Enter 插入</small></header>
       <div className="visual-mention-options">
         {filtered.length ? filtered.map((item, index) => <button
@@ -329,6 +352,14 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
         ><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{item.detail}</small><em>{item.relativePath ? item.insertText : "图片生成后可引用"}</em></span></button>) : <div className="visual-mention-empty">该分镜暂无可引用图片</div>}
       </div>
     </div>}
+    {menuOpen && picker === "asset-modal" && createPortal(<div className="modal-backdrop free-mention-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setMenuOpen(false); }}>
+      <section className="free-mention-modal" role="dialog" aria-modal="true" aria-labelledby="free-mention-title">
+        <header><div><span className="section-label">ASSET LIBRARY</span><h2 id="free-mention-title"><ImageIcon size={19} />选择资产图片</h2><p>选择后会在提示词中显示为带缩略图的参考图标签。</p></div><button className="modal-close" type="button" onClick={() => setMenuOpen(false)} aria-label="关闭资产选择"><X size={18} /></button></header>
+        <nav aria-label="资产分类">{modalTabs.map((group) => <button type="button" key={group} className={modalTab === group ? "active" : ""} onClick={() => setModalTab(group)}>{mentionGroupLabels[group]}</button>)}</nav>
+        <main>{modalItems.length ? modalItems.map((item) => <button type="button" key={item.id} onClick={() => insertMention(item)} title={item.detail}><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{mentionGroupLabels[item.group ?? "all"]}</small></span></button>) : <p>当前分类没有匹配图片</p>}</main>
+        <footer><span>{query ? `正在匹配“${query}”` : `当前分类共 ${modalItems.length} 张图片`}</span><button className="secondary-button" type="button" onClick={() => setMenuOpen(false)}>关闭</button></footer>
+      </section>
+    </div>, document.body)}
     {hovered && <div className="visual-mention-hover" style={{ left: hovered.left, top: hovered.top }}><MentionImage projectPath={projectPath} item={hovered.item} large /><strong>{hovered.item.label}</strong><small>{hovered.item.detail}</small></div>}
   </div>;
 }

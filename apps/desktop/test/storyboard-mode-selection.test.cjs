@@ -25,7 +25,7 @@ test('link storyboard generation asks for a recommended fast URL mode or detaile
   assert.match(app, /useState<VideoSubmissionMode>\("url"\)/);
   assert.match(app, /<strong>极速模式<\/strong><em>推荐<\/em>/);
   assert.match(app, /<strong>详细模式<\/strong>/);
-  assert.match(app, /极速模式可能生成失败/);
+  assert.match(app, /等待超过 10 分钟时，会自动切换详细模式重试一次/);
   assert.match(app, /video_submission_mode: submissionMode/);
 });
 
@@ -37,7 +37,18 @@ test('fixed-duration mode also fixes the final shot and carries the rule into pr
   assert.match(agent, /"storyboard_fixed_seconds": fixed_seconds/);
 });
 
-test('video parsing action uses the immediate-generation label', () => {
-  assert.match(app, /"立即生成分镜"/);
-  assert.doesNotMatch(app, /"后台生成分镜"/);
+test('video parsing and storyboard generation use one confirmed background task', () => {
+  assert.match(app, /自动识别、解析并生成分镜/);
+  assert.match(app, /VideoLinkCreditModal/);
+  assert.match(app, /provider_model_id: videoLinkQuote\.data\.provider_model_id/);
+  assert.match(app, /expected_credits: videoLinkQuote\.data\.credits/);
+  assert.match(app, /setQueryData<DouyinUnderstandingTask\[]>\(\["douyin-understanding-tasks"\]/);
+  assert.doesNotMatch(app, /<DouyinResult/);
+});
+
+test('free creation sits directly below the video link menu', () => {
+  const videoLink = app.indexOf('selectSourceType("DOUYIN_URL")');
+  const freeCreation = app.indexOf('onClick={onOpenFreeCreation}', videoLink);
+  const localUnderstanding = app.indexOf('selectSourceType("VIDEO_UNDERSTANDING")', videoLink);
+  assert.ok(videoLink >= 0 && freeCreation > videoLink && freeCreation < localUnderstanding);
 });

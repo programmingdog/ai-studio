@@ -644,6 +644,7 @@ export class ModelGatewayService {
       expectedCredits: input.expectedCredits,
       creditOverride: Number(config.credit_cost),
       taskType: "VIDEO_UNDERSTANDING",
+      providerTimeoutMs: 10 * 60_000,
       payload: {
         prompt: input.prompt,
         video_uri: input.videoUrl,
@@ -676,6 +677,7 @@ export class ModelGatewayService {
       expectedCredits: input.expectedCredits,
       creditOverride: Number(config.credit_cost),
       taskType: "VIDEO_UNDERSTANDING",
+      providerTimeoutMs: 10 * 60_000,
       payload: {
         contents: [{ role: "user", parts: [
           { inline_data: { mime_type: file.mimetype, data: file.buffer.toString("base64") } },
@@ -903,8 +905,8 @@ export class ModelGatewayService {
     return { url, method, headers: { "Content-Type": "application/json", [authHeader]: scheme ? `${scheme} ${apiKey}` : apiKey }, body };
   }
 
-  private async call(request: { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> | FormData }): Promise<{ ok: boolean; status: number; value: unknown }> {
-    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 30 * 60_000);
+  private async call(request: { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> | FormData }, timeoutMs = 30 * 60_000): Promise<{ ok: boolean; status: number; value: unknown }> {
+    const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const body = request.body instanceof FormData ? request.body : JSON.stringify(request.body || {});
       const response = await fetch(request.url, { method: request.method, headers: request.headers, body: request.method === "GET" || request.method === "HEAD" ? undefined : body, signal: controller.signal });
@@ -997,6 +999,7 @@ export class ModelGatewayService {
     localTaskId?: string; idempotencyKey: string; providerModelId: string; payload: unknown; expectedCredits?: number;
     creditOverride?: number; taskType?: string; validateResponse?: (value: unknown) => unknown;
     workflowQuoteApprovalId?: string; workflowQuoteItemKey?: string;
+    providerTimeoutMs?: number;
   }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
     const temporaryReferenceTokens = this.referenceImages?.ownedTokens(payload, userId) || [];
@@ -1125,7 +1128,7 @@ export class ModelGatewayService {
       let result: Awaited<ReturnType<ModelGatewayService["call"]>>;
       while (true) {
         const providerRequest = this.request(target, payload, this.secretCrypto.decrypt(selectedCredential.api_key_ciphertext));
-        result = await this.call(providerRequest);
+        result = await this.call(providerRequest, input.providerTimeoutMs);
         const upstreamError = applicationError(result.value);
         const returnedRemoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
         const retryReason = credentialRetryableRejection(result.status, result.value);

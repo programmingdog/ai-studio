@@ -28,7 +28,10 @@ fn api_base_url(task_url: Option<&str>) -> Result<String, String> {
 fn client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(15 * 60))
+        // The server owns the 10-minute provider deadline and releases the
+        // credit hold before answering. Keep a small transport grace period
+        // so the desktop receives that definitive refund response.
+        .timeout(Duration::from_secs(10 * 60 + 15))
         .build()
         .map_err(|error| format!("无法创建平台 API 客户端：{error}"))
 }
@@ -154,6 +157,39 @@ pub async fn understand_public_url(
     understanding_result(value, video_name, 0, "server-url")
 }
 
+pub async fn understand_public_url_confirmed(
+    configured_api_base_url: Option<&str>,
+    video_url: &str,
+    mime_type: &str,
+    prompt: &str,
+    video_name: String,
+    provider_model_id: &str,
+    expected_credits: f64,
+    idempotency_key: &str,
+) -> Result<VideoUnderstandingResult, String> {
+    let client = client()?;
+    let base = api_base_url(configured_api_base_url)?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
+    let response = client
+        .post(format!("{base}/tasks/video-understanding/url"))
+        .bearer_auth(token)
+        .json(&json!({
+            "idempotency_key": idempotency_key,
+            "provider_model_id": provider_model_id,
+            "expected_credits": expected_credits,
+            "video_url": video_url,
+            "mime_type": mime_type,
+            "prompt": crate::ai::video_understanding_prompt(prompt),
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("极速模式调用超时或无法连接服务端：{error}"))?;
+    let value = response_value(response)
+        .await
+        .map_err(|error| video_data_error(error, "url"))?;
+    understanding_result(value, video_name, 0, "server-url")
+}
+
 pub async fn understand_uploaded_file(
     configured_api_base_url: Option<&str>,
     path: &Path,
@@ -203,6 +239,53 @@ pub async fn understand_uploaded_file(
         .send()
         .await
         .map_err(|error| format!("上传压缩视频到服务端失败：{error}"))?;
+    let value = response_value(response)
+        .await
+        .map_err(|error| video_data_error(error, "upload"))?;
+    understanding_result(value, original_name, original_size, "server-upload")
+}
+
+pub async fn understand_uploaded_file_confirmed(
+    configured_api_base_url: Option<&str>,
+    path: &Path,
+    prompt: &str,
+    original_name: String,
+    original_size: u64,
+    provider_model_id: &str,
+    expected_credits: f64,
+    idempotency_key: &str,
+) -> Result<VideoUnderstandingResult, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|error| format!("无法读取压缩后的视频：{error}"))?;
+    if bytes.is_empty() {
+        return Err(json!({
+            "code": "VIDEO_UPLOAD_EMPTY",
+            "message": "详细模式准备上传的视频为空，请重新解析后再试。",
+            "retryable": true
+        })
+        .to_string());
+    }
+    let client = client()?;
+    let base = api_base_url(configured_api_base_url)?;
+    let token = crate::platform_session::valid_access_token(&base).await?;
+    let part = multipart::Part::bytes(bytes)
+        .file_name("compressed-video.mp4")
+        .mime_str("video/mp4")
+        .map_err(|error| format!("无法创建视频上传内容：{error}"))?;
+    let form = multipart::Form::new()
+        .text("idempotency_key", idempotency_key.to_owned())
+        .text("provider_model_id", provider_model_id.to_owned())
+        .text("expected_credits", expected_credits.to_string())
+        .text("prompt", crate::ai::video_understanding_prompt(prompt))
+        .part("video", part);
+    let response = client
+        .post(format!("{base}/tasks/video-understanding/upload"))
+        .bearer_auth(token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|error| format!("详细模式调用超时或上传失败：{error}"))?;
     let value = response_value(response)
         .await
         .map_err(|error| video_data_error(error, "upload"))?;

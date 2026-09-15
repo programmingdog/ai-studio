@@ -6,14 +6,42 @@ const path = require('node:path');
 const app = fs.readFileSync(path.join(__dirname, '../src/App.tsx'), 'utf8');
 const native = fs.readFileSync(path.join(__dirname, '../src-tauri/src/ai.rs'), 'utf8');
 const records = fs.readFileSync(path.join(__dirname, '../src-tauri/src/database/generation_records.rs'), 'utf8');
+const schemas = fs.readFileSync(path.join(__dirname, '../../../packages/schemas/src/index.ts'), 'utf8');
 
-test('workflow exposes per-shot retry and warns before replacing an active video', () => {
-  assert.match(app, /canRetry \|\| canReplace/);
+test('failed workflow shots expose original-model restart and new-model regeneration', () => {
+  const restart = app.slice(app.indexOf('const retryShotVideo ='), app.indexOf('const closeWorkflowStart ='));
+  const modal = app.slice(app.indexOf('function AutoProjectWorkflowModal('), app.indexOf('function StoryPage('));
+  assert.match(modal, /onRetryShotVideo/);
   assert.match(app, /单独重启/);
+  assert.match(app, /重新生成/);
+  assert.ok(modal.indexOf('单独重启') < modal.indexOf('重新生成'));
+  assert.match(restart, /lockSelection: true/);
+  assert.match(restart, /requestMediaModel\("VIDEO_GENERATION"/);
+  assert.match(restart, /mediaVideoDuration\(selection/);
+  assert.match(restart, /createShotVideoGeneration/);
   assert.match(app, /停止并重新生成/);
   assert.match(app, /新任务会再次消耗积分/);
   assert.match(app, /replace_record_id: replaceRecordId/);
   assert.match(app, /status !== "FAILED"/);
+});
+
+test('automatic workflow retries each failed shot three times and persists the counter', () => {
+  const runner = app.slice(app.indexOf('const runAutomaticWorkflow ='), app.indexOf('const stopAutomaticWorkflow ='));
+  assert.match(app, /const AUTO_SHOT_VIDEO_RETRY_LIMIT = 3/);
+  assert.match(runner, /videoRetryCounts\[record\.target_id\].*AUTO_SHOT_VIDEO_RETRY_LIMIT/);
+  assert.match(runner, /videoRetryCounts\[record\.target_id\] = \(videoRetryCounts\[record\.target_id\] \?\? 0\) \+ 1/);
+  assert.match(runner, /Promise\.allSettled\(failedRecords\.map/);
+  assert.match(runner, /stopForExhaustedVideoRetries/);
+  assert.match(runner, /status: "CANCELLED"/);
+  assert.match(runner, /video_retry_counts/);
+  assert.match(schemas, /video_retry_counts\?: Record<string, number>/);
+});
+
+test('opening a running workflow survives the asynchronous resume hydration', () => {
+  const resume = app.slice(app.indexOf('const active = activeWorkflowQuery.data;'), app.indexOf('const hasRunningWorkflow'));
+  assert.match(resume, /setWorkflow\(\(current\) => \(\{/);
+  assert.match(resume, /visible: current\.visible/);
+  assert.doesNotMatch(resume, /visible: false/);
 });
 
 test('replacement cancels the old record transactionally and ignores late results', () => {

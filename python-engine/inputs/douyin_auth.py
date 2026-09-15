@@ -6,6 +6,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
@@ -19,6 +20,7 @@ PLATFORM_BROWSER_HOSTS = {
     "BILIBILI": ("bilibili.com", "b23.tv"),
 }
 MANAGED_COOKIE_FILE_NAME = "douyin-cookies.txt"
+MANAGED_BROWSER_SESSION_FILE = ".aivs-browser-session.json"
 
 
 class DouyinAuthError(RuntimeError):
@@ -26,6 +28,199 @@ class DouyinAuthError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+
+
+def _process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _profile_session_path(profile_root: str) -> str:
+    return os.path.join(profile_root, MANAGED_BROWSER_SESSION_FILE)
+
+
+def _terminate_profile_browser_processes(profile_root: str) -> None:
+    """Stop only Chrome/Edge processes using this app-owned profile."""
+    if os.name != "nt":
+        return
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    powershell = os.path.join(
+        system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"
+    )
+    if not os.path.isfile(powershell):
+        powershell = "powershell.exe"
+    script = (
+        "$profile=$env:AIVS_MANAGED_BROWSER_PROFILE;"
+        "$needle='--user-data-dir='+$profile;"
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='msedge.exe'\" "
+        "-ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and "
+        "$_.CommandLine.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0 } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    environment = os.environ.copy()
+    environment["AIVS_MANAGED_BROWSER_PROFILE"] = os.path.abspath(profile_root)
+    try:
+        subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        # The PID-based process-tree cleanup below remains available even when
+        # WMI or PowerShell is disabled by an enterprise policy.
+        pass
+
+
+def _remove_stale_profile_locks(profile_root: str) -> None:
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"):
+        path = os.path.join(profile_root, name)
+        try:
+            if os.path.lexists(path):
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def _acquire_profile_session(profile_root: str, timeout_seconds: int) -> str:
+    os.makedirs(profile_root, exist_ok=True)
+    session_path = _profile_session_path(profile_root)
+    token = uuid.uuid4().hex
+    for _ in range(3):
+        try:
+            descriptor = os.open(session_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            try:
+                with open(session_path, "r", encoding="utf-8") as session_file:
+                    existing = json.load(session_file)
+                owner_pid = int(existing.get("owner_pid") or 0)
+                started_at = float(existing.get("started_at") or 0)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                owner_pid = 0
+                started_at = 0
+            if _process_is_running(owner_pid) and time.time() - started_at < timeout_seconds + 90:
+                raise DouyinAuthError(
+                    "MANAGED_BROWSER_LOGIN_IN_PROGRESS",
+                    "另一个视频任务正在等待平台登录，请先在已打开的专用浏览器中完成登录",
+                    retryable=True,
+                )
+            _terminate_profile_browser_processes(profile_root)
+            try:
+                os.unlink(session_path)
+            except OSError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as session_file:
+            json.dump(
+                {"token": token, "owner_pid": os.getpid(), "started_at": time.time()},
+                session_file,
+            )
+        _terminate_profile_browser_processes(profile_root)
+        _remove_stale_profile_locks(profile_root)
+        return token
+    raise DouyinAuthError(
+        "MANAGED_BROWSER_SESSION_BUSY",
+        "专用浏览器登录会话仍被占用，请关闭已打开的专用登录窗口后重试",
+        retryable=True,
+    )
+
+
+def _release_profile_session(profile_root: str, token: str) -> None:
+    session_path = _profile_session_path(profile_root)
+    try:
+        with open(session_path, "r", encoding="utf-8") as session_file:
+            existing = json.load(session_file)
+        if existing.get("token") == token:
+            os.unlink(session_path)
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _terminate_browser_process(process: Optional[subprocess.Popen]) -> None:
+    if process is None or process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
+def _start_managed_browser(
+    profile_root: str,
+    browser_name: str,
+    browser_executable: str,
+    target_url: str,
+) -> Tuple[subprocess.Popen, str]:
+    arguments = [
+        browser_executable,
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port={0}".format(_free_port()),
+        "--remote-allow-origins=*",
+        "--user-data-dir={0}".format(profile_root),
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-sync",
+        "--disable-background-mode",
+        "--no-service-autorun",
+        "--new-window",
+        target_url,
+    ]
+    port = int(arguments[2].split("=", 1)[1])
+    last_error: Optional[DouyinAuthError] = None
+    for attempt in range(2):
+        process: Optional[subprocess.Popen] = None
+        try:
+            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+            process = subprocess.Popen(
+                arguments,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            return process, _wait_for_debugger(port, process, 20, browser_name)
+        except OSError as exc:
+            last_error = DouyinAuthError(
+                "DOUYIN_BROWSER_EXEC_FAILED",
+                "无法启动{0}登录窗口：{1}".format(browser_name.title(), exc),
+                retryable=True,
+            )
+        except DouyinAuthError as exc:
+            last_error = exc
+        _terminate_browser_process(process)
+        _terminate_profile_browser_processes(profile_root)
+        _remove_stale_profile_locks(profile_root)
+        if attempt == 0:
+            time.sleep(0.8)
+    assert last_error is not None
+    raise last_error
 
 
 def has_managed_profile(profile_root: str) -> bool:
@@ -47,28 +242,56 @@ def login_douyin(
     timeout_seconds: int = 300,
 ) -> Dict[str, Any]:
     try:
+        return _login_douyin_once(
+            profile_root,
+            browser_name,
+            browser_executable,
+            target_url,
+            timeout_seconds,
+        )
+    except DouyinAuthError as exc:
+        startup_errors = {
+            "DOUYIN_BROWSER_EXEC_FAILED",
+            "DOUYIN_BROWSER_START_FAILED",
+            "DOUYIN_BROWSER_DEBUG_TIMEOUT",
+        }
+        if browser_name != "chrome" or exc.code not in startup_errors:
+            raise
+        edge_executable = find_edge()
+        if not edge_executable:
+            raise
+        edge_profile_root = os.path.join(os.path.dirname(profile_root), "edge")
+        return _login_douyin_once(
+            edge_profile_root,
+            "edge",
+            edge_executable,
+            target_url,
+            timeout_seconds,
+        )
+
+
+def _login_douyin_once(
+    profile_root: str,
+    browser_name: str,
+    browser_executable: str,
+    target_url: str = "https://v.douyin.com",
+    timeout_seconds: int = 300,
+) -> Dict[str, Any]:
+    try:
         from websocket import WebSocketTimeoutException, create_connection
     except ImportError:
         raise DouyinAuthError("DOUYIN_CDP_DEPENDENCY_MISSING", "缺少 websocket-client，无法监测登录状态")
 
     os.makedirs(profile_root, exist_ok=True)
-    port = _free_port()
+    session_token = _acquire_profile_session(profile_root, timeout_seconds)
     login_started_at = time.time()
-    process = subprocess.Popen([
-        browser_executable,
-        "--remote-debugging-address=127.0.0.1",
-        "--remote-debugging-port={0}".format(port),
-        "--remote-allow-origins=*",
-        "--user-data-dir={0}".format(profile_root),
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-sync",
-        "--new-window",
-        target_url,
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    process: Optional[subprocess.Popen] = None
     connection = None
     try:
-        websocket_url = _wait_for_debugger(port, process, 20)
+        process, websocket_url = _start_managed_browser(
+            profile_root, browser_name, browser_executable, target_url
+        )
+        port = int(urlparse(websocket_url).port or 0)
         connection = create_connection(websocket_url, timeout=3, origin="http://127.0.0.1:{0}".format(port))
         deadline = time.time() + timeout_seconds
         command_id = 0
@@ -163,12 +386,10 @@ def login_douyin(
     finally:
         if connection:
             connection.close()
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        _terminate_browser_process(process)
+        _terminate_profile_browser_processes(profile_root)
+        _remove_stale_profile_locks(profile_root)
+        _release_profile_session(profile_root, session_token)
 
 
 def find_chrome() -> Optional[str]:
@@ -210,6 +431,44 @@ def resolve_video_in_browser(
     timeout_seconds: int = 120,
 ) -> Dict[str, Any]:
     try:
+        return _resolve_video_in_browser_once(
+            profile_root,
+            browser_name,
+            browser_executable,
+            target_url,
+            platform,
+            timeout_seconds,
+        )
+    except DouyinAuthError as exc:
+        startup_errors = {
+            "DOUYIN_BROWSER_EXEC_FAILED",
+            "DOUYIN_BROWSER_START_FAILED",
+            "DOUYIN_BROWSER_DEBUG_TIMEOUT",
+        }
+        if browser_name != "chrome" or exc.code not in startup_errors:
+            raise
+        edge_executable = find_edge()
+        if not edge_executable:
+            raise
+        return _resolve_video_in_browser_once(
+            os.path.join(os.path.dirname(profile_root), "edge"),
+            "edge",
+            edge_executable,
+            target_url,
+            platform,
+            timeout_seconds,
+        )
+
+
+def _resolve_video_in_browser_once(
+    profile_root: str,
+    browser_name: str,
+    browser_executable: str,
+    target_url: str,
+    platform: str,
+    timeout_seconds: int = 120,
+) -> Dict[str, Any]:
+    try:
         from websocket import create_connection
     except ImportError:
         raise DouyinAuthError("VIDEO_CDP_DEPENDENCY_MISSING", "缺少 websocket-client，无法通过浏览器读取视频", retryable=True)
@@ -217,23 +476,15 @@ def resolve_video_in_browser(
     if not host_suffixes:
         raise DouyinAuthError("VIDEO_PLATFORM_BROWSER_UNSUPPORTED", "该平台不支持浏览器解析", retryable=False)
     os.makedirs(profile_root, exist_ok=True)
-    port = _free_port()
-    process = subprocess.Popen([
-        browser_executable,
-        "--remote-debugging-address=127.0.0.1",
-        "--remote-debugging-port={0}".format(port),
-        "--remote-allow-origins=*",
-        "--user-data-dir={0}".format(profile_root),
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-sync",
-        "--new-window",
-        target_url,
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    session_token = _acquire_profile_session(profile_root, timeout_seconds)
+    process: Optional[subprocess.Popen] = None
     browser_connection = None
     page_connection = None
     try:
-        browser_websocket_url = _wait_for_debugger(port, process, 20)
+        process, browser_websocket_url = _start_managed_browser(
+            profile_root, browser_name, browser_executable, target_url
+        )
+        port = int(urlparse(browser_websocket_url).port or 0)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             if process.poll() is not None:
@@ -279,12 +530,10 @@ def resolve_video_in_browser(
             page_connection.close()
         if browser_connection:
             browser_connection.close()
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        _terminate_browser_process(process)
+        _terminate_profile_browser_processes(profile_root)
+        _remove_stale_profile_locks(profile_root)
+        _release_profile_session(profile_root, session_token)
 
 
 def _find_chromium_browser(browser_name: str) -> Optional[str]:
@@ -333,12 +582,21 @@ def _free_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def _wait_for_debugger(port: int, process: subprocess.Popen, timeout_seconds: int) -> str:
+def _wait_for_debugger(
+    port: int,
+    process: subprocess.Popen,
+    timeout_seconds: int,
+    browser_name: str = "browser",
+) -> str:
     deadline = time.time() + timeout_seconds
     endpoint = "http://127.0.0.1:{0}/json/version".format(port)
     while time.time() < deadline:
         if process.poll() is not None:
-            raise DouyinAuthError("DOUYIN_CHROME_START_FAILED", "Chrome 登录窗口启动失败", retryable=True)
+            raise DouyinAuthError(
+                "DOUYIN_BROWSER_START_FAILED",
+                "{0}登录窗口启动失败，已自动清理残留进程并重试".format(browser_name.title()),
+                retryable=True,
+            )
         try:
             with urlopen(endpoint, timeout=1) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -347,7 +605,11 @@ def _wait_for_debugger(port: int, process: subprocess.Popen, timeout_seconds: in
                 return str(websocket_url)
         except Exception:
             time.sleep(0.2)
-    raise DouyinAuthError("DOUYIN_CHROME_DEBUG_TIMEOUT", "无法连接专用 Chrome 登录窗口", retryable=True)
+    raise DouyinAuthError(
+        "DOUYIN_BROWSER_DEBUG_TIMEOUT",
+        "无法连接专用{0}登录窗口，已自动清理残留进程并重试".format(browser_name.title()),
+        retryable=True,
+    )
 
 
 def _cdp(connection: Any, command_id: int, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

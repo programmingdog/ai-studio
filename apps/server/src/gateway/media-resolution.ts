@@ -38,9 +38,9 @@ export function resolveMediaResolution(input: {
 }): { field: ResolutionField; value: string } | undefined {
   const requested = input.resolution.trim();
   if (!requested) throw new BadRequestException("图片或视频生成任务必须选择分辨率");
-  // This existing fixed-output model has no upstream resolution parameter.
-  if (input.modelCode === "omni_flash-10s" && key(requested) === "default") return undefined;
-  const fields: ResolutionField[] = ["resolution", "imageSize", "image_size", ...(input.capability === "IMAGE_GENERATION" ? ["size" as const] : [])];
+  // Fixed-output models still need a local pricing tier, but no upstream field.
+  if ((input.modelCode === "omni_flash-10s" || input.config.fixed_output_resolution === true || input.config.fixed_output_resolution === 1) && key(requested) === "default") return undefined;
+  const fields: ResolutionField[] = ["resolution", "imageSize", "image_size", "size"];
   const configuredField = input.config.resolution_parameter;
   if (configuredField !== undefined && !fields.includes(configuredField as ResolutionField)) throw new ServiceUnavailableException("模型 resolution_parameter 配置无效");
   const field = (configuredField as ResolutionField | undefined) ?? fields.find((name) => fieldDefinition(input.schema, name)) ?? (input.protocol === "gemini" && input.capability === "IMAGE_GENERATION" ? "imageSize" : "resolution");
