@@ -34,6 +34,13 @@ test('host-network apps are pinned to loopback and raw secrets remain server-sid
   assert.doesNotMatch(proxy, /proxy_add_x_forwarded_for/);
 });
 
+test('admin health check targets a successful page instead of the redirecting root route', () => {
+  assert.match(read('apps/admin-web/app/page.tsx'), /redirect\("\/download"\)/);
+  const healthcheck = read('deploy/healthcheck.cjs');
+  assert.match(healthcheck, /http:\/\/127\.0\.0\.1:3200\/download/);
+  assert.match(healthcheck, /redirect: 'error'/);
+});
+
 test('CI publishes exactly the tested images and protects production', () => {
   const workflow = read('.github/workflows/platform.yml');
   assert.match(workflow, /docker save aivs-api:ci aivs-admin:ci/);

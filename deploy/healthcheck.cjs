@@ -1,5 +1,5 @@
 const api = process.argv[2] === 'api';
-const url = api ? 'http://127.0.0.1:3101/api/v1/health' : 'http://127.0.0.1:3200/';
+const url = api ? 'http://127.0.0.1:3101/api/v1/health' : 'http://127.0.0.1:3200/download';
 (async () => {
   const response = await fetch(url, { signal: AbortSignal.timeout(4000), redirect: 'error' });
   if (!response.ok) throw new Error('HTTP health check failed');
