@@ -20,8 +20,10 @@ import { DashboardOverview } from "@/components/DashboardOverview";
 import { DesktopReleasePanel } from "@/components/DesktopReleasePanel";
 import { ScriptAnalysisConfigPanel, ScriptAnalysisPricingPanel } from "@/components/ScriptAnalysisConfigPanel";
 import { ClientRuntimeConfigPanel } from "@/components/ClientRuntimeConfigPanel";
+import { ScriptLibraryPanel } from "@/components/ScriptLibraryPanel";
+import { FinancialOverview } from "@/components/FinancialOverview";
 
-type View = "overview" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
+type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
 type NavigationItem = { id: View; label: string; eyebrow: string };
 type NavigationGroup = { id: "product" | "ai" | "growth" | "commerce" | "operations"; label: string; eyebrow: string; mark: string; items: NavigationItem[] };
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
@@ -62,6 +64,7 @@ const navigationGroups: NavigationGroup[] = [
     { id: "model-routing", label: "模型路由", eyebrow: "ROUTING" },
     { id: "providers", label: "供应商与模型", eyebrow: "GATEWAY" },
     { id: "script-analysis", label: "剧本提取", eyebrow: "SCRIPT" },
+    { id: "script-library", label: "剧本库", eyebrow: "LIBRARY" },
     { id: "configs", label: "提示词与工作流", eyebrow: "WORKFLOWS" },
     { id: "creative-presets", label: "创作预设", eyebrow: "PRESETS" },
   ] },
@@ -72,6 +75,7 @@ const navigationGroups: NavigationGroup[] = [
     { id: "commission-settlement", label: "佣金结算", eyebrow: "SETTLEMENT" },
   ] },
   { id: "commerce", label: "交易与积分", eyebrow: "BILLING & CREDITS", mark: "BC", items: [
+    { id: "financials", label: "经营财务", eyebrow: "FINANCIALS" },
     { id: "credit-pricing", label: "积分定价", eyebrow: "PRICING" },
     { id: "credit-packages", label: "积分套餐", eyebrow: "PACKAGES" },
     { id: "orders", label: "交易订单", eyebrow: "ORDERS" },
@@ -150,6 +154,7 @@ export function AdminApp() {
         <header className="topbar"><div><span>{active.eyebrow}</span><h1>{active.label}</h1></div><div className="admin-profile"><span>{admin.displayName.slice(0, 1).toUpperCase()}</span><div className="admin-identity"><strong>{admin.displayName}</strong><small>{admin.email}</small></div><div className="admin-profile-actions"><button type="button" onClick={() => setPasswordOpen(true)}>修改密码</button><button type="button" onClick={logout}>退出</button></div></div></header>
         <div className={`content ${view === "overview" ? "dashboard-content" : ""}`}>
           {view === "overview" && <DashboardOverview token={token} />}
+          {view === "financials" && <FinancialOverview token={token} />}
           {view === "product-brand" && <ProductBrandConfigPanel token={token} />}
           {view === "auth-methods" && <AuthMethodsConfigPanel token={token} />}
           {view === "client-distribution" && <PageTabs label="客户端配置" description="集中维护客户端运行参数、下载入口与版本发布。" tabs={[
@@ -160,6 +165,7 @@ export function AdminApp() {
           {view === "model-routing" && <DefaultModelConfigPanel token={token} />}
           {view === "providers" && <ProvidersPanel token={token} />}
           {view === "script-analysis" && <><ConfigScope title="剧本提取能力" description="服务端读取提示词并调用默认文本模型；客户端只负责提交剧本和接收结果。" badges={["服务端执行", "保存即生效", "依赖默认文本模型"]} /><ScriptAnalysisModelSummary token={token} onOpenRouting={() => setView("model-routing")} /><ScriptAnalysisConfigPanel token={token} /></>}
+          {view === "script-library" && <ScriptLibraryPanel token={token} />}
           {view === "configs" && <ConfigsPanel token={token} />}
           {view === "creative-presets" && <PageTabs label="创作预设" description="统一维护客户端可选择的创作目录。" tabs={[
             { id: "visual-styles", label: "画风", content: <CatalogPanel token={token} kind="visual-styles" /> },

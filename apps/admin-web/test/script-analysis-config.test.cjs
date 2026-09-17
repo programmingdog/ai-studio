@@ -16,4 +16,8 @@ test('script analysis configuration belongs to its AI capability page instead of
   assert.match(controller, /@Get\("configs\/script-analysis"\)\s+@RequirePermissions\("configs\.manage"\)/);
   assert.match(controller, /@Patch\("configs\/script-analysis"\)\s+@RequirePermissions\("configs\.manage"\)/);
   assert.doesNotMatch(controller, /providers\/script-analysis-config/);
+  assert.match(panel, /提取剧本扣费模式/);
+  assert.match(panel, /整体扣费模式（默认）/);
+  assert.match(panel, /分段单独扣费模式/);
+  assert.match(panel, /extraction_billing_mode/);
 });

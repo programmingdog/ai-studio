@@ -16,6 +16,7 @@ AUTH_COOKIE_NAMES = {"sessionid", "sessionid_ss"}
 FRESH_COOKIE_NAMES = {"s_v_web_id", "ttwid"}
 DOUYIN_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
 PLATFORM_BROWSER_HOSTS = {
+    "DOUYIN": DOUYIN_HOST_SUFFIXES,
     "KUAISHOU": ("kuaishou.com", "gifshow.com", "kwai.com"),
     "BILIBILI": ("bilibili.com", "b23.tv"),
 }
@@ -759,6 +760,35 @@ def _read_video_page(
             page_connection.close()
 
 
+def _is_http_video_url(value: Any) -> bool:
+    """Accept only URLs that describe media, never tracker/image URLs with video text in a query."""
+    if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+        return False
+    try:
+        parsed = urlparse(value)
+        path = parsed.path.lower()
+        query = parse_qs(parsed.query)
+    except (TypeError, ValueError):
+        return False
+    if path.endswith((".gif", ".jpg", ".jpeg", ".png", ".webp", ".svg", ".ico")):
+        return False
+    if path.endswith((".mp4", ".m3u8", ".m4s", ".webm", ".flv")):
+        return True
+    mime_type = str((query.get("mime_type") or query.get("mime") or [""])[0]).lower()
+    if mime_type.startswith("video"):
+        return True
+    if any(marker in path for marker in ("/video/tos/", "/tos-cn-ve-")):
+        return True
+    host = (parsed.hostname or "").lower()
+    if (host == "douyinvod.com" or host.endswith(".douyinvod.com")) and "/video/" in path:
+        return True
+    return (
+        (host == "douyin.com" or host.endswith(".douyin.com"))
+        and "/aweme/v1/play/" in path
+        and bool(query.get("video_id"))
+    )
+
+
 def _capture_video_from_network(
     connection: Any,
     expected_video_id: str,
@@ -773,6 +803,24 @@ def _capture_video_from_network(
     command_id += 1
     initial = _cdp(connection, command_id, "Runtime.evaluate", {
         "expression": r"""(() => {
+          const isHttpVideo = value => {
+            if (typeof value !== 'string' || !/^https?:\/\//i.test(value)) return false;
+            try {
+              const url = new URL(value);
+              const path = url.pathname.toLowerCase();
+              if (/\.(gif|jpe?g|png|webp|svg|ico)$/i.test(path)) return false;
+              return /\.(mp4|m3u8|m4s|webm|flv)$/i.test(path)
+                || path.includes('/video/tos/')
+                || path.includes('/tos-cn-ve-')
+                || ((url.hostname === 'douyinvod.com' || url.hostname.endsWith('.douyinvod.com'))
+                  && path.includes('/video/'))
+                || (/^video/i.test(url.searchParams.get('mime_type') || url.searchParams.get('mime') || ''))
+                || ((url.hostname === 'douyin.com' || url.hostname.endsWith('.douyin.com'))
+                  && path.includes('/aweme/v1/play/') && url.searchParams.has('video_id'));
+            } catch (_) {
+              return false;
+            }
+          };
           const video = [...document.querySelectorAll('video')].find(item => item.currentSrc || item.src)
             || document.querySelector('video');
           if (video) video.play().catch(() => {});
@@ -782,13 +830,12 @@ def _capture_video_from_network(
             ...(video ? [...video.querySelectorAll('source')].map(item => item.src) : []),
             ...performance.getEntriesByType('resource').map(item => item.name).reverse(),
           ];
-          return candidates.find(value => typeof value === 'string' && /^https?:\/\//i.test(value)
-            && (/\.mp4(?:\?|$)/i.test(value) || /\.m3u8(?:\?|$)/i.test(value) || /\/video\//i.test(value))) || '';
+          return candidates.find(isHttpVideo) || '';
         })()""",
         "returnByValue": True,
     })
     initial_url = str(((initial.get("result") or {}).get("value") or ""))
-    if initial_url.startswith(("http://", "https://")):
+    if _is_http_video_url(initial_url):
         command_id += 1
         return _browser_media_info(
             connection,
@@ -829,7 +876,12 @@ def _capture_video_from_network(
                 webpage_url=webpage_url,
                 platform=platform,
             )
-        if "aweme" not in response_url or not any(marker in response_url for marker in ("detail", "feed")):
+        if platform != "DOUYIN" or not any(marker in response_url for marker in (
+            "/aweme/v1/web/aweme/detail/",
+            "/aweme/v2/web/aweme/detail/",
+            "/web/api/v2/aweme/iteminfo",
+            "/aweme/v1/web/feed/",
+        )):
             continue
         request_id = str(params.get("requestId") or "")
         if not request_id:
@@ -933,27 +985,55 @@ def _find_aweme_item(value: Any, expected_video_id: str, depth: int = 0) -> Opti
 
 def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Dict[str, Any]]:
     video = item.get("video") or {}
-    candidates: List[Tuple[int, str]] = []
+    candidates: List[Tuple[int, int, int, int, str]] = []
+
+    def add_address(node: Any, score: int) -> None:
+        if not isinstance(node, dict):
+            return
+        urls = node.get("url_list") or node.get("urlList") or node.get("download_url_list") or []
+        if not isinstance(urls, list):
+            return
+        try:
+            pixels = int(node.get("width") or 0) * int(node.get("height") or 0)
+        except (TypeError, ValueError):
+            pixels = 0
+        try:
+            size = int(node.get("data_size") or node.get("dataSize") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        for url_index, url in enumerate(urls):
+            if _is_http_video_url(url):
+                # Keep every CDN mirror.  The first address remains preferred,
+                # while later mirrors can recover a long transfer whose first
+                # node returns no data blocks.
+                candidates.append((score, pixels, size, -url_index, url))
+
+    # Prefer the structured play addresses exposed by Douyin's aweme detail API.
+    # This mirrors the proven fallback in douyin_analysis and avoids unrelated
+    # performance resources from the page entirely.
+    add_address(video.get("play_addr_h264") or video.get("playAddrH264"), 500)
+    add_address(video.get("play_addr") or video.get("playAddr"), 450)
+    for bitrate in video.get("bit_rate") or video.get("bitRate") or []:
+        if isinstance(bitrate, dict):
+            add_address(bitrate.get("play_addr") or bitrate.get("playAddr"), 400)
+    add_address(video.get("play_addr_265") or video.get("playAddr265"), 300)
+    add_address(video.get("download_addr") or video.get("downloadAddr"), 200)
 
     def collect(value: Any, path: str = "", depth: int = 0) -> None:
         if depth > 14:
             return
-        if isinstance(value, str) and value.startswith(("http://", "https://")):
-            lowered = value.lower()
-            if any(marker in lowered for marker in ("/video/tos/", "/tos-cn-ve-", "douyinvod", ".mp4")):
-                lowered_path = path.lower()
-                score = 0
-                if "play_addr_h264" in lowered_path or "playaddrh264" in lowered_path:
-                    score += 80
-                elif "play_addr" in lowered_path or "playaddr" in lowered_path:
-                    score += 60
-                elif "download_addr" in lowered_path or "downloadaddr" in lowered_path:
-                    score += 40
-                if "url_list" in lowered_path or "urllist" in lowered_path:
-                    score += 10
-                if ".mp4" in lowered:
-                    score += 5
-                candidates.append((score, value))
+        if isinstance(value, str) and _is_http_video_url(value):
+            lowered_path = path.lower()
+            score = 0
+            if "play_addr_h264" in lowered_path or "playaddrh264" in lowered_path:
+                score += 500
+            elif "play_addr" in lowered_path or "playaddr" in lowered_path:
+                score += 450
+            elif "bit_rate" in lowered_path or "bitrate" in lowered_path:
+                score += 400
+            elif "download_addr" in lowered_path or "downloadaddr" in lowered_path:
+                score += 200
+            candidates.append((score, 0, 0, 0, value))
             return
         if isinstance(value, dict):
             for key, child in value.items():
@@ -962,11 +1042,16 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
             for index, child in enumerate(value):
                 collect(child, "{0}[{1}]".format(path, index), depth + 1)
 
-    collect(video, "video")
+    if not candidates:
+        collect(video, "video")
     if not candidates:
         return None
-    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    download_url = candidates[0][1]
+    candidates.sort(key=lambda candidate: candidate[:4], reverse=True)
+    download_urls = []
+    for candidate in candidates:
+        if candidate[4] not in download_urls:
+            download_urls.append(candidate[4])
+    download_url = download_urls[0]
     duration = video.get("duration")
     try:
         duration = float(duration) if duration is not None else None
@@ -985,6 +1070,8 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
         "thumbnail": thumbnail,
         "webpage_url": "https://www.douyin.com/video/{0}".format(video_id),
         "download_url": download_url,
+        "download_urls": download_urls,
+        "filesize": candidates[0][2] or None,
         "ext": "mp4",
         "width": video.get("width"),
         "height": video.get("height"),

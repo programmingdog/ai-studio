@@ -21,6 +21,8 @@
 !deploy/
 !deploy/Dockerfile
 !deploy/healthcheck.cjs
+!剧本/
+!剧本/**
 **/node_modules
 **/.next
 **/dist

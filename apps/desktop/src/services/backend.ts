@@ -8,6 +8,7 @@ import type {
   CanonicalProject,
   BrowserCookieSource,
   CreateProjectInput,
+  CreateCanonicalProjectInput,
   CreationSpec,
   DouyinBrowserAvailability,
   DouyinDownloadResult,
@@ -142,6 +143,19 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectB
   });
 }
 
+export async function createCanonicalProject(input: CreateCanonicalProjectInput): Promise<ProjectBundle> {
+  if (!isTauri()) return store({
+    project: { id: `P_BROWSER_${Date.now()}`, name: input.creation_spec.project_name, project_path: `${input.root_path}/${input.creation_spec.project_name}`, input_type: "SCRIPT", status: "ACTIVE", created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    creation_spec: input.creation_spec, source_type: input.source_path ? "SCRIPT_FILE" : "SCRIPT_TEXT", source_text: input.source_text || "规范化剧本数据", source_path: input.source_path, canonical: input.canonical, jobs: [],
+  });
+  return invoke<ProjectBundle>("create_canonical_project", { input });
+}
+
+export async function importStandardScriptFile(rootPath: string, sourcePath: string, creationSpec: CreationSpec): Promise<ProjectBundle> {
+  if (!isTauri()) throw new Error("规范剧本文件导入仅支持桌面应用");
+  return invoke<ProjectBundle>("import_standard_script_file", { rootPath, sourcePath, creationSpec });
+}
+
 export async function runInitialWorkflow(bundle: ProjectBundle): Promise<ProjectBundle> {
   return bundle.source_type === "IDEA" ? developIdea(bundle) : analyzeScript(bundle);
 }
@@ -265,6 +279,21 @@ export async function listAssetLibrary(): Promise<AssetLibraryItem[]> {
   return [];
 }
 
+export async function chooseFreeCreationReferenceImage(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  const selected = await openDialog({
+    multiple: false,
+    title: "选择自由创作参考图",
+    filters: [{ name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp"] }],
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
+export async function importAssetLibraryReferenceImage(sourcePath: string): Promise<AssetLibraryItem> {
+  if (!isTauri()) throw new Error("导入自由创作参考图仅支持桌面应用");
+  return invoke<AssetLibraryItem>("import_asset_library_reference_image", { sourcePath });
+}
+
 export async function deleteAssetLibrary(assetIds: string[]): Promise<DeleteAssetLibraryResult> {
   if (!isTauri()) throw new Error("批量删除资产仅支持桌面应用");
   return invoke<DeleteAssetLibraryResult>("delete_asset_library", { assetIds });
@@ -309,6 +338,15 @@ export async function saveTextAsTxt(content: string, defaultName: string): Promi
   if (typeof selected !== "string") return undefined;
   const outputPath = selected.toLowerCase().endsWith(".txt") ? selected : `${selected}.txt`;
   return invoke<string>("save_text_file", { outputPath, content });
+}
+
+export async function saveTextAsJson(content: string, defaultName: string): Promise<string | undefined> {
+  if (!isTauri()) {
+    const anchor=document.createElement("a"); anchor.href=URL.createObjectURL(new Blob([content],{type:"application/json"})); anchor.download=defaultName.endsWith(".json")?defaultName:`${defaultName}.json`; anchor.click(); URL.revokeObjectURL(anchor.href); return anchor.download;
+  }
+  const selected=await saveDialog({title:"保存规范剧本示例",defaultPath:defaultName,filters:[{name:"JSON 剧本",extensions:["json"]}]});
+  if(typeof selected!=="string")return undefined; const outputPath=selected.toLowerCase().endsWith(".json")?selected:`${selected}.json`;
+  return invoke<string>("save_json_file",{outputPath,content});
 }
 
 export async function savePromotionPoster(dataUrl: string, posterLabel: string | number): Promise<string | undefined> {
@@ -361,7 +399,7 @@ export async function chooseScriptFile(): Promise<string | undefined> {
   const selected = await openDialog({
     multiple: false,
     title: "选择剧本文件",
-    filters: [{ name: "剧本文件", extensions: ["txt", "md", "docx", "pdf"] }],
+    filters: [{ name: "剧本文件", extensions: ["json", "txt", "md", "docx", "pdf"] }],
   });
   return typeof selected === "string" ? selected : undefined;
 }
@@ -439,6 +477,7 @@ export async function chooseVideoFile(): Promise<string | undefined> {
 
 export async function getAiSettings(): Promise<AiSettings> {
   const local: LocalAiSettings = !isTauri() ? {
+    project_directory: "Browser Demo/projects", default_project_directory: "Browser Demo/projects",
     generation_assets_directory: "Browser Demo/assets", default_generation_assets_directory: "Browser Demo/assets",
     base_url: "https://api.lk888.ai", agent_model: "gpt-5.6-sol", video_model: "gemini-3.7-flash", video_storyboard_prompt: VIDEO_STORYBOARD_PROMPT, video_storyboard_detailed_prompt: VIDEO_STORYBOARD_DETAILED_PROMPT, character_image_prompt: CHARACTER_IMAGE_PROMPT, has_api_key: false,
     prompt_overrides: { video_storyboard_prompt: false, video_storyboard_detailed_prompt: false, character_image_prompt: false },
@@ -546,7 +585,7 @@ export async function reparseDouyinUnderstandingTask(taskId: string): Promise<Do
 }
 
 export async function createVideoRemixTask(input: CreateVideoRemixTaskInput): Promise<VideoRemixTask> {
-  if (!isTauri()) throw new Error("视频二次创作仅支持桌面应用");
+  if (!isTauri()) throw new Error("二次创作仅支持桌面应用");
   return invoke<VideoRemixTask>("create_video_remix_task", { input });
 }
 
@@ -556,7 +595,7 @@ export async function listVideoRemixTasks(sourceTaskId: string): Promise<VideoRe
 }
 
 export async function retryVideoRemixTask(taskId: string): Promise<VideoRemixTask> {
-  if (!isTauri()) throw new Error("视频二次创作仅支持桌面应用");
+  if (!isTauri()) throw new Error("二次创作仅支持桌面应用");
   return invoke<VideoRemixTask>("retry_video_remix_task", { taskId });
 }
 
@@ -566,7 +605,7 @@ export async function deleteVideoRemixTask(taskId: string): Promise<void> {
 }
 
 export async function createVideoRemixProject(input: CreateVideoRemixProjectInput): Promise<ProjectBundle> {
-  if (!isTauri()) throw new Error("视频二次创作项目仅支持桌面应用");
+  if (!isTauri()) throw new Error("二次创作项目仅支持桌面应用");
   return invoke<ProjectBundle>("create_video_remix_project", { input });
 }
 

@@ -912,6 +912,9 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/dashboard/overview": {
       get: operation({ id: "adminOverview", tag: "管理概览", summary: "读取运营概览、分销明细与最近30天趋势", security: true, success: ref("DashboardOverview") }),
     },
+    "/admin/dashboard/financials": {
+      get: operation({ id: "adminFinancials", tag: "管理概览", summary: "读取日周月收入、成本、全部分润、净利润、负债与分类趋势", security: true }),
+    },
     "/admin/configs": {
       get: operation({ id: "listConfigs", tag: "管理配置", summary: "读取配置集合", security: true, parameters: [query("category", "按配置分类筛选")] }),
       post: operation({ id: "createConfig", tag: "管理配置", summary: "创建配置集合及首个版本", security: true, body: ref("ConfigCreateRequest") }),

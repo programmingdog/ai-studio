@@ -39,6 +39,7 @@ COPY --from=build-api /app/apps/server/dist ./dist
 COPY apps/server/src/database/migrations ./dist/database/migrations
 COPY apps/desktop/src/prompts /app/apps/desktop/src/prompts
 COPY apps/desktop/src/data/visual-style-presets.json apps/desktop/src/data/creative-type-presets.json /app/apps/desktop/src/data/
+COPY --chown=node:node 剧本 /app/剧本
 COPY deploy/healthcheck.cjs /app/healthcheck.cjs
 USER node
 CMD ["node", "dist/main.js"]

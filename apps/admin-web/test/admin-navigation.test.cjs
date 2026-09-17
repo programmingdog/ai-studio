@@ -5,6 +5,8 @@ const test = require('node:test');
 
 const app = readFileSync(join(__dirname, '../components/AdminApp.tsx'), 'utf8');
 const providers = readFileSync(join(__dirname, '../components/ProvidersPanel.tsx'), 'utf8');
+const home = readFileSync(join(__dirname, '../app/page.tsx'), 'utf8');
+const financials = readFileSync(join(__dirname, '../components/FinancialOverview.tsx'), 'utf8');
 
 test('admin navigation is grouped by stable business domains', () => {
   for (const label of ['产品与客户端', 'AI 与创作', '用户与增长', '交易与积分', '系统与运维']) {
@@ -16,11 +18,18 @@ test('admin navigation is grouped by stable business domains', () => {
 test('overloaded pages are separated or combined by lifecycle', () => {
   assert.match(app, /id: "model-routing", label: "模型路由"/);
   assert.match(app, /id: "script-analysis", label: "剧本提取"/);
+  assert.match(app, /id: "script-library", label: "剧本库"/);
   assert.match(app, /id: "client-distribution", label: "下载与版本"/);
   assert.match(app, /id: "commission-settlement", label: "佣金结算"/);
   assert.match(app, /id: "orders", label: "交易订单"/);
+  assert.match(app, /id: "financials", label: "经营财务"/);
   assert.match(app, /id: "integrations", label: "渠道集成"/);
   assert.doesNotMatch(providers, /<DefaultModelConfigPanel/);
+});
+
+test('root route leads to downloads and financial accounting has detailed periods', () => {
+  assert.match(home, /redirect\("\/download"\)/);
+  for (const label of ['今日', '本周', '本月', '近 30 天', '累计', '扣分润后净利润']) assert.match(financials, new RegExp(label));
 });
 
 test('versioned configuration is presented as AI prompts and workflows', () => {

@@ -10,6 +10,19 @@ from inputs.douyin_input import DouyinResolverError, detect_video_platform, down
 from inputs.douyin_auth import DouyinAuthError, browser_availability, find_managed_browser, has_managed_profile, login_douyin, managed_cookie_file, resolve_video_in_browser
 
 
+DOWNLOAD_BROWSER_REFRESH_CODES = {
+    "DOUYIN_BROWSER_COOKIES_STALE",
+    "DOUYIN_BROWSER_COOKIES_FAILED",
+    "DOUYIN_BROWSER_COOKIE_DATABASE_LOCKED",
+    "DOUYIN_BROWSER_PROFILE_NOT_FOUND",
+    "DOUYIN_COOKIE_FILE_STALE",
+    "DOUYIN_COOKIE_FILE_FAILED",
+    "DOUYIN_DOWNLOAD_NO_DATA",
+    "DOUYIN_DOWNLOAD_TIMEOUT",
+    "DOUYIN_DOWNLOAD_FILE_MISSING",
+}
+
+
 def dispatch(request: Dict[str, Any]) -> Any:
     request_id = str(request.get("id", "unknown"))
     if request.get("version") != PROTOCOL_VERSION:
@@ -77,6 +90,22 @@ def dispatch(request: Dict[str, Any]) -> Any:
         browser_profile_root = os.path.join(profile_root, browser_name)
         profile_path = os.path.join(browser_profile_root, "Default")
         cookie_file_path = managed_cookie_file(browser_profile_root)
+        progress(request_id, 0.16, "browser_real_url", "常规解析失败，正在从抖音详情接口提取真实视频地址")
+        try:
+            data = resolve_video_in_browser(
+                browser_profile_root,
+                browser_name,
+                browser_executable,
+                target_url,
+                platform="DOUYIN",
+                timeout_seconds=45,
+            )
+            progress(request_id, 1.0, "completed", "已通过抖音详情接口解析真实视频地址")
+            return data
+        except DouyinAuthError:
+            # The anonymous detail request can be rejected by account/login
+            # policy. Continue with the existing cookie and login paths.
+            pass
         progress(request_id, 0.08, "cookie_validation", "正在验证已保存的平台登录状态")
         if has_managed_profile(browser_profile_root):
             try:
@@ -115,7 +144,7 @@ def dispatch(request: Dict[str, Any]) -> Any:
                 cookie_file_path=str(login_result["cookie_file_path"]),
             )
         except DouyinResolverError as exc:
-            if exc.code != "DOUYIN_COOKIE_FILE_STALE" or not login_result.get("video"):
+            if not login_result.get("video"):
                 raise
             data = login_result["video"]
         progress(request_id, 1.0, "completed", "视频地址解析完成")
@@ -132,6 +161,18 @@ def dispatch(request: Dict[str, Any]) -> Any:
             cookie_file_path=params.get("cookie_file_path"),
         )
         progress(request_id, 1.0, "completed", "视频下载完成")
+        return data
+    if method == "input.download_resolved_video":
+        progress(request_id, 0.05, "direct_download_start", "正在使用已解析的视频地址下载")
+        video_info = params.get("video_info") or {}
+        if not isinstance(video_info, dict):
+            raise ValueError("video_info must be an object")
+        data = download_direct_video(
+            video_info,
+            str(params.get("output_path") or ""),
+            cookie_file_path=params.get("cookie_file_path"),
+        )
+        progress(request_id, 1.0, "completed", "已解析视频下载完成")
         return data
     if method == "input.download_douyin_auto":
         share_text = str(params.get("share_text") or "")
@@ -179,6 +220,27 @@ def dispatch(request: Dict[str, Any]) -> Any:
         browser_profile_root = os.path.join(profile_root, browser_name)
         profile_path = os.path.join(browser_profile_root, "Default")
         cookie_file_path = managed_cookie_file(browser_profile_root)
+        progress(request_id, 0.12, "browser_real_url", "下载节点未返回数据，正在刷新抖音真实视频地址")
+        try:
+            video = resolve_video_in_browser(
+                browser_profile_root,
+                browser_name,
+                browser_executable,
+                target_url,
+                platform="DOUYIN",
+                timeout_seconds=45,
+            )
+            data = download_direct_video(
+                video,
+                output_path,
+                cookie_file_path=video.get("cookie_file_path"),
+            )
+            progress(request_id, 1.0, "completed", "真实视频地址已刷新，视频下载完成")
+            return data
+        except (DouyinAuthError, DouyinResolverError):
+            # Keep the authenticated fallback below for videos whose detail
+            # endpoint or CDN requires an account session.
+            pass
         progress(request_id, 0.05, "download_start", "正在准备下载视频")
         if has_managed_profile(browser_profile_root):
             try:
@@ -194,14 +256,7 @@ def dispatch(request: Dict[str, Any]) -> Any:
                 progress(request_id, 1.0, "completed", "视频下载完成")
                 return data
             except DouyinResolverError as exc:
-                if exc.code not in {
-                    "DOUYIN_BROWSER_COOKIES_STALE",
-                    "DOUYIN_BROWSER_COOKIES_FAILED",
-                    "DOUYIN_BROWSER_COOKIE_DATABASE_LOCKED",
-                    "DOUYIN_BROWSER_PROFILE_NOT_FOUND",
-                    "DOUYIN_COOKIE_FILE_STALE",
-                    "DOUYIN_COOKIE_FILE_FAILED",
-                }:
+                if exc.code not in DOWNLOAD_BROWSER_REFRESH_CODES:
                     raise
         progress(request_id, 0.15, "browser_verification", "正在通过专用浏览器确认视频可用性和登录状态")
         login_result = login_douyin(
@@ -218,7 +273,7 @@ def dispatch(request: Dict[str, Any]) -> Any:
                 cookie_file_path=str(login_result["cookie_file_path"]),
             )
         except DouyinResolverError as exc:
-            if exc.code != "DOUYIN_COOKIE_FILE_STALE" or not login_result.get("video"):
+            if exc.code not in DOWNLOAD_BROWSER_REFRESH_CODES or not login_result.get("video"):
                 raise
             data = download_direct_video(
                 login_result["video"],

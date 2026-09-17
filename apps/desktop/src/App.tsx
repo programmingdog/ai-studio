@@ -13,8 +13,8 @@ import {
   FileDown, FileText, History, Image as ImageIcon, Images, Lightbulb, Link2, LoaderCircle, Lock, LockOpen, Play, Plus, Rocket, RotateCcw, Save, ScanSearch, ScrollText, Settings, Sparkles, Trash2, Upload, WandSparkles, X,
   Maximize2, Zap,
 } from "lucide-react";
-import type { AgentClientAction, AiSettings, ApplicationLogEntry, ApplicationLogLevel, AssetLibraryItem, AutomaticWorkflowStage, AutomaticWorkflowTaskSnapshot, BrowserCookieSource, CanonicalProject, Character, CharacterState, CreativeTypePreset, CreateDouyinUnderstandingTaskInput, CreateImageGenerationTaskItem, CreateProjectInput, CreateShotVideoGenerationInput, CreationSpec, DouyinUnderstandingTask, Episode, GenerationRecord, GenerationReferenceAssetInput, IdeaDevelopmentAction, IdeaDevelopmentWorkflow, ImageGenerationTask, ProjectBundle, ProjectListItem, ProjectSourceType, Prop, Scene, ScriptAnalysisTask, Shot, VideoCreditResolution, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask, VideoSubmissionMode } from "@aivs/schemas";
-import { chooseCookieFile, chooseProjectDirectory, chooseProjectImage, chooseScriptFile, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createScriptAnalysisTask, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteScriptAnalysisTask, deleteVideoRemixTask, deleteVideoUnderstandingTask, exportAllGenerationAssets, getActiveAutomaticWorkflow, getAiSettings, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importProjectReferenceImage, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listScriptAnalysisTasks, listVideoRemixTasks, loadProject, readProjectAsset, reanalyzeScriptTask, reparseDouyinUnderstandingTask, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
+import type { AgentClientAction, AiSettings, ApplicationLogEntry, ApplicationLogLevel, AssetLibraryItem, AutomaticWorkflowStage, AutomaticWorkflowTaskSnapshot, BrowserCookieSource, CanonicalProject, Character, CharacterState, CreativeTypePreset, CreateDouyinUnderstandingTaskInput, CreateImageGenerationTaskItem, CreateProjectInput, CreateShotVideoGenerationInput, CreationSpec, DouyinUnderstandingTask, DouyinVideoInfo, Episode, GenerationRecord, GenerationReferenceAssetInput, IdeaDevelopmentAction, IdeaDevelopmentWorkflow, ImageGenerationTask, LocalVideoMetadata, ProjectBundle, ProjectListItem, ProjectSourceType, Prop, Scene, ScriptAnalysisTask, Shot, VideoCreditResolution, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask, VideoSubmissionMode } from "@aivs/schemas";
+import { chooseCookieFile, chooseProjectImage, chooseScriptFile, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createScriptAnalysisTask, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteScriptAnalysisTask, deleteVideoRemixTask, deleteVideoUnderstandingTask, exportAllGenerationAssets, getActiveAutomaticWorkflow, getAiSettings, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importProjectReferenceImage, importStandardScriptFile, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listScriptAnalysisTasks, listVideoRemixTasks, loadProject, readProjectAsset, reanalyzeScriptTask, reparseDouyinUnderstandingTask, resolveDouyinAuto, resolveDouyinUrl, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsJson, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
 import { type WorkspacePage, useStudioStore } from "./store";
 import { AssetLibraryPickerModal } from "./components/AssetLibraryPickerModal";
 import { AiSettingsModal } from "./components/AiSettingsModal";
@@ -27,6 +27,8 @@ import { VideoUnderstandingPanel } from "./components/VideoUnderstandingPanel";
 import { PromotionPosterModal } from "./components/PromotionPosterModal";
 import { VideoPromptFullscreenEditor, VisualMentionEditor, type VisualMentionItem } from "./components/VisualMentionEditor";
 import { FreeCreationPage } from "./components/FreeCreationPage";
+import { ScriptLibraryPage } from "./components/ScriptLibraryPage";
+import standardScriptExample from "./data/standard-script-example.json";
 import { VideoContentReviewTip } from "./components/VideoContentReviewTip";
 import { activatePlatformUserContext, bindPlatformSessionUser, getCreditBalance, getMediaCreditQuote, getModelCreditQuote, getPlatformUser, getScriptAnalysisQuote, listCreativeTypeCategories, listCreativeTypes, listMediaModels, listVisualStyleCategories, listVisualStyles, loadPlatformSession, platformApiBaseUrl, PlatformApiError, type ModelCreditQuote, type PlatformMediaModel } from "./services/platform";
 import { CHARACTER_IMAGE_PROMPT } from "./prompts/characterImage";
@@ -48,15 +50,24 @@ const defaultSpec: CreationSpec = {
 
 const PROJECT_CENTER_GUIDANCE_KEY = "aivs-project-center-guidance-v1";
 
-type CreateMode = Exclude<ProjectSourceType, "SCRIPT_TEXT"> | "DOUYIN_URL" | "VIDEO_UNDERSTANDING";
+type CreateMode = Exclude<ProjectSourceType, "SCRIPT_TEXT"> | "DOUYIN_URL" | "VIDEO_UNDERSTANDING" | "SCRIPT_LIBRARY";
 type CookieSource = BrowserCookieSource | "managed" | "file" | "";
-type DouyinTaskReviewState = { script: string; spec: CreationSpec; rootPath: string; fixedSeconds?: FixedStoryboardSeconds };
+type DouyinTaskReviewState = { script: string; spec: CreationSpec; fixedSeconds?: FixedStoryboardSeconds };
+type VideoLinkConfirmation = { selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode; videoInfo: DouyinVideoInfo; segmentCount: number };
 type MediaModelSelection = { model: PlatformMediaModel; resolution: string; creditCost: number; workflowCreditId?: string; durationByKey?: Record<string, number> };
 type MediaPickerItem = { key: string; seconds?: number };
 type WorkflowMediaSelections = { image: MediaModelSelection; video: MediaModelSelection; videoReferenceMode: VideoReferenceMode };
 type MediaPickerPreset = { modelId: string; resolution: string; lockSelection?: boolean };
 type MediaPickerRequest = { id: string; capability: PlatformMediaModel["capability"]; title: string; projectPath: string; items: MediaPickerItem[]; durationMode: VideoDurationMode; preset?: MediaPickerPreset; resolve: (selection: MediaModelSelection) => void; reject: (reason: Error) => void };
 const MEDIA_PICKER_EVENT = "aivs:pick-media-model";
+
+function formatVideoDuration(seconds: number): string {
+  const rounded = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const rest = rounded % 60;
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}` : `${minutes}:${String(rest).padStart(2, "0")}`;
+}
 
 function requestMediaModel(capability: PlatformMediaModel["capability"], title: string, projectPath: string, items: MediaPickerItem[], durationMode: VideoDurationMode = "automatic", preset?: MediaPickerPreset): Promise<MediaModelSelection> {
   return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(MEDIA_PICKER_EVENT, { detail: { id: crypto.randomUUID(), capability, title, projectPath, items, durationMode, preset, resolve, reject } satisfies MediaPickerRequest })));
@@ -661,11 +672,12 @@ export function App() {
 function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCreatedNotice, onOpenSettings, showFreeCreation, onOpenFreeCreation, onCloseFreeCreation }: { appVersion: string; initialBundle?: ProjectBundle; onReady: (bundle: ProjectBundle) => void; onProjectCreatedNotice: () => void; onOpenAgent: () => void; onOpenSettings: () => void; showFreeCreation: boolean; onOpenFreeCreation: () => void; onCloseFreeCreation: () => void }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const localAiSettings = useQuery({ queryKey: ["ai-settings"], queryFn: getAiSettings });
+  const rootPath = localAiSettings.data?.project_directory ?? "";
   const [spec, setSpec] = useState(defaultSpec);
   const [sourceType, setSourceType] = useState<CreateMode>(() => initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? "IDEA" : "DOUYIN_URL");
   const [sourceText, setSourceText] = useState(() => initialBundle?.source_type === "IDEA" && !initialBundle.canonical ? initialBundle.source_text || "一个外卖员获得孙悟空能力，每天只能变身一个小时。" : "");
   const [sourcePath, setSourcePath] = useState("");
-  const [rootPath, setRootPath] = useState("C:\\AI Video Studio Projects");
   const [cookieSource, setCookieSource] = useState<CookieSource>("managed");
   const [cookieFilePath, setCookieFilePath] = useState("");
   const [showProjectCenter, setShowProjectCenter] = useState(false);
@@ -678,7 +690,9 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
   const [showCreativeTypeSelector, setShowCreativeTypeSelector] = useState(false);
   const [showStoryboardMode, setShowStoryboardMode] = useState(false);
   const [videoUnderstandingModeHandler, setVideoUnderstandingModeHandler] = useState<((selection: StoryboardUnderstandingSelection) => void) | null>(null);
-  const [videoLinkConfirmation, setVideoLinkConfirmation] = useState<{ selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode }>();
+  const [localVideoModeInfo, setLocalVideoModeInfo] = useState<LocalVideoMetadata>();
+  const [resolvedVideoInfo, setResolvedVideoInfo] = useState<DouyinVideoInfo>();
+  const [videoLinkConfirmation, setVideoLinkConfirmation] = useState<VideoLinkConfirmation>();
   const [localVideoTaskReviews, setLocalVideoTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [douyinTaskReviews, setDouyinTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [creatingDouyinTaskId, setCreatingDouyinTaskId] = useState<string>();
@@ -717,6 +731,10 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
       onReady(bundle);
     },
   });
+  const standardScriptImport = useMutation({
+    mutationFn: () => importStandardScriptFile(rootPath, sourcePath, { ...spec, input_type: "SCRIPT", target_duration: 0 }),
+    onSuccess: onReady,
+  });
   const ideaWorkflow = useQuery({
     queryKey: ["idea-development-workflow", ideaWorkflowBundle?.project.project_path, ideaWorkflowBundle?.project.id],
     queryFn: () => getIdeaDevelopmentWorkflow(ideaWorkflowBundle!.project.project_path, ideaWorkflowBundle!.project.id),
@@ -754,7 +772,8 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     queryKey: ["script-analysis-tasks"], queryFn: listScriptAnalysisTasks,
     enabled: sourceType === "SCRIPT_FILE", refetchInterval: sourceType === "SCRIPT_FILE" ? 1_200 : false,
   });
-  const scriptQuote = useQuery({ queryKey: ["script-analysis-quote"], queryFn: getScriptAnalysisQuote, enabled: sourceType === "SCRIPT_FILE", staleTime: 20_000 });
+  const isStandardScript = sourceType === "SCRIPT_FILE" && sourcePath.toLowerCase().endsWith(".json");
+  const scriptQuote = useQuery({ queryKey: ["script-analysis-quote"], queryFn: getScriptAnalysisQuote, enabled: sourceType === "SCRIPT_FILE" && !isStandardScript, staleTime: 20_000 });
   const videoLinkQuote = useQuery({ queryKey: ["video-link-understanding-quote"], queryFn: () => getModelCreditQuote("VIDEO_UNDERSTANDING"), enabled: sourceType === "DOUYIN_URL", staleTime: 20_000 });
   const scriptAnalysis = useMutation({
     mutationFn: async (confirmation: NonNullable<typeof scriptConfirmation>) => {
@@ -793,7 +812,6 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     },
   });
   const browserAvailability = useQuery({ queryKey: ["douyin-browser-availability"], queryFn: getDouyinBrowserAvailability, staleTime: 30_000 });
-  const localAiSettings = useQuery({ queryKey: ["ai-settings"], queryFn: getAiSettings });
   const visualStyleCategories = useQuery({ queryKey: ["visual-style-categories"], queryFn: listVisualStyleCategories, staleTime: 60_000 });
   const visualStyles = useQuery({ queryKey: ["visual-styles"], queryFn: listVisualStyles, staleTime: 60_000 });
   const creativeTypeCategories = useQuery({ queryKey: ["creative-type-categories"], queryFn: listCreativeTypeCategories, staleTime: 60_000 });
@@ -825,8 +843,24 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     enabled: sourceType === "VIDEO_UNDERSTANDING",
     refetchInterval: sourceType === "VIDEO_UNDERSTANDING" ? 1_200 : false,
   });
+  const resolveVideoLink = useMutation({
+    mutationFn: async () => {
+      const videoInfo = cookieSource === "managed"
+        ? await resolveDouyinAuto(sourceText.trim())
+        : await resolveDouyinUrl(sourceText.trim(), cookieSource && cookieSource !== "file" ? cookieSource : undefined, cookieSource === "file" ? cookieFilePath : undefined);
+      if (!videoInfo.duration || !Number.isFinite(videoInfo.duration) || videoInfo.duration <= 0) {
+        throw new Error("已经解析到视频地址，但暂时无法读取真实时长。为避免长视频只解析一部分，请稍后重试或更换 Cookie 来源。");
+      }
+      return videoInfo;
+    },
+    onSuccess: (videoInfo) => {
+      setResolvedVideoInfo(videoInfo);
+      setVideoUnderstandingModeHandler(null);
+      setShowStoryboardMode(true);
+    },
+  });
   const douyinStoryboard = useMutation({
-    mutationFn: ({ selection, submissionMode }: { selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode }) => {
+    mutationFn: ({ selection, submissionMode, videoInfo, segmentCount }: VideoLinkConfirmation) => {
       if (!videoLinkQuote.data) throw new Error("暂时无法获取视频理解积分，请稍后重试");
       const input: CreateDouyinUnderstandingTaskInput = {
         share_text: sourceText.trim(),
@@ -837,8 +871,11 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
         mode: selection.mode,
         fixed_seconds: selection.fixedSeconds,
         video_submission_mode: submissionMode,
+        video_info: videoInfo,
+        long_video_confirmed: segmentCount > 1,
         provider_model_id: videoLinkQuote.data.provider_model_id,
         expected_credits: videoLinkQuote.data.credits,
+        extraction_billing_mode: videoLinkQuote.data.extraction_billing_mode || "OVERALL",
       };
       return createDouyinUnderstandingTask(input);
     },
@@ -893,7 +930,6 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
       const storyboard = aspectRatio ? normalizeStoryboardAspectRatio(locallyTimedStoryboard, aspectRatio) : locallyTimedStoryboard;
       return { ...reviews, [task.id]: {
         script: storyboard,
-        rootPath,
         fixedSeconds: task.mode === "fixed" ? (task.fixed_seconds === 6 || task.fixed_seconds === 15 ? task.fixed_seconds : 10) : undefined,
         spec: {
           ...spec,
@@ -918,9 +954,12 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     setSourcePath("");
     setSourceText(value === "IDEA" ? "一个外卖员获得孙悟空能力，每天只能变身一个小时。" : "");
     douyinStoryboard.reset();
+    resolveVideoLink.reset();
+    setResolvedVideoInfo(undefined);
     setVideoLinkConfirmation(undefined);
     setShowStoryboardMode(false);
     setVideoUnderstandingModeHandler(null);
+    setLocalVideoModeInfo(undefined);
     setSpec((current) => ({
       ...current,
       input_type: value === "IDEA" ? "IDEA" : value === "DOUYIN_URL" || value === "VIDEO_UNDERSTANDING" ? "VIDEO" : "SCRIPT",
@@ -953,10 +992,6 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     setShowProjectCenter(false);
     setShowAssetLibrary(true);
   };
-  const selectRoot = async () => {
-    const selected = await chooseProjectDirectory();
-    if (selected) setRootPath(selected);
-  };
   const selectScript = async () => {
     const selected = await chooseScriptFile();
     if (selected) setSourcePath(selected);
@@ -965,6 +1000,8 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     const selected = await chooseCookieFile();
     if (selected) {
       setCookieFilePath(selected);
+      setResolvedVideoInfo(undefined);
+      resolveVideoLink.reset();
       douyinStoryboard.reset();
     }
   };
@@ -973,6 +1010,7 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
   const isCookieReady = cookieSource !== "file" || Boolean(cookieFilePath);
   const submit = () => {
     if (sourceType === "SCRIPT_FILE") {
+      if (isStandardScript) { standardScriptImport.reset(); standardScriptImport.mutate(); return; }
       scriptAnalysis.reset();
       setScriptConfirmation({ kind: "create" });
       return;
@@ -994,10 +1032,6 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     create.mutate(input);
   };
   const updateDouyinTaskReview = (taskId: string, patch: Partial<DouyinTaskReviewState>) => setDouyinTaskReviews((reviews) => reviews[taskId] ? { ...reviews, [taskId]: { ...reviews[taskId], ...patch } } : reviews);
-  const selectDouyinTaskRoot = async (taskId: string) => {
-    const selected = await chooseProjectDirectory();
-    if (selected) updateDouyinTaskReview(taskId, { rootPath: selected });
-  };
   const localVideoReviewFromTask = (task: DouyinUnderstandingTask): DouyinTaskReviewState | undefined => {
     if (!task.result?.text) return undefined;
     const locallyTimedStoryboard = task.mode === "detailed" ? normalizeDetailedStoryboardLocalTimelines(task.result.text) : task.result.text;
@@ -1005,7 +1039,6 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     const duration = task.duration ?? storyboardTotalDuration(locallyTimedStoryboard) ?? spec.target_duration;
     return {
       script: normalizeStoryboardAspectRatio(locallyTimedStoryboard, aspectRatio),
-      rootPath,
       fixedSeconds: task.mode === "fixed" ? (task.fixed_seconds === 6 || task.fixed_seconds === 15 ? task.fixed_seconds : 10) : undefined,
       spec: {
         ...spec,
@@ -1025,17 +1058,13 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     });
   };
   const updateLocalVideoTaskReview = (taskId: string, patch: Partial<DouyinTaskReviewState>) => setLocalVideoTaskReviews((reviews) => reviews[taskId] ? { ...reviews, [taskId]: { ...reviews[taskId], ...patch } } : reviews);
-  const selectLocalVideoRoot = async (taskId: string) => {
-    const selected = await chooseProjectDirectory();
-    if (selected) updateLocalVideoTaskReview(taskId, { rootPath: selected });
-  };
   const submitLocalVideoProject = (taskId: string) => {
     const review = localVideoTaskReviews[taskId];
     if (!review) return;
     setCreatingDouyinTaskId(taskId);
     create.reset();
     create.mutate({
-      root_path: review.rootPath,
+      root_path: rootPath,
       source_type: "SCRIPT_TEXT",
       source_text: normalizeStoryboardAspectRatio(review.script, review.spec.aspect_ratio === "16:9" ? "16:9" : "9:16"),
       creation_spec: { ...review.spec, project_name: storyboardTheme(review.script) || review.spec.project_name, input_type: "SCRIPT", storyboard_fixed_seconds: review.fixedSeconds },
@@ -1047,30 +1076,36 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     setCreatingDouyinTaskId(taskId);
     create.reset();
     create.mutate({
-      root_path: review.rootPath,
+      root_path: rootPath,
       source_type: "SCRIPT_TEXT",
       source_text: normalizeStoryboardAspectRatio(review.script, review.spec.aspect_ratio === "16:9" ? "16:9" : "9:16"),
       creation_spec: { ...review.spec, project_name: storyboardTheme(review.script) || review.spec.project_name, input_type: "SCRIPT", storyboard_fixed_seconds: review.fixedSeconds },
     });
   };
   const startDouyinStoryboard = () => {
+    resolveVideoLink.reset();
+    setResolvedVideoInfo(undefined);
     setVideoUnderstandingModeHandler(null);
-    setShowStoryboardMode(true);
+    resolveVideoLink.mutate();
   };
   const confirmStoryboardMode = (selection: StoryboardUnderstandingSelection, submissionMode: VideoSubmissionMode) => {
     setShowStoryboardMode(false);
     const localVideoHandler = videoUnderstandingModeHandler;
     setVideoUnderstandingModeHandler(null);
+    setLocalVideoModeInfo(undefined);
     if (localVideoHandler) {
       localVideoHandler(selection);
       return;
     }
+    if (!resolvedVideoInfo) return;
+    const segmentCount = resolvedVideoInfo.duration && resolvedVideoInfo.duration > 300 ? Math.ceil(resolvedVideoInfo.duration / 300) : 1;
     douyinStoryboard.reset();
-    setVideoLinkConfirmation({ selection, submissionMode });
+    setVideoLinkConfirmation({ selection, submissionMode: segmentCount > 1 ? "upload" : submissionMode, videoInfo: resolvedVideoInfo, segmentCount });
   };
   const closeStoryboardMode = () => {
     setShowStoryboardMode(false);
     setVideoUnderstandingModeHandler(null);
+    setLocalVideoModeInfo(undefined);
   };
   return (
     <div className="welcome-shell">
@@ -1085,13 +1120,14 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
             <button className={!showFreeCreation && !showProjectCenter && !showAssetLibrary && sourceType === "IDEA" ? "active" : ""} onClick={() => selectSourceType("IDEA")}><Lightbulb size={18} /><span>{t("startIdea")}<small>{t("ideaHint")}</small></span></button>
             <button className={!showFreeCreation && !showProjectCenter && !showAssetLibrary && sourceType === "SCRIPT_FILE" ? "active" : ""} onClick={() => selectSourceType("SCRIPT_FILE")}><Upload size={18} /><span>{t("scriptFile")}<small>{t("scriptFileHint")}</small></span></button>
             <button className={!showFreeCreation && showProjectCenter ? "active" : ""} onClick={openProjectCenter}><FolderOpen size={18} /><span>项目中心<small>查看并打开本地项目</small></span></button>
+            <button className={!showFreeCreation && !showProjectCenter && !showAssetLibrary && sourceType === "SCRIPT_LIBRARY" ? "active" : ""} onClick={() => selectSourceType("SCRIPT_LIBRARY")}><ScrollText size={18} /><span>剧本库<small>搜索剧本并一键生成项目</small></span></button>
             <button className={!showFreeCreation && showAssetLibrary ? "active" : ""} onClick={openAssetLibrary}><Images size={18} /><span>资产库<small>场景、角色与道具图片</small></span></button>
           </nav>
           <div className="create-navigation-footer">当前客户端版本 {appVersion ? `v${appVersion}` : "—"}</div>
         </aside>
         <section className={`create-card create-workspace-panel${showFreeCreation ? " free-creation-home-workspace" : ""}`}>
-          {showFreeCreation ? <FreeCreationPage /> : showAssetLibrary ? <AssetLibraryPanel assets={assetLibrary.data ?? []} loading={assetLibrary.isLoading || assetLibrary.isFetching} error={assetLibrary.error} onRefresh={() => assetLibrary.refetch()} /> : showProjectCenter ? <ProjectCenterPanel projects={projectList.data ?? []} loading={projectCenterPreparing || projectList.isPending} loadingProjectId={openProject.variables?.id} onRefresh={() => projectList.mutate()} onOpen={(project) => openProject.mutate(project)} onDelete={setProjectPendingDelete} /> : sourceType === "VIDEO_UNDERSTANDING" ? <VideoUnderstandingPanel
-            onRequestModeSelection={(handler) => { setVideoUnderstandingModeHandler(() => handler); setShowStoryboardMode(true); }}
+          {showFreeCreation ? <FreeCreationPage /> : showAssetLibrary ? <AssetLibraryPanel assets={assetLibrary.data ?? []} loading={assetLibrary.isLoading || assetLibrary.isFetching} error={assetLibrary.error} onRefresh={() => assetLibrary.refetch()} /> : showProjectCenter ? <ProjectCenterPanel projects={projectList.data ?? []} loading={projectCenterPreparing || projectList.isPending} loadingProjectId={openProject.variables?.id} onRefresh={() => projectList.mutate()} onOpen={(project) => openProject.mutate(project)} onDelete={setProjectPendingDelete} /> : sourceType === "SCRIPT_LIBRARY" ? <ScriptLibraryPage projectDirectory={rootPath} defaultSpec={spec} onReady={onReady} /> : sourceType === "VIDEO_UNDERSTANDING" ? <VideoUnderstandingPanel
+            onRequestModeSelection={(handler, metadata) => { setVideoUnderstandingModeHandler(() => handler); setLocalVideoModeInfo(metadata); setShowStoryboardMode(true); }}
             onTaskCreated={async () => { await localVideoTasks.refetch(); }}
             records={<DouyinTaskList
               variant="local"
@@ -1103,19 +1139,19 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
               onDelete={confirmDeleteUnderstandingTask}
               deleteError={deleteUnderstandingTask.error}
               onOpenResult={openLocalVideoTaskResult}
-              renderResult={(task) => { const review = localVideoTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateLocalVideoTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateLocalVideoTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} rootPath={review.rootPath} onRootPathChange={(nextRootPath) => updateLocalVideoTaskReview(task.id, { rootPath: nextRootPath })} onSelectRoot={() => void selectLocalVideoRoot(task.id)} onCreate={() => submitLocalVideoProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} defaultRootPath={review.rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }}
+              renderResult={(task) => { const review = localVideoTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateLocalVideoTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateLocalVideoTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} onCreate={() => submitLocalVideoProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} projectDirectory={rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }}
             />}
-          /> : sourceType === "DOUYIN_URL" ? <><div className="script-analysis-notice"><Coins size={17} /><div><strong>自动识别、解析与生成分镜将作为一个后台任务执行</strong><span>{videoLinkQuote.data ? `提交前会确认并预留 ${creditText(videoLinkQuote.data.credits)} 积分；失败或超时会自动回补。` : "正在读取本次所需积分…"} 极速模式最长等待 10 分钟，失败后自动切换详细模式重试一次。</span></div></div>
-            <label>视频分享链接或分享文案<textarea rows={5} value={sourceText} placeholder="粘贴视频分享文案或完整链接" onChange={(event) => { setSourceText(event.target.value); douyinStoryboard.reset(); }} /></label>
-            <label>Cookie 来源（可选）<select value={cookieSource} onChange={(event) => { setCookieSource(event.target.value as CookieSource); douyinStoryboard.reset(); }}><option value="managed">自动识别平台并解析（推荐）</option><option value="">不使用 Cookie</option><option value="edge">Microsoft Edge</option><option value="chrome">Google Chrome</option><option value="firefox">Mozilla Firefox</option><option value="file">Cookie 文件（Netscape 格式）</option></select><small className="cookie-guidance">自动模式会识别抖音、快手或哔哩哔哩并解析公开视频；任务会立即进入下方列表，链接识别、解析和分镜生成进度会统一显示。</small></label>
+          /> : sourceType === "DOUYIN_URL" ? <><div className="script-analysis-notice"><Coins size={17} /><div><strong>自动识别、解析与生成分镜将作为一个后台任务执行</strong><span>{videoLinkQuote.data ? `单次价格为 ${creditText(videoLinkQuote.data.credits)} 积分；${videoLinkQuote.data.extraction_billing_mode === "PER_SEGMENT" ? "长视频按实际分段次数分别扣费" : "当前为整体扣费模式，长视频不论拆分多少段都只扣 1 次"}。` : "正在读取本次所需积分…"} 极速模式最长等待 10 分钟，失败后自动切换详细模式重试一次。</span></div></div>
+            <label>视频分享链接或分享文案<textarea rows={5} value={sourceText} placeholder="粘贴视频分享文案或完整链接" onChange={(event) => { setSourceText(event.target.value); setResolvedVideoInfo(undefined); resolveVideoLink.reset(); douyinStoryboard.reset(); }} /></label>
+            <label>Cookie 来源（可选）<select value={cookieSource} onChange={(event) => { setCookieSource(event.target.value as CookieSource); setResolvedVideoInfo(undefined); resolveVideoLink.reset(); douyinStoryboard.reset(); }}><option value="managed">自动识别平台并解析（推荐）</option><option value="">不使用 Cookie</option><option value="edge">Microsoft Edge</option><option value="chrome">Google Chrome</option><option value="firefox">Mozilla Firefox</option><option value="file">Cookie 文件（Netscape 格式）</option></select><small className="cookie-guidance">自动模式会识别抖音、快手或哔哩哔哩并解析公开视频；会先读取真实时长，超过 5 分钟时需确认长视频分段解析方案后才开始。</small></label>
             {autoLoginUnavailable && cookieSource === "managed" && <div className="browser-warning"><AlertTriangle size={18} /><div><strong>未检测到 Chrome 或 Microsoft Edge</strong><span>快手、哔哩哔哩和无需登录的抖音链接仍可直接解析；仅抖音触发登录验证时需要安装浏览器或改用 Cookie 文件。</span></div><button type="button" onClick={() => browserAvailability.refetch()} disabled={browserAvailability.isFetching}>{browserAvailability.isFetching ? "检测中…" : "重新检测"}</button></div>}
             {browserAvailability.error && <div className="browser-warning"><AlertTriangle size={18} /><div><strong>暂时无法检测浏览器</strong><span>{readableError(browserAvailability.error)}</span></div><button type="button" onClick={() => browserAvailability.refetch()}>重试</button></div>}
             {cookieSource === "file" && <label>Cookie 文件<button className="file-picker" type="button" onClick={selectCookieFile}><FileText size={18} /><span>{cookieFilePath || "点击选择 cookies.txt"}</span></button></label>}
-            {(douyinStoryboard.error || videoLinkQuote.error) && <div className="error-banner">{readableError(douyinStoryboard.error ?? videoLinkQuote.error)}</div>}
-            <div className="douyin-resolve-action"><button className="primary-button" onClick={startDouyinStoryboard} disabled={douyinStoryboard.isPending || !isSourceValid || !isCookieReady || !videoLinkQuote.data}>
-              <><Link2 size={18} />自动识别、解析并生成分镜 <ChevronRight size={18} /></>
+            {(resolveVideoLink.error || douyinStoryboard.error || videoLinkQuote.error) && <div className="error-banner">{readableError(resolveVideoLink.error ?? douyinStoryboard.error ?? videoLinkQuote.error)}</div>}
+            <div className="douyin-resolve-action"><button className="primary-button" onClick={startDouyinStoryboard} disabled={resolveVideoLink.isPending || douyinStoryboard.isPending || !isSourceValid || !isCookieReady || !videoLinkQuote.data}>
+              {resolveVideoLink.isPending ? <><LoaderCircle className="spin" size={18} />正在解析链接并读取真实时长…</> : <><Link2 size={18} />自动识别、解析并生成分镜 <ChevronRight size={18} /></>}
             </button></div>
-            <DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryDouyinTask.isPending ? retryDouyinTask.variables : undefined} onRetry={(taskId) => retryDouyinTask.mutate(taskId)} reparsingTaskId={reparseDouyinTask.isPending ? reparseDouyinTask.variables : undefined} onReparse={confirmReparseDouyinTask} reparseError={reparseDouyinTask.error} deletingTaskId={deleteUnderstandingTask.variables} onDelete={confirmDeleteUnderstandingTask} deleteError={deleteUnderstandingTask.error} onOpenResult={openDouyinTaskResult} renderResult={(task) => { const review = douyinTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateDouyinTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateDouyinTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} rootPath={review.rootPath} onRootPathChange={(nextRootPath) => updateDouyinTaskReview(task.id, { rootPath: nextRootPath })} onSelectRoot={() => void selectDouyinTaskRoot(task.id)} onCreate={() => submitStoryboardProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} defaultRootPath={review.rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }} />
+            <DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryDouyinTask.isPending ? retryDouyinTask.variables : undefined} onRetry={(taskId) => retryDouyinTask.mutate(taskId)} reparsingTaskId={reparseDouyinTask.isPending ? reparseDouyinTask.variables : undefined} onReparse={confirmReparseDouyinTask} reparseError={reparseDouyinTask.error} deletingTaskId={deleteUnderstandingTask.variables} onDelete={confirmDeleteUnderstandingTask} deleteError={deleteUnderstandingTask.error} onOpenResult={openDouyinTaskResult} renderResult={(task) => { const review = douyinTaskReviews[task.id]; return review ? <DouyinStoryboardReview script={review.script} onScriptChange={(script) => updateDouyinTaskReview(task.id, { script })} spec={review.spec} onSpecChange={(nextSpec) => updateDouyinTaskReview(task.id, { spec: nextSpec })} visualStyles={aiSettings.data?.visual_style_presets ?? []} onCreate={() => submitStoryboardProject(task.id)} creating={create.isPending && creatingDouyinTaskId === task.id} createError={creatingDouyinTaskId === task.id ? create.error : undefined} remixPanel={<VideoRemixPanel sourceTask={task} visualStyles={aiSettings.data?.visual_style_presets ?? []} projectDirectory={rootPath} defaultSpec={review.spec} onProjectCreated={onReady} />} /> : <div className="douyin-review-loading"><LoaderCircle className="spin" size={18} />正在准备该任务内容…</div>; }} />
             <p className="resolver-notice">仅解析您有权访问和使用的公开视频。媒体地址由平台签名，可能在一段时间后失效。</p>
           </> : <>
             <label>{t("projectName")}<input value={spec.project_name} placeholder={sourceType === "SCRIPT_FILE" ? "可不填，将从剧本原文标题自动提取" : undefined} onChange={(event) => setSpec({ ...spec, project_name: event.target.value })} />{sourceType === "SCRIPT_FILE" && <small>留空时，文本大模型分析完成后会优先使用剧本原文中的标题。</small>}</label>
@@ -1123,7 +1159,8 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
               <span><BookOpen size={18} /><span><strong>{selectedCreativeType?.name || "请选择创作类型"}</strong><small>{selectedCreativeType?.description || "从经典电影、电视剧、短剧和漫剧类型中选择"}</small></span></span><ChevronRight size={18} />
             </button><small>类型提示词用于第一步整体大纲；只有确认大纲后，才会继续拆分分集。</small></label>}
             {sourceType === "IDEA" && <label>一句话创意<textarea rows={4} value={sourceText} onChange={(event) => setSourceText(event.target.value)} /></label>}
-            {sourceType === "SCRIPT_FILE" && <label>剧本文件<button className="file-picker" onClick={selectScript}><Upload size={18} /><span>{sourcePath || "点击选择 TXT、MD、DOCX 或 PDF"}</span></button></label>}
+            {sourceType === "SCRIPT_FILE" && <label>剧本文件<button className="file-picker" onClick={selectScript}><Upload size={18} /><span>{sourcePath || "点击选择规范 JSON，或 TXT、MD、DOCX、PDF"}</span></button><small>规范 JSON 会直接生成项目；其他格式会由文本模型提取并转换为项目格式。</small></label>}
+            {sourceType === "SCRIPT_FILE" && <button className="secondary-button standard-script-download" type="button" onClick={() => void saveTextAsJson(JSON.stringify(standardScriptExample, null, 2), "逐梦帧-规范剧本示例.json")}><FileDown size={16}/> 下载规范剧本示例</button>}
             <div className={sourceType === "IDEA" ? "field-grid idea-creation-fields" : "field-grid"}>
               {sourceType === "IDEA" && <label>{t("targetDuration")}<div className="unit-input"><input type="number" min={10} max={3600} step={1} value={spec.target_duration} onChange={(event) => setSpec({ ...spec, target_duration: Number(event.target.value) })} /><span>{t("seconds")}</span></div></label>}
               <label>{t("aspectRatio")}<select value={spec.aspect_ratio} onChange={(event) => setSpec({ ...spec, aspect_ratio: event.target.value })}><option>9:16</option><option>16:9</option></select></label>
@@ -1131,13 +1168,12 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
               <GroupedVisualStyleSelect value={spec.visual_style} onChange={(visual_style) => setSpec({ ...spec, visual_style })} presets={visualStyles.data ?? []} categories={visualStyleCategories.data?.map((item) => item.name)} />
               {sourceType !== "IDEA" && <label>{t("creationMode")}<select value={spec.creation_mode} onChange={(event) => setSpec({ ...spec, creation_mode: event.target.value as CreationSpec["creation_mode"] })}><option value="DIRECTOR">导演模式</option><option value="QUICK">快速模式</option><option value="PROFESSIONAL">专业模式</option></select></label>}
             </div>
-            <label>{t("projectRoot")}<div className="path-input"><FolderOpen size={17} /><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} /><button type="button" onClick={selectRoot}>{t("choose")}</button></div></label>
             {sourceType === "IDEA" && <ModelCreditNotice capability="TEXT_GENERATION" action="大纲生成" />}
-            {sourceType === "SCRIPT_FILE" && <div className="script-analysis-notice"><Coins size={17} /><div><strong>完整剧本将交给后台默认文本大模型</strong><span>只做忠实提取，不改编、不发挥、不衍生。{scriptQuote.data ? `每次分析需要 ${creditText(scriptQuote.data.credits)} 积分。` : "正在读取所需积分…"}</span></div></div>}
-            {(create.error || scriptAnalysis.error || scriptQuote.error) && <div className="error-banner">{readableError(create.error ?? scriptAnalysis.error ?? scriptQuote.error)}</div>}
+            {sourceType === "SCRIPT_FILE" && <div className="script-analysis-notice"><Coins size={17} /><div><strong>{isStandardScript ? "已识别规范剧本，将直接导入项目" : "完整剧本将交给后台默认文本大模型"}</strong><span>{isStandardScript ? "规范文件无需模型分析，不收取剧本提取积分。" : <>只做忠实提取，不改编、不发挥、不衍生。{scriptQuote.data ? `每次分析需要 ${creditText(scriptQuote.data.credits)} 积分。` : "正在读取所需积分…"}</>}</span></div></div>}
+            {(create.error || standardScriptImport.error || scriptAnalysis.error || (!isStandardScript && scriptQuote.error)) && <div className="error-banner">{readableError(create.error ?? standardScriptImport.error ?? scriptAnalysis.error ?? (!isStandardScript ? scriptQuote.error : undefined))}</div>}
             <div className={sourceType === "SCRIPT_FILE" ? "script-create-project-action" : sourceType === "IDEA" ? "idea-create-project-action" : undefined}>
-              <button className="primary-button" onClick={submit} disabled={create.isPending || scriptAnalysis.isPending || !isSourceValid || !rootPath.trim() || (sourceType === "IDEA" && (!spec.project_name.trim() || !selectedCreativeType)) || (sourceType === "SCRIPT_FILE" && !scriptQuote.data)}>
-                {create.isPending || scriptAnalysis.isPending ? <><LoaderCircle className="spin" size={18} /> {t("creating")}</> : <><Sparkles size={18} /> {t("createLocalProject")}（{sourceType === "IDEA" ? "生成大纲需积分" : sourceType === "SCRIPT_FILE" ? "分析剧本需积分" : "免费"}） <ChevronRight size={18} /></>}
+              <button className="primary-button" onClick={submit} disabled={create.isPending || standardScriptImport.isPending || scriptAnalysis.isPending || !isSourceValid || !rootPath.trim() || (sourceType === "IDEA" && (!spec.project_name.trim() || !selectedCreativeType)) || (sourceType === "SCRIPT_FILE" && !isStandardScript && !scriptQuote.data)} title={!rootPath.trim() ? "请先在系统设置中配置项目保存目录" : undefined}>
+                {create.isPending || standardScriptImport.isPending || scriptAnalysis.isPending ? <><LoaderCircle className="spin" size={18} /> {t("creating")}</> : <><Sparkles size={18} /> {t("createLocalProject")}（{sourceType === "IDEA" ? "生成大纲需积分" : sourceType === "SCRIPT_FILE" ? isStandardScript ? "规范文件免费导入" : "分析剧本需积分" : "免费"}） <ChevronRight size={18} /></>}
               </button>
             </div>
             {sourceType === "SCRIPT_FILE" && <ScriptAnalysisRecords tasks={scriptTasks.data ?? []} loading={scriptTasks.isLoading} deletingId={deleteScriptRecord.variables} onOpen={(task) => task.project_path && openProject.mutate({ id: task.project_id || "", name: task.project_name || "", project_path: task.project_path, input_type: "SCRIPT", status: "ACTIVE", created_at: task.created_at, updated_at: task.updated_at, is_example: false })} onReanalyze={(task) => { scriptAnalysis.reset(); setScriptConfirmation({ kind: "reanalyze", taskId: task.id }); }} onDelete={(task) => { if (window.confirm("只删除这条剧本分析记录？已创建的本地项目和原剧本文件不会被删除。")) deleteScriptRecord.mutate(task.id); }} />}
@@ -1149,27 +1185,29 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
       </main>
       {showCreativeTypeSelector && <CreativeTypeSelectorModal types={creativeTypes} categoryNames={creativeTypeCategories.data?.map((item) => item.name)} selectedId={spec.creative_type_id} loading={aiSettings.isLoading || creativeTypeCategories.isLoading} onClose={() => setShowCreativeTypeSelector(false)} onSelect={(preset) => { setSpec((current) => ({ ...current, creative_type_id: preset.id, creative_type_category: preset.category, creative_type_name: preset.name, creative_type_prompt: preset.prompt })); setShowCreativeTypeSelector(false); }} />}
       {showPromotionPoster && <PromotionPosterModal onClose={() => setShowPromotionPoster(false)} />}
-      {showStoryboardMode && <StoryboardModeModal showSubmissionMode={!videoUnderstandingModeHandler} onClose={closeStoryboardMode} onSelect={confirmStoryboardMode} />}
+      {showStoryboardMode && <StoryboardModeModal showSubmissionMode={!videoUnderstandingModeHandler} videoInfo={videoUnderstandingModeHandler ? localVideoModeInfo : resolvedVideoInfo} onClose={closeStoryboardMode} onSelect={confirmStoryboardMode} />}
       {showIdeaWorkflow && ideaWorkflowBundle && <IdeaDevelopmentProgressModal workflow={ideaWorkflow.data} loading={ideaWorkflow.isLoading} fallbackError={ideaWorkflowAction.error ?? create.error} running={create.isPending || ideaWorkflowAction.isPending || ideaWorkflow.data?.status === "RUNNING"} onClose={() => setShowIdeaWorkflow(false)} onAction={(action, payload) => { ideaWorkflowAction.reset(); ideaWorkflowAction.mutate({ action, payload }); }} />}
       {projectPendingDelete && <DeleteProjectConfirmModal project={projectPendingDelete} deleting={deleteLocalProject.isPending} error={deleteLocalProject.error} onCancel={() => { if (!deleteLocalProject.isPending) { deleteLocalProject.reset(); setProjectPendingDelete(undefined); } }} onConfirm={() => deleteLocalProject.mutate(projectPendingDelete)} />}
       {scriptConfirmation && scriptQuote.data && <ScriptAnalysisCreditModal quote={scriptQuote.data} task={scriptConfirmation.kind === "reanalyze" ? scriptTasks.data?.find((item) => item.id === scriptConfirmation.taskId) : undefined} busy={scriptAnalysis.isPending} error={scriptAnalysis.error} onCancel={() => { if (!scriptAnalysis.isPending) setScriptConfirmation(undefined); }} onCreditsPurchased={() => scriptAnalysis.reset()} onConfirm={() => scriptAnalysis.mutate(scriptConfirmation)} />}
-      {videoLinkConfirmation && videoLinkQuote.data && <VideoLinkCreditModal quote={videoLinkQuote.data} selection={videoLinkConfirmation.selection} submissionMode={videoLinkConfirmation.submissionMode} busy={douyinStoryboard.isPending} error={douyinStoryboard.error} onCancel={() => { if (!douyinStoryboard.isPending) setVideoLinkConfirmation(undefined); }} onCreditsPurchased={() => douyinStoryboard.reset()} onConfirm={() => douyinStoryboard.mutate(videoLinkConfirmation)} />}
+      {videoLinkConfirmation && videoLinkQuote.data && <VideoLinkCreditModal quote={videoLinkQuote.data} selection={videoLinkConfirmation.selection} submissionMode={videoLinkConfirmation.submissionMode} videoInfo={videoLinkConfirmation.videoInfo} segmentCount={videoLinkConfirmation.segmentCount} busy={douyinStoryboard.isPending} error={douyinStoryboard.error} onCancel={() => { if (!douyinStoryboard.isPending) setVideoLinkConfirmation(undefined); }} onCreditsPurchased={() => douyinStoryboard.reset()} onConfirm={() => douyinStoryboard.mutate(videoLinkConfirmation)} />}
     </div>
   );
 }
 
-function VideoLinkCreditModal({ quote, selection, submissionMode, busy, error, onCancel, onConfirm, onCreditsPurchased }: {
-  quote: ModelCreditQuote; selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode; busy: boolean; error?: unknown; onCancel: () => void; onConfirm: () => void; onCreditsPurchased?: () => void;
+function VideoLinkCreditModal({ quote, selection, submissionMode, videoInfo, segmentCount, busy, error, onCancel, onConfirm, onCreditsPurchased }: {
+  quote: ModelCreditQuote; selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode; videoInfo: DouyinVideoInfo; segmentCount: number; busy: boolean; error?: unknown; onCancel: () => void; onConfirm: () => void; onCreditsPurchased?: () => void;
 }) {
   const balance = useQuery({ queryKey: ["credit-balance", "video-link-understanding"], queryFn: getCreditBalance, refetchOnMount: "always" });
-  const insufficient = Boolean(balance.data && balance.data.available < quote.credits);
+  const chargeCount = quote.extraction_billing_mode === "PER_SEGMENT" ? segmentCount : 1;
+  const totalCredits = quote.credits * chargeCount;
+  const insufficient = Boolean(balance.data && balance.data.available < totalCredits);
   const purchaseRequired = insufficient || isInsufficientBalanceError(error);
   const modeLabel = selection.mode === "detailed" ? "详细分镜" : selection.mode === "fixed" ? `固定 ${selection.fixedSeconds ?? 10} 秒分镜` : "标准分镜";
   const submissionLabel = submissionMode === "url" ? "极速模式（失败或 10 分钟超时后自动转详细模式）" : "详细模式";
   return createPortal(<div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="video-link-credit-title">
-    <header><span><Coins size={23} /></span><div><small>VIDEO LINK PIPELINE</small><h2 id="video-link-credit-title">确认解析视频并扣除积分</h2><p>确认后任务会立即进入下方列表，自动完成平台识别、链接解析、视频理解和分镜生成。</p></div><button type="button" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={17} /></button></header>
-    <div className="script-analysis-confirm-body"><div><span>本次所需积分</span><strong>{creditText(quote.credits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div><div><span>分镜与提交方式</span><strong>{modeLabel} · {submissionLabel}</strong></div><p><AlertTriangle size={17} />任务失败或超时会自动释放并回补积分。极速模式失败后只会自动使用详细模式兜底一次；详细模式仍失败时任务会显示失败原因。</p>{purchaseRequired && <div className="insufficient-credit-callout"><div className="error-banner">{insufficient ? <>积分不足，需要 {creditText(quote.credits)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : readableError(error)}</div><ImmediateCreditPurchaseButton onPurchased={() => { void balance.refetch(); onCreditsPurchased?.(); }} /></div>}{Boolean(balance.error) && <div className="error-banner">暂时无法确认积分余额，请稍后重试。</div>}{Boolean(error) && !purchaseRequired && <div className="error-banner">{readableError(error)}</div>}</div>
-    <footer><button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>取消，不扣分</button><button className="primary-button" type="button" disabled={busy || balance.isLoading || Boolean(balance.error) || insufficient} onClick={onConfirm}>{busy ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{busy ? "正在加入后台任务…" : `确认并开始（${creditText(quote.credits)} 积分）`}</button></footer>
+    <header><span><Coins size={23} /></span><div><small>VIDEO LINK PIPELINE</small><h2 id="video-link-credit-title">确认解析视频并扣除积分</h2><p>已解析《{videoInfo.title || "链接视频"}》的真实时长为 {videoInfo.duration ? formatVideoDuration(videoInfo.duration) : "未知"}，确认后任务才会开始。</p></div><button type="button" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={17} /></button></header>
+    <div className="script-analysis-confirm-body"><div><span>本次最多所需积分</span><strong>{creditText(totalCredits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div><div><span>分镜与提交方式</span><strong>{modeLabel} · {submissionLabel}</strong></div>{segmentCount > 1 && <div><span>长视频处理</span><strong>下载后拆分 {segmentCount} 段解析并自动合并 · {chargeCount === 1 ? "整体仅扣 1 次" : `分段扣费 ${chargeCount} 次`}</strong></div>}<p><AlertTriangle size={17} />{segmentCount > 1 ? `长视频需要多次上传和模型分析，等待时间较长，请保持客户端运行且不要中途退出。当前按${chargeCount === 1 ? "整体任务" : "每个分段"}扣费；失败的模型请求会自动释放或回补对应积分。` : "任务失败或超时会自动释放并回补积分。极速模式失败后只会自动使用详细模式兜底一次；详细模式仍失败时任务会显示失败原因。"}</p>{purchaseRequired && <div className="insufficient-credit-callout"><div className="error-banner">{insufficient ? <>积分不足，需要 {creditText(totalCredits)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : readableError(error)}</div><ImmediateCreditPurchaseButton onPurchased={() => { void balance.refetch(); onCreditsPurchased?.(); }} /></div>}{Boolean(balance.error) && <div className="error-banner">暂时无法确认积分余额，请稍后重试。</div>}{Boolean(error) && !purchaseRequired && <div className="error-banner">{readableError(error)}</div>}</div>
+    <footer><button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>取消，不扣分</button><button className="primary-button" type="button" disabled={busy || balance.isLoading || Boolean(balance.error) || insufficient} onClick={onConfirm}>{busy ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{busy ? "正在加入后台任务…" : `确认并开始（最多 ${creditText(totalCredits)} 积分）`}</button></footer>
   </section></div>, document.body);
 }
 
@@ -1316,7 +1354,7 @@ function DouyinTaskReadOnlyResult({ task }: { task: DouyinUnderstandingTask }) {
   return <section className="douyin-task-readonly-result"><header><div><span className="eyebrow">TASK RESULT</span><h4>{task.title || "视频分镜结果"}</h4></div><button className="secondary-button" type="button" onClick={() => void copy()}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "已复制" : "复制结果"}</button></header><pre>{task.result?.text}</pre></section>;
 }
 
-function DouyinStoryboardReview({ script, onScriptChange, spec, onSpecChange, visualStyles, rootPath, onRootPathChange, onSelectRoot, onCreate, creating, createError, remixPanel }: { script: string; onScriptChange: (value: string) => void; spec: CreationSpec; onSpecChange: (value: CreationSpec) => void; visualStyles: import("@aivs/schemas").VisualStylePreset[]; rootPath: string; onRootPathChange: (value: string) => void; onSelectRoot: () => void; onCreate: () => void; creating: boolean; createError?: Error | null; remixPanel?: ReactNode }) {
+function DouyinStoryboardReview({ script, onScriptChange, spec, onSpecChange, visualStyles, onCreate, creating, createError, remixPanel }: { script: string; onScriptChange: (value: string) => void; spec: CreationSpec; onSpecChange: (value: CreationSpec) => void; visualStyles: import("@aivs/schemas").VisualStylePreset[]; onCreate: () => void; creating: boolean; createError?: Error | null; remixPanel?: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const [savingText, setSavingText] = useState(false);
   const [savedTextPath, setSavedTextPath] = useState("");
@@ -1355,14 +1393,13 @@ function DouyinStoryboardReview({ script, onScriptChange, spec, onSpecChange, vi
       <label>画面比例<select value={spec.aspect_ratio} onChange={(event) => onSpecChange({ ...spec, aspect_ratio: event.target.value })}><option>9:16</option><option>16:9</option></select></label>
       <GroupedVisualStyleSelect value={spec.visual_style} onChange={(visual_style) => onSpecChange({ ...spec, visual_style })} presets={visualStyles} automaticLabel="使用视频理解生成的画风" />
     </div>
-    <label>项目根目录<div className="path-input"><FolderOpen size={17} /><input value={rootPath} onChange={(event) => onRootPathChange(event.target.value)} /><button type="button" onClick={onSelectRoot}>选择</button></div></label>
     {createError && <div className="error-banner">{readableError(createError)}</div>}
     <footer className="storyboard-export-footer">
       <div className="storyboard-final-actions">
         {remixPanel}
         <button className="secondary-button" type="button" onClick={() => void copyScript()} disabled={!script.trim()}>{copied ? <Check size={17} /> : <Copy size={17} />}{copied ? "已复制" : "一键复制"}</button>
         <button className="secondary-button" type="button" onClick={() => void saveScript()} disabled={savingText || !script.trim()}>{savingText ? <LoaderCircle className="spin" size={17} /> : <FileDown size={17} />}{savingText ? "正在保存…" : "另存为 TXT"}</button>
-        <button className="primary-button create-from-storyboard" type="button" onClick={onCreate} disabled={creating || script.trim().length < 30 || !spec.project_name.trim() || !rootPath.trim()}>{creating ? <><LoaderCircle className="spin" size={18} /> 正在创建项目并解析分镜…</> : <><Sparkles size={18} /> 使用解析结果创建新项目（免费） <ChevronRight size={18} /></>}</button>
+        <button className="primary-button create-from-storyboard" type="button" onClick={onCreate} disabled={creating || script.trim().length < 30 || !spec.project_name.trim()}>{creating ? <><LoaderCircle className="spin" size={18} /> 正在创建项目并解析分镜…</> : <><Sparkles size={18} /> 使用解析结果创建新项目（免费） <ChevronRight size={18} /></>}</button>
       </div>
       {savedTextPath && <small className="storyboard-export-success"><CheckCircle2 size={14} /> 已保存到：{savedTextPath}</small>}
       {exportError && <small className="storyboard-export-error">{exportError}</small>}
@@ -1370,7 +1407,7 @@ function DouyinStoryboardReview({ script, onScriptChange, spec, onSpecChange, vi
   </section>;
 }
 
-function VideoRemixPanel({ sourceTask, visualStyles, defaultRootPath, defaultSpec, onProjectCreated }: { sourceTask: DouyinUnderstandingTask; visualStyles: import("@aivs/schemas").VisualStylePreset[]; defaultRootPath: string; defaultSpec: CreationSpec; onProjectCreated: (bundle: ProjectBundle) => void }) {
+function VideoRemixPanel({ sourceTask, visualStyles, projectDirectory, defaultSpec, onProjectCreated }: { sourceTask: DouyinUnderstandingTask; visualStyles: import("@aivs/schemas").VisualStylePreset[]; projectDirectory: string; defaultSpec: CreationSpec; onProjectCreated: (bundle: ProjectBundle) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [projectName, setProjectName] = useState(`${(sourceTask.title || "视频剧情").trim().slice(0, 48)}·二创`);
   const [creativeDirection, setCreativeDirection] = useState("保留原视频的核心主题、价值立场、关注群体和情绪诉求，在同一主题范围内重构人物身份、场景、事件与表达方式；如原稿包含矛盾升级或反转，则保留其叙事功能。");
@@ -1379,7 +1416,6 @@ function VideoRemixPanel({ sourceTask, visualStyles, defaultRootPath, defaultSpe
   const [targetDuration, setTargetDuration] = useState(Math.max(15, Math.min(600, Math.round(sourceTask.duration ?? defaultSpec.target_duration))));
   const [aspectRatio, setAspectRatio] = useState<"9:16" | "16:9">(sourceTask.aspect_ratio === "16:9" || defaultSpec.aspect_ratio === "16:9" ? "16:9" : "9:16");
   const [visualStyle, setVisualStyle] = useState("");
-  const [rootPath, setRootPath] = useState(defaultRootPath);
   const remixTasks = useQuery({
     queryKey: ["video-remix-tasks", sourceTask.id],
     queryFn: () => listVideoRemixTasks(sourceTask.id),
@@ -1410,15 +1446,11 @@ function VideoRemixPanel({ sourceTask, visualStyles, defaultRootPath, defaultSpe
   const saveProject = useMutation({
     mutationFn: (task: VideoRemixTask) => createVideoRemixProject({
       remix_task_id: task.id,
-      root_path: rootPath,
+      root_path: projectDirectory,
       project_name: task.result?.title?.trim() || task.project_name,
     }),
     onSuccess: onProjectCreated,
   });
-  const selectRoot = async () => {
-    const selected = await chooseProjectDirectory();
-    if (selected) setRootPath(selected);
-  };
   const activeCount = (remixTasks.data ?? []).filter((task) => task.status === "PENDING" || task.status === "RUNNING").length;
   const canCreate = !createRemix.isPending && projectName.trim().length > 0 && creativeDirection.trim().length >= 4 && targetDuration >= 15 && targetDuration <= 600;
   return <div className={expanded ? "video-remix-inline expanded" : "video-remix-inline"}>
@@ -1442,12 +1474,12 @@ function VideoRemixPanel({ sourceTask, visualStyles, defaultRootPath, defaultSpe
     <div className="video-remix-history video-remix-inline-history">
       <header><div><strong>二创记录</strong><small>结果保存在本机数据库，可关闭程序后继续查看</small></div><span>{activeCount ? `${activeCount} 个生成中` : `${remixTasks.data?.length ?? 0} 条结果`}</span></header>
       {deleteRemix.error && <div className="error-banner">删除二创记录失败：{readableError(deleteRemix.error)}</div>}
-      {remixTasks.isLoading ? <div className="video-remix-empty"><LoaderCircle className="spin" size={18} />正在读取二创记录…</div> : remixTasks.error ? <div className="error-banner">{readableError(remixTasks.error)}</div> : (remixTasks.data ?? []).length === 0 ? <div className="video-remix-empty">还没有二创记录，点击上方“开始二创”后创建。</div> : <div className="video-remix-task-list">{(remixTasks.data ?? []).map((task) => <VideoRemixTaskCard key={task.id} task={task} rootPath={rootPath} onRootPathChange={setRootPath} onSelectRoot={() => void selectRoot()} onRetry={() => retryRemix.mutate(task.id)} retrying={retryRemix.isPending && retryRemix.variables === task.id} onDelete={() => { if (window.confirm("确定删除这条二创记录吗？删除后无法恢复。")) deleteRemix.mutate(task.id); }} deleting={deleteRemix.isPending && deleteRemix.variables === task.id} onSave={() => saveProject.mutate(task)} saving={saveProject.isPending && saveProject.variables?.id === task.id} saveError={saveProject.variables?.id === task.id ? saveProject.error : undefined} />)}</div>}
+      {remixTasks.isLoading ? <div className="video-remix-empty"><LoaderCircle className="spin" size={18} />正在读取二创记录…</div> : remixTasks.error ? <div className="error-banner">{readableError(remixTasks.error)}</div> : (remixTasks.data ?? []).length === 0 ? <div className="video-remix-empty">还没有二创记录，点击上方“开始二创”后创建。</div> : <div className="video-remix-task-list">{(remixTasks.data ?? []).map((task) => <VideoRemixTaskCard key={task.id} task={task} projectDirectory={projectDirectory} onRetry={() => retryRemix.mutate(task.id)} retrying={retryRemix.isPending && retryRemix.variables === task.id} onDelete={() => { if (window.confirm("确定删除这条二创记录吗？删除后无法恢复。")) deleteRemix.mutate(task.id); }} deleting={deleteRemix.isPending && deleteRemix.variables === task.id} onSave={() => saveProject.mutate(task)} saving={saveProject.isPending && saveProject.variables?.id === task.id} saveError={saveProject.variables?.id === task.id ? saveProject.error : undefined} />)}</div>}
     </div>
   </div>;
 }
 
-function VideoRemixTaskCard({ task, rootPath, onRootPathChange, onSelectRoot, onRetry, retrying, onDelete, deleting, onSave, saving, saveError }: { task: VideoRemixTask; rootPath: string; onRootPathChange: (value: string) => void; onSelectRoot: () => void; onRetry: () => void; retrying: boolean; onDelete: () => void; deleting: boolean; onSave: () => void; saving: boolean; saveError?: Error | null }) {
+function VideoRemixTaskCard({ task, projectDirectory, onRetry, retrying, onDelete, deleting, onSave, saving, saveError }: { task: VideoRemixTask; projectDirectory: string; onRetry: () => void; retrying: boolean; onDelete: () => void; deleting: boolean; onSave: () => void; saving: boolean; saveError?: Error | null }) {
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const active = task.status === "PENDING" || task.status === "RUNNING";
   const notes = task.result?.adaptation_notes;
@@ -1469,9 +1501,8 @@ function VideoRemixTaskCard({ task, rootPath, onRootPathChange, onSelectRoot, on
       </div>
       {originalityStatement && <p className="video-remix-originality"><ShieldCheckIcon />{originalityStatement}</p>}
       <details className="video-remix-shots"><summary>查看全部 {shots.length} 个新分镜</summary><div>{shots.map((shot, index) => { const visual = workflowSummaryText(shot.visual, "未提供具体画面"); const action = workflowSummaryText(shot.action, "未提供具体动作"); const dialogue = workflowSummaryText(shot.dialogue, "无"); return <article key={typeof shot.id === "string" ? shot.id : index}><header><strong>分镜 {index + 1}</strong><span>{workflowSummaryText(shot.duration)}秒 · {workflowSummaryText(shot.shot_size)} · {workflowSummaryText(shot.camera_movement)}</span></header><p><b>画面</b>{visual}</p><p><b>动作</b>{action}</p>{dialogue !== "无" && <p><b>台词</b>{dialogue}</p>}</article>; })}</div></details>
-      <label>新项目根目录<div className="path-input"><FolderOpen size={17} /><input value={rootPath} onChange={(event) => onRootPathChange(event.target.value)} /><button type="button" onClick={onSelectRoot}>选择</button></div></label>
       {saveError && <div className="error-banner">{readableError(saveError)}</div>}
-      <footer><span>{task.project_path ? `已创建项目：${task.project_path}` : "确认结果后保存为独立本地项目，原解析任务不会改变。"}</span><button className="primary-button" type="button" disabled={saving || deleting || !rootPath.trim()} onClick={onSave}>{saving ? <LoaderCircle className="spin" size={17} /> : <Rocket size={17} />}{saving ? "正在保存新项目…" : task.project_path ? "再次保存为新项目（免费）" : "保存为新项目（免费）"}</button></footer>
+      <footer><span>{task.project_path ? `已创建项目：${task.project_path}` : "确认结果后保存为独立本地项目，原解析任务不会改变。"}</span><button className="primary-button" type="button" disabled={saving || deleting || !projectDirectory.trim()} title={!projectDirectory.trim() ? "请先在系统设置中配置项目保存目录" : undefined} onClick={onSave}>{saving ? <LoaderCircle className="spin" size={17} /> : <Rocket size={17} />}{saving ? "正在保存新项目…" : task.project_path ? "再次保存为新项目（免费）" : "保存为新项目（免费）"}</button></footer>
     </div>}
   </article>;
 }
@@ -1602,10 +1633,13 @@ function AssetLibraryPanel({ assets, loading, error, onRefresh }: { assets: Asse
   </>;
 }
 
-function StoryboardModeModal({ showSubmissionMode, onClose, onSelect }: { showSubmissionMode: boolean; onClose: () => void; onSelect: (selection: StoryboardUnderstandingSelection, submissionMode: VideoSubmissionMode) => void }) {
+function StoryboardModeModal({ showSubmissionMode, videoInfo, onClose, onSelect }: { showSubmissionMode: boolean; videoInfo?: { duration?: number }; onClose: () => void; onSelect: (selection: StoryboardUnderstandingSelection, submissionMode: VideoSubmissionMode) => void }) {
+  const isLongVideo = Boolean(videoInfo?.duration && videoInfo.duration > 300);
+  const segmentCount = isLongVideo ? Math.ceil(videoInfo!.duration! / 300) : 1;
   const [submissionMode, setSubmissionMode] = useState<VideoSubmissionMode>("url");
   const [selectedMode, setSelectedMode] = useState<StoryboardUnderstandingMode>("fixed");
   const [fixedSeconds, setFixedSeconds] = useState<FixedStoryboardSeconds>(10);
+  useEffect(() => { if (isLongVideo) setSubmissionMode("upload"); }, [isLongVideo]);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", closeOnEscape);
@@ -1615,11 +1649,12 @@ function StoryboardModeModal({ showSubmissionMode, onClose, onSelect }: { showSu
     <section className="storyboard-mode-modal" role="dialog" aria-modal="true" aria-labelledby="storyboard-mode-title">
       <header><div><span className="eyebrow">VIDEO STORYBOARD SETTINGS</span><h2 id="storyboard-mode-title">{showSubmissionMode ? "选择生成分镜方式" : "选择视频理解模式"}</h2><p>{showSubmissionMode ? "选择视频提交方式和分镜拆分规则，确认后立即开始生成。" : "选择分镜拆分规则，确认后立即开始生成。"}</p></div><button className="modal-close" type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
       <div className="storyboard-mode-body">
+      {isLongVideo && <div className="browser-warning long-video-confirmation"><AlertTriangle size={20} /><div><strong>已识别为长视频：{formatVideoDuration(videoInfo!.duration!)}（{Math.round(videoInfo!.duration!)} 秒）</strong><span>视频超过 5 分钟，{showSubmissionMode ? "将先完整下载，再" : "将从本地文件"}拆成 {segmentCount} 段分别解析，最后自动合并为一份完整分镜。等待时间会明显变长，请保持客户端运行且不要中途退出。</span></div></div>}
       {showSubmissionMode && <section className="submission-mode-section" aria-labelledby="submission-mode-title">
         <div className="storyboard-mode-section-title"><div><strong id="submission-mode-title">视频提交方式</strong><span>决定解析后的视频如何交给大模型</span></div></div>
         <div className="submission-mode-options">
-          <button className={`storyboard-mode-option submission-mode-option${submissionMode === "url" ? " active" : ""}`} type="button" onClick={() => setSubmissionMode("url")} aria-pressed={submissionMode === "url"}>
-            <span className="mode-icon"><Zap size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>极速模式</strong><em>推荐</em></span><small>直接将刚解析出来的视频地址发给大模型，无需先下载和上传，开始更快。</small><span className="submission-mode-warning"><AlertTriangle size={14} />临时地址失效、生成失败或等待超过 10 分钟时，会自动切换详细模式重试一次。</span></span>{submissionMode === "url" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
+          <button className={`storyboard-mode-option submission-mode-option${submissionMode === "url" ? " active" : ""}`} type="button" disabled={isLongVideo} onClick={() => setSubmissionMode("url")} aria-pressed={submissionMode === "url"}>
+            <span className="mode-icon"><Zap size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>极速模式</strong><em>推荐</em></span><small>{isLongVideo ? "长视频需要下载并拆分，本次不可使用极速模式。" : "直接将刚解析出来的视频地址发给大模型，无需先下载和上传，开始更快。"}</small>{!isLongVideo && <span className="submission-mode-warning"><AlertTriangle size={14} />临时地址失效、生成失败或等待超过 10 分钟时，会自动切换详细模式重试一次。</span>}</span>{submissionMode === "url" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
           </button>
           <button className={`storyboard-mode-option submission-mode-option${submissionMode === "upload" ? " active" : ""}`} type="button" onClick={() => setSubmissionMode("upload")} aria-pressed={submissionMode === "upload"}>
             <span className="mode-icon"><Upload size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>详细模式</strong></span><small>先下载并校验视频，再压缩上传给大模型。准备时间更长，但对临时地址和防盗链更兼容。</small></span>{submissionMode === "upload" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
@@ -1641,7 +1676,7 @@ function StoryboardModeModal({ showSubmissionMode, onClose, onSelect }: { showSu
       </div>
       </section>
       </div>
-      <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button storyboard-mode-confirm" type="button" onClick={() => onSelect({ mode: selectedMode, fixedSeconds: selectedMode === "fixed" ? fixedSeconds : undefined }, showSubmissionMode ? submissionMode : "upload")}><ScanSearch size={17} />立即生成分镜</button></footer>
+      <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button storyboard-mode-confirm" type="button" onClick={() => onSelect({ mode: selectedMode, fixedSeconds: selectedMode === "fixed" ? fixedSeconds : undefined }, showSubmissionMode ? (isLongVideo ? "upload" : submissionMode) : "upload")}><ScanSearch size={17} />{isLongVideo ? "继续并确认长视频解析" : "立即生成分镜"}</button></footer>
     </section>
   </div>, document.body);
 }

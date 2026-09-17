@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { platformApiBaseUrl, platformApiEnvironment } from "./apiConfig";
-import type { CreativeTypePreset, FreeCreationAspectRatio, VisualStylePreset } from "@aivs/schemas";
+import type { CanonicalProject, CreativeTypePreset, FreeCreationAspectRatio, VisualStylePreset } from "@aivs/schemas";
 
 export { platformApiBaseUrl } from "./apiConfig";
 const BROWSER_SESSION_KEY = "aivs.platform-session";
@@ -80,6 +80,10 @@ export interface ClientProductBrand {
   updated_at?: string;
 }
 export interface CatalogCategory { id: string; code: string; name: string; description: string; sort_order: number }
+export interface ScriptLibraryCategory extends CatalogCategory { script_count: number }
+export interface ScriptLibraryItem { id: string; category_id: string; category_code: string; category_name: string; title: string; duration_seconds: number; summary: string; heat_score: number; use_count: number; updated_at: string; content?: string }
+export interface ScriptLibraryQuote { credits: number; billing_unit: "PER_SCRIPT"; config_revision: number }
+export interface ScriptLibraryProjectPayload { usage_id: string; script_id: string; title: string; duration_seconds: number; canonical: CanonicalProject; credits: number; idempotent_replay?: boolean }
 export interface PlatformMediaResolutionPrice { resolution: string; credit_cost: number; label?: string }
 export interface PlatformMediaModel {
   id: string; provider_id: string; provider_code?: string; provider_name: string; model_code: string; display_name: string; model_alias: string;
@@ -244,6 +248,8 @@ export interface ModelCreditQuote {
   provider_model_id: string; model_alias: string; model_code: string;
   capability: string; credits: number; resolution: string | null; seconds: number | null;
   includes_multiplier: boolean;
+  extraction_billing_mode?: "OVERALL" | "PER_SEGMENT";
+  config_revision?: number;
 }
 export const getModelCreditQuote = (capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING") =>
   authenticatedRequest<ModelCreditQuote>("/tasks/quote", { method: "POST", body: JSON.stringify({ capability, payload: {} }) });
@@ -276,6 +282,11 @@ export const listVisualStyleCategories = () => publicRequest<CatalogCategory[]>(
 export const listVisualStyles = () => publicRequest<VisualStylePreset[]>("/client-config/visual-styles");
 export const listCreativeTypeCategories = () => publicRequest<CatalogCategory[]>("/client-config/creative-type-categories");
 export const listCreativeTypes = () => publicRequest<CreativeTypePreset[]>("/client-config/creative-types");
+export const listScriptLibraryCategories = () => publicRequest<ScriptLibraryCategory[]>("/script-library/categories");
+export const listScriptLibrary = (query = "", category = "") => publicRequest<ScriptLibraryItem[]>(`/script-library/scripts?q=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`);
+export const getScriptLibraryDetail = (scriptId: string) => publicRequest<ScriptLibraryItem>(`/script-library/scripts/${encodeURIComponent(scriptId)}`);
+export const getScriptLibraryQuote = () => authenticatedRequest<ScriptLibraryQuote>("/script-library/quote");
+export const useScriptLibraryItem = (scriptId: string, expectedCredits: number, idempotencyKey: string) => authenticatedRequest<ScriptLibraryProjectPayload>(`/script-library/scripts/${encodeURIComponent(scriptId)}/create-project`, { method: "POST", body: JSON.stringify({ expected_credits: expectedCredits, idempotency_key: idempotencyKey }) });
 export async function listMediaModels(capability: PlatformMediaModel["capability"]): Promise<PlatformMediaModel[]> {
   const models = await publicRequest<PlatformMediaModel[]>("/client-config/models");
   return models.filter((model) => model.capability === capability && model.resolution_prices.length > 0)

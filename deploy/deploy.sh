@@ -100,6 +100,8 @@ log "Pre-deployment database backup completed."
 phase=migrating
 log "Applying idempotent schema migrations to the existing database."
 compose "$release" run --rm --no-deps -T api node dist/database/migrate.js 2>&1 | tee "$release/migration.log"
+log "Importing the bundled hot script library sources."
+compose "$release" run --rm --no-deps -T api node dist/scripts/seed-script-library.js --hot-only
 log "Schema migration command completed; backfilling only missing invite codes."
 compose "$release" run --rm --no-deps -T api node dist/scripts/backfill-invite-codes.js
 phase=starting

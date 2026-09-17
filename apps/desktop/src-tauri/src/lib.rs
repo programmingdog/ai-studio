@@ -60,6 +60,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::create_project,
+            commands::create_canonical_project,
+            commands::import_standard_script_file,
             credit_confirmation::list_credit_confirmations,
             credit_confirmation::resolve_credit_confirmation,
             workflow_credit::approve_workflow_credit,
@@ -67,9 +69,11 @@ pub fn run() {
             commands::list_projects,
             commands::delete_project,
             commands::list_asset_library,
+            commands::import_asset_library_reference_image,
             commands::delete_asset_library,
             commands::load_project,
             commands::save_text_file,
+            commands::save_json_file,
             commands::save_png_file,
             commands::list_promotion_posters,
             commands::import_promotion_poster,

@@ -1,0 +1,114 @@
+**Here's how I'm approaching this video analysis, as a seasoned expert:**
+
+Okay, time to break down this video project. My primary objective is clear: translate this raw video data into a structured output, sticking rigidly to the specified format. The key constraints are brevity (halving the verbosity), a precise output format, a strict 10-second clip duration per segment (with two segments for the 15-second total video), and the mandated 9:16 aspect ratio. The inclusion of dialogue in both "画面" (visual scene description) and "口播台词" (spoken dialogue) needs to be exact.
+
+First, I've got the video specs down: 9:16 aspect ratio, a 15-second total duration split into two segments (0-10s and 10-15s). The characters are defined—Father/Young Man, Mother/Young Woman, and the twin boys (A and B). Their visual descriptions are essential for consistent application to the "画面" output. The scene is a rural courtyard, which I've labeled "SCENE_001", again, for consistent use later.
+
+Now, for the critical bit: the dialogue and scene breakdown. The video starts with the parents, the twins run in, get prompted to greet, and deliver a "祝福奶奶" (blessing for grandma), complete with a cute mispronunciation that needs to be represented. The twins then finish with the "小孙子爱你呦！" (grandson loves you!) while laughing. I've dissected the audio to pinpoint each spoken line, its timing, and the specific speaker with their appropriate tone and phrasing (e.g., "稚嫩响亮" meaning "tender and loud" or "轻声提醒" meaning "gentle reminder").
+
+Next, I'm using the structured output format, with its clear sections—project story, character library, scene library, and shot list, making sure to hit every locked field. I'm focusing on the format and ensure there is no extraneous output.
+
+Finally, I'm constructing the segments. Segment 1 (0-10s) focuses on the initial greetings and well wishes, matching time cues to each line and describing visual scene elements. Segment 2 (10-15s) captures the twins' laughter and "小孙子爱你呦！" segment. It's crucial that I accurately reflect the dialogue in both the visual scene description and spoken dialogue sections, paying close attention to the requested verbosity. I'll need to remember to hold the last frame of segment 2 because the content finishes at 15s.
+
+I'm double-checking everything. The locked fields have to be perfect. The dialogue structure has to be consistent: character name, speaking tone, and then the actual lines in both sections. And, of course, the 50% conciseness rule. This will make for a good output.
+
+
+
+一、项目剧情
+
+标题：双胞胎给奶奶送祝福
+主题：家庭温情与童真孝心
+基调：温馨、欢快、质朴
+一句话梗概：双胞胎幼童拿着奖状跑进农家小院，在父母陪伴下对着镜头为奶奶送上稚嫩祝福与大笑。
+故事概要：阳光明媚的农家庭院里，父母正在纳鞋底和踩缝纫机。双胞胎兄弟背着书包、手拿奖状开心地跑回家，在父亲的引导下，兄弟俩对着镜头齐声喊奶奶并送上长寿健康的祝福，最后开怀大笑。
+屏幕比例：9:16
+画风设定：写实乡村生活质感，自然阳光漫射，暖黄与绿意交织，色调淳朴明亮，细节真实自然。
+
+二、全局角色库
+
+【角色 CHAR_001】
+名称：父亲
+角色定位：主角
+性别与年龄：男，约30岁
+外貌锁定：短发，五官端正，皮肤微黑，体型匀称。
+服装锁定：灰色短袖亨利领T恤，黑色休闲长裤，深色拖鞋，无配饰。
+声音锁定：温和浑厚，语速从容。
+
+【角色 CHAR_002】
+名称：母亲
+角色定位：配角
+性别与年龄：女，约28岁
+外貌锁定：黑色中分双麻花辫，眉清目秀，肤色白皙，身材苗条。
+服装锁定：米白色长袖印花衬衫，黑色长裤，白色平底鞋，无配饰。
+声音锁定：未识别。
+
+【角色 CHAR_003】
+名称：双胞胎男孩A
+角色定位：主角
+性别与年龄：男，约3岁
+外貌锁定：圆脸大眼，黑色碎短发，皮肤白嫩，个头较小。
+服装锁定：蓝白拼接小熊图案短袖T恤，深色短裤，蓝色双肩小书包，手拿红色奖状。
+声音锁定：童音清脆，语气欢快稚嫩。
+
+【角色 CHAR_004】
+名称：双胞胎男孩B
+角色定位：主角
+性别与年龄：男，约3岁
+外貌锁定：圆脸大眼，黑色碎短发，神态活泼，与男孩A容貌极为相似。
+服装锁定：蓝白拼接棕熊图案短袖T恤，深色短裤，红色双肩小书包，手拿红色奖状。
+声音锁定：童音清脆，语气欢快响亮。
+
+三、全局场景库
+
+【场景 SCENE_001】
+名称：乡村庭院
+场景锁定：农村开阔庭院，水泥地面，后方有红花绿树与围墙，左侧停放农用三轮车，右侧摆放老式脚踏缝纫机，前方有木质小马扎；日间晴朗，自然日光充足，氛围温馨质朴。
+
+四、分镜列表
+
+第1段（0～10秒）
+生成时长：10秒
+屏幕比例：9:16
+景别：中景
+机位：平视
+运镜：固定
+画风设定：写实乡村生活质感，自然阳光漫射，暖黄与绿意交织，色调淳朴明亮，细节真实自然。
+场景引用：SCENE_001｜乡村庭院
+场景锁定：农村开阔庭院，水泥地面，后方有红花绿树与围墙，左侧停放农用三轮车，右侧摆放老式脚踏缝纫机，前方有木质小马扎；日间晴朗，自然日光充足，氛围温馨质朴。
+人物引用：CHAR_001｜父亲；CHAR_002｜母亲；CHAR_003｜双胞胎男孩A；CHAR_004｜双胞胎男孩B
+人物锁定：
+- CHAR_001｜父亲｜短发，五官端正，皮肤微黑，体型匀称。灰色短袖亨利领T恤，黑色休闲长裤，深色拖鞋，无配饰。
+- CHAR_002｜母亲｜黑色中分双麻花辫，眉清目秀，肤色白皙，身材苗条。米白色长袖印花衬衫，黑色长裤，白色平底鞋，无配饰。
+- CHAR_003｜双胞胎男孩A｜圆脸大眼，黑色碎短发，皮肤白嫩，个头较小。蓝白拼接小熊图案短袖T恤，深色短裤，蓝色双肩小书包，手拿红色奖状。
+- CHAR_004｜双胞胎男孩B｜圆脸大眼，黑色碎短发，神态活泼，与男孩A容貌极为相似。蓝白拼接棕熊图案短袖T恤，深色短裤，红色双肩小书包，手拿红色奖状。
+画面：父亲坐在马扎上缝鞋底，母亲在后方踩缝纫机。双胞胎兄弟手拿奖状跑来。父亲转头笑着指镜头，父亲说（笑着引导）：“来，叫奶奶。”两个男孩蹲在镜头前齐声高喊，双胞胎男孩A与双胞胎男孩B齐声说（清脆响亮）：“奶奶！”父亲在旁提醒，父亲说（轻声提醒）：“祝福奶奶。”两个孩子对视后望向镜头，双胞胎男孩A与双胞胎男孩B齐声说（稚嫩认真）：“祝您身体健康，长命百岁，永远幸福快乐……”
+口播台词：
+- 父亲（笑着引导）：“来，叫奶奶。”
+- 双胞胎男孩A、双胞胎男孩B（清脆响亮）：“奶奶！”
+- 父亲（轻声提醒）：“祝福奶奶。”
+- 双胞胎男孩A、双胞胎男孩B（稚嫩认真）：“祝您身体健康，长命百岁，永远幸福快乐……”
+动作：父亲停下手中针线转头引导→双胞胎跑至镜头前蹲下并展示奖状→孩子们齐声大喊并念出祝福语。
+声音：针线拉扯声、小孩欢快的脚步声、清脆童声、温和男声、庭院鸟鸣与环境声。
+约束：角色名称、五官、发型、服装、场景空间和关键道具保持一致；动作自然；无多余人物、无肢体畸形、无文字水印；生成视频不要字幕。
+
+第2段（10～15秒）
+生成时长：10秒
+屏幕比例：9:16
+景别：中景
+机位：平视
+运镜：固定
+画风设定：写实乡村生活质感，自然阳光漫射，暖黄与绿意交织，色调淳朴明亮，细节真实自然。
+场景引用：SCENE_001｜乡村庭院
+场景锁定：农村开阔庭院，水泥地面，后方有红花绿树与围墙，左侧停放农用三轮车，右侧摆放老式脚踏缝纫机，前方有木质小马扎；日间晴朗，自然日光充足，氛围温馨质朴。
+人物引用：CHAR_001｜父亲；CHAR_002｜母亲；CHAR_003｜双胞胎男孩A；CHAR_004｜双胞胎男孩B
+人物锁定：
+- CHAR_001｜父亲｜短发，五官端正，皮肤微黑，体型匀称。灰色短袖亨利领T恤，黑色休闲长裤，深色拖鞋，无配饰。
+- CHAR_002｜母亲｜黑色中分双麻花辫，眉清目秀，肤色白皙，身材苗条。米白色长袖印花衬衫，黑色长裤，白色平底鞋，无配饰。
+- CHAR_003｜双胞胎男孩A｜圆脸大眼，黑色碎短发，皮肤白嫩，个头较小。蓝白拼接小熊图案短袖T恤，深色短裤，蓝色双肩小书包，手拿红色奖状。
+- CHAR_004｜双胞胎男孩B｜圆脸大眼，黑色碎短发，神态活泼，与男孩A容貌极为相似。蓝白拼接棕熊图案短袖T恤，深色短裤，红色双肩小书包，手拿红色奖状。
+画面：双胞胎男孩手拿奖状对镜头说完最后一句祝福，双胞胎男孩A与双胞胎男孩B齐声说（兴奋大喊）：“小孙子爱你呦！”随后两人仰头开怀大笑，身后的父母也一同展颜欢笑；视频真实内容结束后保持全家欢乐大笑的画面状态至分镜结束。
+口播台词：
+- 双胞胎男孩A、双胞胎男孩B（兴奋大喊）：“小孙子爱你呦！”
+动作：双胞胎说完祝福语→两人同时张嘴仰头大笑→父母在后方跟着微笑注视。
+声音：孩子欢呼声、天真烂漫的大笑声、父母轻柔的笑声。
+约束：角色名称、五官、发型、服装、场景空间和关键道具保持一致；动作自然；无多余人物、无肢体畸形、无文字水印；生成视频不要字幕。不足10秒部分保持尾帧状态，不新增动作。

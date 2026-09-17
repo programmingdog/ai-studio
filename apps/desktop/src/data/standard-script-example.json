@@ -1,0 +1,40 @@
+{
+  "schema_version": "aivs-script-v1",
+  "story": {
+    "title": "雨夜来信",
+    "logline": "一名年轻记者在雨夜收到一封改变调查方向的匿名信。",
+    "genre": ["悬疑", "剧情"],
+    "theme": "真相与选择",
+    "synopsis": "记者林夏在编辑部加班时收到匿名信，并决定前往旧车站寻找线索。",
+    "tone": "克制、紧张",
+    "aspect_ratio": "9:16",
+    "visual_style": "电影写实",
+    "beats": [{ "id": "BEAT_001", "type": "触发事件", "description": "林夏收到匿名信。" }]
+  },
+  "episodes": [{ "id": "EP_001", "order": 1, "title": "匿名信", "duration": 12, "content": "林夏收到匿名信并动身前往旧车站。" }],
+  "characters": [{
+    "id": "CHAR_001", "name": "林夏", "role": "主角", "gender": "女", "age_range": "25-30岁",
+    "appearance": { "face": "清秀的椭圆脸", "hair": "黑色齐肩短发", "body": "中等身材", "clothes": "米色风衣", "accessories": "黑框眼镜" },
+    "personality": "冷静、执着", "motivation": "查明匿名信背后的真相", "voice": "清晰、偏低沉", "story_function": "推动调查", "reference_assets": [], "states": [], "locked": false
+  }],
+  "scenes": [{
+    "id": "SCENE_001", "name": "雨夜编辑部", "location_type": "室内", "time_of_day": "夜晚", "description": "空旷的报社编辑部，窗外大雨。",
+    "lighting": "冷白色顶灯", "layout": "工位整齐排列，林夏坐在靠窗位置", "props": ["匿名信", "台灯"], "mood": "紧张、安静", "reference_assets": [], "locked": false
+  }],
+  "props": [{ "id": "PROP_001", "name": "匿名信", "style": "旧牛皮纸信封", "description": "没有署名，封口被雨水打湿。", "reference_assets": [], "locked": false }],
+  "sequences": [{ "id": "SEQ_001", "scene_id": "SCENE_001", "order": 1, "summary": "林夏发现匿名信。", "character_ids": ["CHAR_001"], "shot_ids": ["SHOT_001", "SHOT_002"] }],
+  "shots": [
+    {
+      "id": "SHOT_001", "sequence_id": "SEQ_001", "scene_id": "SCENE_001", "character_ids": ["CHAR_001"], "prop_ids": ["PROP_001"], "duration": 6,
+      "aspect_ratio": "9:16", "shot_size": "中景", "camera_angle": "平视", "camera_movement": "固定", "visual": "林夏独自坐在编辑部工位前，窗外大雨。",
+      "action": "林夏整理桌面文件。", "emotion": "疲惫", "dialogue": "", "sound": "雨声和键盘声", "image_prompt": "雨夜编辑部，林夏坐在靠窗工位前。",
+      "video_prompt": "林夏整理桌面文件，窗外雨水滑过玻璃。", "negative_prompt": "", "status": "DRAFT", "locked": false
+    },
+    {
+      "id": "SHOT_002", "sequence_id": "SEQ_001", "scene_id": "SCENE_001", "character_ids": ["CHAR_001"], "prop_ids": ["PROP_001"], "duration": 6,
+      "aspect_ratio": "9:16", "shot_size": "特写", "camera_angle": "俯拍", "camera_movement": "缓慢推进", "visual": "旧牛皮纸信封躺在桌面，封口有雨水痕迹。",
+      "action": "林夏拿起信封。", "emotion": "警觉", "dialogue": "林夏：谁送来的？", "sound": "纸张摩擦声", "image_prompt": "桌面上的旧牛皮纸匿名信封。",
+      "video_prompt": "手拿起潮湿的旧信封，镜头缓慢推进。", "negative_prompt": "", "status": "DRAFT", "locked": false
+    }
+  ]
+}

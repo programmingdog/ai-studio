@@ -58,6 +58,7 @@ pub(crate) fn video_understanding_prompt(prompt: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct AiSettingsFile {
+    project_directory: Option<String>,
     generation_assets_directory: Option<String>,
     base_url: String,
     agent_model: String,
@@ -112,6 +113,7 @@ impl Default for CreditCostSettings {
 impl Default for AiSettingsFile {
     fn default() -> Self {
         Self {
+            project_directory: None,
             generation_assets_directory: None,
             base_url: "https://api.lk888.ai".into(),
             agent_model: "gpt-5.6-sol".into(),
@@ -133,6 +135,8 @@ impl Default for AiSettingsFile {
 
 #[derive(Debug, Serialize)]
 pub struct AiSettingsView {
+    project_directory: String,
+    default_project_directory: String,
     generation_assets_directory: String,
     default_generation_assets_directory: String,
     base_url: String,
@@ -154,6 +158,8 @@ pub struct AiSettingsView {
 
 #[derive(Debug, Deserialize)]
 pub struct SaveAiSettingsInput {
+    #[serde(default)]
+    project_directory: String,
     #[serde(default)]
     generation_assets_directory: String,
     base_url: String,
@@ -398,6 +404,67 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| error("AI_SETTINGS_PATH_ERROR", e.to_string(), false))
 }
 
+fn verify_project_directory(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err(error(
+            "PROJECT_PATH_INVALID",
+            "项目保存目录必须是绝对路径",
+            false,
+        ));
+    }
+    fs::create_dir_all(path).map_err(|e| {
+        error(
+            "PROJECT_PATH_INVALID",
+            format!("无法创建项目保存目录：{e}"),
+            false,
+        )
+    })?;
+    let probe = path.join(format!(".aivs-write-test-{}", uuid::Uuid::new_v4()));
+    fs::write(&probe, b"ok").map_err(|e| {
+        error(
+            "PROJECT_PATH_NOT_WRITABLE",
+            format!("项目保存目录不可写：{e}"),
+            false,
+        )
+    })?;
+    let _ = fs::remove_file(probe);
+    fs::canonicalize(path).map_err(|e| {
+        error(
+            "PROJECT_PATH_INVALID",
+            format!("无法确认项目保存目录：{e}"),
+            false,
+        )
+    })
+}
+
+fn default_project_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let preferred = app
+        .path()
+        .document_dir()
+        .map(|path| path.join("AI Video Studio Projects"));
+    if let Ok(path) = preferred {
+        if let Ok(path) = verify_project_directory(&path) {
+            return Ok(path);
+        }
+    }
+    let fallback = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| error("PROJECT_PATH_ERROR", e.to_string(), false))?
+        .join("projects");
+    verify_project_directory(&fallback)
+}
+
+fn project_directory(
+    app: &tauri::AppHandle,
+    configured: Option<&str>,
+) -> Result<PathBuf, String> {
+    match configured.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(path) => verify_project_directory(Path::new(path)),
+        None => default_project_directory(app),
+    }
+}
+
 fn verify_generation_assets_directory(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err(error(
@@ -611,31 +678,66 @@ pub(crate) fn load_agent_config(app: &tauri::AppHandle) -> Result<AgentAiConfig,
 }
 
 fn extract_json_object(content: &str) -> Result<Value, String> {
-    let trimmed = content.trim();
-    let without_fence = trimmed
-        .strip_prefix("```json")
+    let decoded = content
+        .trim_start_matches('\u{feff}')
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#x22;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&#xA0;", " ")
+        .replace("&#32;", " ")
+        .replace("&#x20;", " ");
+    let trimmed = decoded.trim();
+    let without_opening_fence = trimmed
+        .strip_prefix("```json5")
+        .or_else(|| trimmed.strip_prefix("```JSON5"))
+        .or_else(|| trimmed.strip_prefix("```json"))
         .or_else(|| trimmed.strip_prefix("```JSON"))
         .or_else(|| trimmed.strip_prefix("```"))
         .unwrap_or(trimmed)
-        .trim()
-        .strip_suffix("```")
-        .unwrap_or(trimmed)
         .trim();
-    serde_json::from_str(without_fence).or_else(|_| {
-        let start = without_fence
-            .find('{')
-            .ok_or_else(|| error("AI_IDEA_RESPONSE_INVALID", "大模型未返回 JSON 对象", true))?;
-        let end = without_fence
-            .rfind('}')
-            .ok_or_else(|| error("AI_IDEA_RESPONSE_INVALID", "大模型返回的 JSON 不完整", true))?;
-        serde_json::from_str(&without_fence[start..=end]).map_err(|parse_error| {
-            error(
-                "AI_IDEA_RESPONSE_INVALID",
-                format!("无法解析大模型返回的剧情 JSON：{parse_error}"),
-                true,
-            )
-        })
-    })
+    let without_fence = without_opening_fence
+        .strip_suffix("```")
+        .unwrap_or(without_opening_fence)
+        .trim();
+    let mut candidates = vec![without_fence];
+    if let (Some(start), Some(end)) = (without_fence.find('{'), without_fence.rfind('}')) {
+        if end > start {
+            candidates.push(&without_fence[start..=end]);
+        }
+    }
+    let mut last_error = String::new();
+    for candidate in candidates {
+        match serde_json::from_str::<Value>(candidate) {
+            Ok(Value::Object(value)) => return Ok(Value::Object(value)),
+            Ok(Value::String(nested)) => {
+                if let Ok(Value::Object(value)) = serde_json::from_str::<Value>(&nested) {
+                    return Ok(Value::Object(value));
+                }
+            }
+            _ => {}
+        }
+        match json5::from_str::<Value>(candidate) {
+            Ok(Value::Object(value)) => return Ok(Value::Object(value)),
+            Ok(Value::String(nested)) => match json5::from_str::<Value>(&nested) {
+                Ok(Value::Object(value)) => return Ok(Value::Object(value)),
+                Ok(_) => last_error = "返回值不是 JSON 对象".to_owned(),
+                Err(parse_error) => last_error = parse_error.to_string(),
+            },
+            Ok(_) => last_error = "返回值不是 JSON 对象".to_owned(),
+            Err(parse_error) => last_error = parse_error.to_string(),
+        }
+    }
+    let message = if without_fence.contains('{') {
+        format!("无法解析大模型返回的剧情 JSON：{last_error}")
+    } else {
+        "大模型未返回 JSON 对象".to_owned()
+    };
+    Err(error("AI_IDEA_RESPONSE_INVALID", message, true))
 }
 
 async fn openai_json_completion(
@@ -1208,6 +1310,8 @@ fn settings_view(
     settings: AiSettingsFile,
     model_catalog: Vec<crate::database::model_catalog::AiModelCatalogItem>,
 ) -> Result<AiSettingsView, String> {
+    let default_project_directory = default_project_directory(app)?;
+    let project_directory = project_directory(app, settings.project_directory.as_deref())?;
     let default_generation_assets_directory = default_generation_assets_directory(app)?;
     let generation_assets_directory =
         generation_assets_directory(app, settings.generation_assets_directory.as_deref())?;
@@ -1225,6 +1329,8 @@ fn settings_view(
         format!("••••••••{suffix}")
     });
     Ok(AiSettingsView {
+        project_directory: project_directory.to_string_lossy().into_owned(),
+        default_project_directory: default_project_directory.to_string_lossy().into_owned(),
         generation_assets_directory: generation_assets_directory.to_string_lossy().into_owned(),
         default_generation_assets_directory: default_generation_assets_directory
             .to_string_lossy()
@@ -1388,6 +1494,11 @@ fn normalize_settings(input: &SaveAiSettingsInput) -> Result<AiSettingsFile, Str
         video_per_second.insert(resolution.to_owned(), cost);
     }
     Ok(AiSettingsFile {
+        project_directory: if input.project_directory.trim().is_empty() {
+            None
+        } else {
+            Some(input.project_directory.trim().to_owned())
+        },
         generation_assets_directory: if input.generation_assets_directory.trim().is_empty() {
             None
         } else {
@@ -1423,6 +1534,11 @@ pub fn save_ai_settings(
     input: SaveAiSettingsInput,
 ) -> Result<AiSettingsView, String> {
     let mut settings = normalize_settings(&input)?;
+    settings.project_directory = Some(
+        project_directory(&app, settings.project_directory.as_deref())?
+            .to_string_lossy()
+            .into_owned(),
+    );
     settings.generation_assets_directory = Some(
         generation_assets_directory(&app, settings.generation_assets_directory.as_deref())?
             .to_string_lossy()
@@ -4151,6 +4267,7 @@ fn spawn_video_task(
                 }
             } => result,
         };
+        let mut recovery_pending = false;
         if let Err(message) = result {
             crate::logging::error(
                 "ai.video.task_failed",
@@ -4162,7 +4279,14 @@ fn spawn_video_task(
                 json!({"record_id": record_id, "error": message}),
             );
             if let Ok(connection) = crate::database::open(&project_root) {
-                if platform_login_required_error(&message) {
+                if crate::platform_media::task_recovery_pending_error(&message) {
+                    recovery_pending = true;
+                    let _ = crate::database::generation_records::mark_recovery_pending(
+                        &connection,
+                        &record_id,
+                        &message,
+                    );
+                } else if platform_login_required_error(&message) {
                     let remote_task_id = login_error_remote_task_id(&message);
                     let _ = crate::database::generation_records::mark_auth_required(
                         &connection,
@@ -4184,6 +4308,10 @@ fn spawn_video_task(
         }
         if let Ok(mut signals) = video_stop_signals().lock() {
             signals.remove(&record_id);
+        }
+        if recovery_pending {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            spawn_video_task(app, project_root, record_id, api_base);
         }
     });
 }
@@ -4216,10 +4344,10 @@ async fn execute_video_task(
     if record.status == crate::database::generation_records::STATUS_COMPLETED
         || record.status == crate::database::generation_records::STATUS_CANCELLED
         || (record.status == crate::database::generation_records::STATUS_FAILED
-            && !record
-                .error
-                .as_ref()
-                .is_some_and(platform_login_required_value))
+            && !record.error.as_ref().is_some_and(|value| {
+                platform_login_required_value(value)
+                    || crate::platform_media::task_recovery_pending_error(&value.to_string())
+            }))
     {
         return Ok(());
     }
@@ -5295,8 +5423,28 @@ pub(crate) fn resume_project_video_tasks(
     project_root: &Path,
 ) -> Result<Vec<crate::database::generation_records::GenerationRecord>, String> {
     let connection = crate::database::open(project_root)?;
-    let records = crate::database::generation_records::list_unfinished_videos(&connection)?;
-    for record in &records {
+    let mut records = crate::database::generation_records::list_unfinished_videos(&connection)?;
+    for record in &mut records {
+        if record.status == crate::database::generation_records::STATUS_FAILED
+            && record.error.as_ref().is_some_and(|value| {
+                crate::platform_media::task_recovery_pending_error(&value.to_string())
+            })
+        {
+            let message = record
+                .error
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_default();
+            crate::database::generation_records::mark_recovery_pending(
+                &connection,
+                &record.id,
+                &message,
+            )?;
+            record.status =
+                crate::database::generation_records::STATUS_REMOTE_PROCESSING.to_owned();
+            record.progress = record.progress.max(0.2);
+            record.finished_at = None;
+        }
         if record.target_type == "project" {
             spawn_project_video_composition(
                 app.clone(),
@@ -5413,6 +5561,7 @@ mod tests {
         assert_eq!(settings.image_protocol, "openai");
         assert_eq!(settings.video_generation_model, "hailuo-h3-cankaosheng");
         assert_eq!(settings.video_generation_protocol, "media");
+        assert_eq!(settings.project_directory, None);
         assert_eq!(settings.credit_costs.image_per_item, 1.0);
         assert_eq!(settings.credit_costs.video_per_second.get("4K"), Some(&8.0));
     }
@@ -5421,6 +5570,13 @@ mod tests {
     fn extracts_json_from_fenced_idea_model_response() {
         let value = extract_json_object("```json\n{\"title\":\"归阵\"}\n```").unwrap();
         assert_eq!(value["title"], "归阵");
+    }
+
+    #[test]
+    fn repairs_json5_style_idea_model_response_with_explanation() {
+        let value = extract_json_object("解析结果如下：\n```json5\n{title:'归阵', episodes:[],}\n```").unwrap();
+        assert_eq!(value["title"], "归阵");
+        assert_eq!(value["episodes"], json!([]));
     }
 
     #[test]

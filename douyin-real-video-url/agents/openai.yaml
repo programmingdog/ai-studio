@@ -1,0 +1,4 @@
+interface:
+  display_name: "抖音真实视频地址提取"
+  short_description: "从公开抖音分享文本解析临时真实视频 CDN 下载地址"
+  default_prompt: "Use $douyin-real-video-url to extract the real media URL from this public Douyin share link."

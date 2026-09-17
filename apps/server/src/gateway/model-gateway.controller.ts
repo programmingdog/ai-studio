@@ -6,6 +6,18 @@ import { TemporaryReferenceImageService } from "../common/temporary-reference-im
 import { UserAuthGuard, UserRequest } from "../user-auth/user-auth.guard";
 import { ModelGatewayService } from "./model-gateway.service";
 
+function extractionBilling(body: Record<string, unknown>) {
+  const supplied = ["billing_group_id", "billing_segment_index", "billing_segment_count", "expected_billing_mode"]
+    .some((key) => body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== "");
+  if (!supplied) return undefined;
+  return {
+    groupId: requiredString(body, "billing_group_id", 36),
+    segmentIndex: Number(body.billing_segment_index),
+    segmentCount: Number(body.billing_segment_count),
+    expectedMode: requiredString(body, "expected_billing_mode", 32),
+  };
+}
+
 @Controller("tasks")
 @UseGuards(UserAuthGuard)
 export class ModelGatewayController {
@@ -58,6 +70,7 @@ export class ModelGatewayController {
       mimeType: optionalString(body, "mime_type", 100),
       providerModelId: optionalString(body, "provider_model_id", 36),
       expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
+      extractionBilling: extractionBilling(body),
     });
   }
 
@@ -85,6 +98,7 @@ export class ModelGatewayController {
       file,
       providerModelId: optionalString(body, "provider_model_id", 36),
       expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
+      extractionBilling: extractionBilling(body),
     });
   }
 

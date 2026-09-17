@@ -3,15 +3,21 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { extractScriptText, parseOpenAiEventStream, parseScriptAnalysis, ModelGatewayService } = require("../dist/gateway/model-gateway.service.js");
+const { extractScriptText, parseOpenAiEventStream, parseScriptAnalysis, videoUnderstandingSegmentCredits, ModelGatewayService } = require("../dist/gateway/model-gateway.service.js");
 
 const canonical = {
-  story: { title: "原文标题" }, episodes: [], characters: [], scenes: [], sequences: [], shots: [],
+  story: { title: "原文标题" }, episodes: [], characters: [], scenes: [], props: [], sequences: [], shots: [],
 };
 
 test("accepts fenced OpenAI-compatible canonical JSON", () => {
   const result = parseScriptAnalysis({ choices: [{ message: { content: `\`\`\`json\n${JSON.stringify(canonical)}\n\`\`\`` } }] });
   assert.equal(result.story.title, "原文标题");
+});
+
+test("repairs common JSON5 model output and explanatory prose", () => {
+  const output = parseScriptAnalysis({ choices: [{ message: { content: `结果如下：\n\`\`\`json5\n{story:{title:'原文标题'},episodes:[],characters:[],scenes:[],props:[],sequences:[],shots:[],}\n\`\`\`` } }] });
+  assert.equal(output.story.title, "原文标题");
+  assert.deepEqual(output.props, []);
 });
 
 test("reassembles an OpenAI event stream into the canonical response shape", () => {
@@ -54,11 +60,12 @@ test("video URL and upload storyboard extraction use the configured feature pric
   };
   gateway.defaultVideoUnderstandingTarget = async () => target;
   gateway.target = async () => target;
-  gateway.scriptAnalysisConfig = async () => ({ prompt: "x".repeat(100), credit_cost: 10, revision: 2 });
+  gateway.scriptAnalysisConfig = async () => ({ prompt: "x".repeat(100), credit_cost: 10, extraction_billing_mode: "PER_SEGMENT", revision: 2 });
 
   const quote = await gateway.quote({ capability: "VIDEO_UNDERSTANDING", payload: {} });
   assert.equal(quote.credits, 10);
   assert.equal(quote.provider_model_id, target.model_id);
+  assert.equal(quote.extraction_billing_mode, "PER_SEGMENT");
 
   const submissions = [];
   gateway.create = async (_userId, input) => { submissions.push(input); return { task: { id: `task-${submissions.length}` } }; };
@@ -69,11 +76,14 @@ test("video URL and upload storyboard extraction use the configured feature pric
   await gateway.createVideoUnderstandingUpload("user-1", {
     idempotencyKey: "video-upload", expectedCredits: 10, providerModelId: target.model_id,
     prompt: "提取完整分镜脚本",
+    extractionBilling: { groupId: "00000000-0000-0000-0000-000000000001", segmentIndex: 0, segmentCount: 2, expectedMode: "PER_SEGMENT" },
     file: { buffer: Buffer.from("video"), mimetype: "video/mp4", originalname: "video.mp4", size: 5 },
   });
   assert.deepEqual(submissions.map(item => item.creditOverride), [10, 10]);
   assert.deepEqual(submissions.map(item => item.expectedCredits), [10, 10]);
   assert.deepEqual(submissions.map(item => item.taskType), ["VIDEO_UNDERSTANDING", "VIDEO_UNDERSTANDING"]);
+  assert.equal(submissions[1].extractionBilling.billingMode, "PER_SEGMENT");
+  assert.equal(submissions[1].extractionBilling.segmentCount, 2);
 });
 
 test("provider network failures expose the underlying socket error", async () => {
@@ -126,4 +136,16 @@ test("default configuration explicitly forbids invention", () => {
   const migration = fs.readFileSync(path.join(__dirname, "../src/database/migrations/032_script_analysis_config.sql"), "utf8");
   assert.match(migration, /100%忠于原文/);
   assert.match(migration, /禁止补写、推测、润色、改编、续写/);
+});
+
+test("video understanding billing defaults to one overall charge and persists grouped segments", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "../src/database/migrations/053_video_understanding_billing_mode.sql"), "utf8");
+  assert.match(migration, /extraction_billing_mode VARCHAR\(32\) NOT NULL DEFAULT 'OVERALL'/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS video_understanding_billing_groups/);
+  assert.match(migration, /extraction_billing_group_id/);
+  assert.match(migration, /uq_ai_tasks_extraction_segment/);
+  assert.equal(videoUnderstandingSegmentCredits("OVERALL", 0, 10), 10);
+  assert.equal(videoUnderstandingSegmentCredits("OVERALL", 1, 10), 0);
+  assert.equal(videoUnderstandingSegmentCredits("PER_SEGMENT", 0, 10), 10);
+  assert.equal(videoUnderstandingSegmentCredits("PER_SEGMENT", 1, 10), 10);
 });

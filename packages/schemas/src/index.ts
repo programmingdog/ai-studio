@@ -298,6 +298,8 @@ export interface DouyinDownloadResult {
 }
 
 export interface AiSettings {
+  project_directory: string;
+  default_project_directory: string;
   generation_assets_directory: string;
   default_generation_assets_directory: string;
   base_url: string;
@@ -351,6 +353,7 @@ export interface AiModelCatalogItem {
 }
 
 export interface SaveAiSettingsInput {
+  project_directory: string;
   generation_assets_directory: string;
   base_url: string;
   agent_model: string;
@@ -749,8 +752,10 @@ export interface CreateDouyinUnderstandingTaskInput extends DouyinStoryboardInpu
   mode: DouyinUnderstandingTask["mode"];
   fixed_seconds?: number;
   video_submission_mode: VideoSubmissionMode;
+  long_video_confirmed?: boolean;
   provider_model_id: string;
   expected_credits: number;
+  extraction_billing_mode: "OVERALL" | "PER_SEGMENT";
 }
 
 export interface SaveLocalVideoUnderstandingTaskInput {
@@ -788,6 +793,8 @@ export interface VideoRemixResult {
 
 export interface CreateVideoRemixTaskInput {
   source_task_id: string;
+  source_type?: "video" | "script_library";
+  source_text?: string;
   project_name: string;
   creative_direction: string;
   originality: VideoRemixOriginality;
@@ -860,6 +867,14 @@ export interface ProjectBundle {
 }
 
 export type ProjectSourceType = "IDEA" | "SCRIPT_TEXT" | "SCRIPT_FILE";
+
+export interface CreateCanonicalProjectInput {
+  root_path: string;
+  source_path?: string;
+  source_text?: string;
+  creation_spec: CreationSpec;
+  canonical: CanonicalProject;
+}
 
 export interface CreateProjectInput {
   root_path: string;

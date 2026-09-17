@@ -12,14 +12,16 @@ export interface VisualMentionItem {
   relativePath?: string;
   imageSource?: string;
   group?: "scene" | "character" | "prop" | "shot";
+  disabled?: boolean;
 }
 
 type MentionPickerMode = "inline" | "asset-modal";
 const mentionGroupLabels: Record<"all" | NonNullable<VisualMentionItem["group"]>, string> = { all: "全部", scene: "场景", character: "角色", prop: "道具", shot: "分镜" };
+const caretSentinel = "\u200B";
 
 function editorText(element: HTMLElement): string {
   const read = (node: Node): string => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent ?? "").replaceAll(caretSentinel, "");
     if (!(node instanceof HTMLElement)) return "";
     if (node.dataset.mention) return node.dataset.mention;
     if (node.tagName === "BR") return "\n";
@@ -79,6 +81,7 @@ function decorateEditor(element: HTMLElement, text: string, items: VisualMention
   const tokens = [...new Set(items.map((item) => item.insertText))].sort((a, b) => b.length - a.length);
   const fragment = document.createDocumentFragment();
   let position = 0;
+  let endsWithMention = false;
   while (position < text.length) {
     let nextIndex = text.length;
     let nextToken = "";
@@ -91,6 +94,7 @@ function decorateEditor(element: HTMLElement, text: string, items: VisualMention
     }
     if (!nextToken) {
       fragment.append(document.createTextNode(text.slice(position)));
+      endsWithMention = false;
       break;
     }
     if (nextIndex > position) fragment.append(document.createTextNode(text.slice(position, nextIndex)));
@@ -121,8 +125,10 @@ function decorateEditor(element: HTMLElement, text: string, items: VisualMention
       mention.textContent = nextToken;
     }
     fragment.append(mention);
+    endsWithMention = true;
     position = nextIndex + nextToken.length;
   }
+  if (rich && endsWithMention) fragment.append(document.createTextNode(caretSentinel));
   element.replaceChildren(fragment);
   if (offset != null) restoreCaret(element, offset);
 }
@@ -188,7 +194,7 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
     mentionEndRef.current = offset;
     setQuery(candidate);
     const nextItems = items.filter((item) => !candidate || `${item.label}${item.detail}${item.insertText}`.toLowerCase().includes(candidate.toLowerCase()));
-    const firstEnabled = nextItems.findIndex((item) => Boolean(item.relativePath));
+    const firstEnabled = nextItems.findIndex((item) => Boolean(item.relativePath) && !item.disabled);
     setSelectedIndex(firstEnabled >= 0 ? firstEnabled : 0);
     setMenuOpen(true);
     const editor = editorRef.current;
@@ -213,7 +219,7 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
   };
 
   const insertMention = (item: VisualMentionItem) => {
-    if (!item.relativePath) return;
+    if (!item.relativePath || item.disabled) return;
     const editor = editorRef.current;
     if (!editor) return;
     const text = editorText(editor);
@@ -248,16 +254,16 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
     if (menuOpen && event.key === "ArrowDown") {
       event.preventDefault();
       setSelectedIndex((index) => {
-        for (let step = 1; step <= filtered.length; step += 1) { const next = (index + step) % filtered.length; if (filtered[next]?.relativePath) return next; }
+        for (let step = 1; step <= filtered.length; step += 1) { const next = (index + step) % filtered.length; if (filtered[next]?.relativePath && !filtered[next]?.disabled) return next; }
         return index;
       });
     } else if (menuOpen && event.key === "ArrowUp") {
       event.preventDefault();
       setSelectedIndex((index) => {
-        for (let step = 1; step <= filtered.length; step += 1) { const next = (index - step + filtered.length) % filtered.length; if (filtered[next]?.relativePath) return next; }
+        for (let step = 1; step <= filtered.length; step += 1) { const next = (index - step + filtered.length) % filtered.length; if (filtered[next]?.relativePath && !filtered[next]?.disabled) return next; }
         return index;
       });
-    } else if (menuOpen && event.key === "Enter" && filtered[selectedIndex]?.relativePath) {
+    } else if (menuOpen && event.key === "Enter" && filtered[selectedIndex]?.relativePath && !filtered[selectedIndex]?.disabled) {
       event.preventDefault();
       insertMention(filtered[selectedIndex]!);
     } else if (menuOpen && event.key === "Escape") {
@@ -288,24 +294,28 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
   };
 
   const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-    const remove = (event.target as HTMLElement).closest<HTMLElement>("[data-mention-remove]");
-    const token = remove?.closest<HTMLElement>("[data-mention]");
-    if (!remove || !token?.dataset.mention) return;
-    event.preventDefault();
-    setHovered(undefined);
     const editor = editorRef.current;
-    if (!editor) return;
+    const target = event.target as HTMLElement;
+    const token = target.closest<HTMLElement>("[data-mention]");
+    if (!editor || !token?.dataset.mention) return;
     const prefix = document.createRange();
     prefix.selectNodeContents(editor);
     prefix.setEndBefore(token);
     const container = document.createElement("div");
     container.append(prefix.cloneContents());
     const start = editorText(container).length;
+    event.preventDefault();
+    setHovered(undefined);
+    editor.focus();
+    const remove = target.closest<HTMLElement>("[data-mention-remove]");
+    if (!remove) {
+      restoreCaret(editor, start + token.dataset.mention.length);
+      return;
+    }
     const text = editorText(editor);
     const next = `${text.slice(0, start)}${text.slice(start + token.dataset.mention.length)}`;
     onChange(next);
     decorateEditor(editor, next, items, start, rich, assetSources);
-    editor.focus();
   };
 
   const handleMouseOver = (event: MouseEvent<HTMLDivElement>) => {
@@ -346,17 +356,17 @@ export function VisualMentionEditor({ value, onChange, items, projectPath, rich 
           type="button"
           role="option"
           aria-selected={index === selectedIndex}
-          disabled={!item.relativePath}
-          onMouseEnter={() => { if (item.relativePath) setSelectedIndex(index); }}
-          onMouseDown={(event) => { event.preventDefault(); if (item.relativePath) insertMention(item); }}
-        ><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{item.detail}</small><em>{item.relativePath ? item.insertText : "图片生成后可引用"}</em></span></button>) : <div className="visual-mention-empty">该分镜暂无可引用图片</div>}
+          disabled={!item.relativePath || item.disabled}
+          onMouseEnter={() => { if (item.relativePath && !item.disabled) setSelectedIndex(index); }}
+          onMouseDown={(event) => { event.preventDefault(); if (item.relativePath && !item.disabled) insertMention(item); }}
+        ><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{item.disabled ? "当前模型参考图已达上限" : item.detail}</small><em>{!item.relativePath ? "图片生成后可引用" : item.disabled ? "已达引用上限" : item.insertText}</em></span></button>) : <div className="visual-mention-empty">该分镜暂无可引用图片</div>}
       </div>
     </div>}
     {menuOpen && picker === "asset-modal" && createPortal(<div className="modal-backdrop free-mention-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setMenuOpen(false); }}>
       <section className="free-mention-modal" role="dialog" aria-modal="true" aria-labelledby="free-mention-title">
         <header><div><span className="section-label">ASSET LIBRARY</span><h2 id="free-mention-title"><ImageIcon size={19} />选择资产图片</h2><p>选择后会在提示词中显示为带缩略图的参考图标签。</p></div><button className="modal-close" type="button" onClick={() => setMenuOpen(false)} aria-label="关闭资产选择"><X size={18} /></button></header>
         <nav aria-label="资产分类">{modalTabs.map((group) => <button type="button" key={group} className={modalTab === group ? "active" : ""} onClick={() => setModalTab(group)}>{mentionGroupLabels[group]}</button>)}</nav>
-        <main>{modalItems.length ? modalItems.map((item) => <button type="button" key={item.id} onClick={() => insertMention(item)} title={item.detail}><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{mentionGroupLabels[item.group ?? "all"]}</small></span></button>) : <p>当前分类没有匹配图片</p>}</main>
+        <main>{modalItems.length ? modalItems.map((item) => <button type="button" key={item.id} disabled={!item.relativePath || item.disabled} onClick={() => insertMention(item)} title={item.disabled ? "当前模型参考图已达上限" : item.detail}><MentionImage projectPath={projectPath} item={item} /><span><strong>{item.label}</strong><small>{item.disabled ? "已达引用上限" : mentionGroupLabels[item.group ?? "all"]}</small></span></button>) : <p>当前分类没有匹配图片</p>}</main>
         <footer><span>{query ? `正在匹配“${query}”` : `当前分类共 ${modalItems.length} 张图片`}</span><button className="secondary-button" type="button" onClick={() => setMenuOpen(false)}>关闭</button></footer>
       </section>
     </div>, document.body)}

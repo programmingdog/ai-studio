@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, FolderOpen, Languages, LoaderCircle, MessageSquareText, RotateCcw, Save, X } from "lucide-react";
 import type { PromptOverrideSettings } from "@aivs/schemas";
-import { chooseGenerationAssetsDirectory, getAiSettings, saveAiSettings } from "../services/backend";
+import { chooseGenerationAssetsDirectory, chooseProjectDirectory, getAiSettings, saveAiSettings } from "../services/backend";
 import { VIDEO_STORYBOARD_DETAILED_PROMPT, VIDEO_STORYBOARD_PROMPT } from "../prompts/videoStoryboard";
 import { CHARACTER_IMAGE_PROMPT } from "../prompts/characterImage";
 import { supportedLocales, useI18n } from "../i18n";
@@ -25,6 +25,7 @@ export function AiSettingsModal({ onClose }: { onClose: () => void }) {
     character_image_prompt: false,
   });
   const [activeTab, setActiveTab] = useState<"general" | "prompt">("general");
+  const [projectDirectory, setProjectDirectory] = useState("");
   const [generationAssetsDirectory, setGenerationAssetsDirectory] = useState("");
 
   useEffect(() => {
@@ -33,6 +34,7 @@ export function AiSettingsModal({ onClose }: { onClose: () => void }) {
     setVideoStoryboardDetailedPrompt(settings.data.video_storyboard_detailed_prompt || VIDEO_STORYBOARD_DETAILED_PROMPT);
     setCharacterImagePrompt(settings.data.character_image_prompt || CHARACTER_IMAGE_PROMPT);
     setPromptOverrides(settings.data.prompt_overrides);
+    setProjectDirectory(settings.data.project_directory);
     setGenerationAssetsDirectory(settings.data.generation_assets_directory);
   }, [settings.data]);
 
@@ -42,6 +44,7 @@ export function AiSettingsModal({ onClose }: { onClose: () => void }) {
       if (!current) throw new Error("设置尚未加载，请稍后重试。");
       // Preserve settings that are no longer editable in this dialog.
       return saveAiSettings({
+        project_directory: projectDirectory,
         generation_assets_directory: generationAssetsDirectory,
         base_url: current.base_url,
         agent_model: current.agent_model,
@@ -79,6 +82,7 @@ export function AiSettingsModal({ onClose }: { onClose: () => void }) {
             <label>{t("language")}<select value={locale} onChange={(event) => setLocale(event.target.value as typeof locale)}>{supportedLocales.map((item) => <option key={item.code} value={item.code}>{item.nativeName}</option>)}</select><small>{t("languageHint")}</small></label>
             {direction === "rtl" && <div className="settings-guidance"><Languages size={19} /><div><strong>RTL</strong><span>{t("rtlNotice")}</span></div></div>}
             <p className="language-support-note">{t("minoritySupport")}</p>
+            <section className="generation-assets-setting"><div className="prompt-settings-intro"><FolderOpen size={20} /><div><strong>项目保存目录</strong><span>新建、导入、剧本库生成和视频二创项目统一保存到这里。</span></div></div><label>保存目录<div className="generation-assets-directory-row"><input value={projectDirectory} readOnly /><button className="secondary-button" type="button" onClick={async () => { const selected = await chooseProjectDirectory(); if (selected) setProjectDirectory(selected); }}><FolderOpen size={15} />选择目录</button><button className="secondary-button" type="button" disabled={!settings.data || projectDirectory === settings.data.default_project_directory} onClick={() => setProjectDirectory(settings.data?.default_project_directory || "")}><RotateCcw size={14} />恢复默认</button></div><small>所有创建入口都会使用此目录，页面中不再重复显示目录选项。</small></label></section>
             <section className="generation-assets-setting"><div className="prompt-settings-intro"><FolderOpen size={20} /><div><strong>生成素材保存目录</strong><span>生成完成的图片、分镜视频和合成视频会自动归档到这里。</span></div></div><label>保存目录<div className="generation-assets-directory-row"><input value={generationAssetsDirectory} readOnly /><button className="secondary-button" type="button" onClick={async () => { const selected = await chooseGenerationAssetsDirectory(generationAssetsDirectory); if (selected) setGenerationAssetsDirectory(selected); }}><FolderOpen size={15} />选择目录</button><button className="secondary-button" type="button" disabled={!settings.data || generationAssetsDirectory === settings.data.default_generation_assets_directory} onClick={() => setGenerationAssetsDirectory(settings.data?.default_generation_assets_directory || "")}><RotateCcw size={14} />恢复默认</button></div><small>默认使用软件安装目录下的 assets；若系统不允许写入安装目录，将自动使用应用数据目录。项目内仍保留工作资产，确保项目可正常预览和编辑。</small></label></section>
           </div> : <div className="settings-tab-panel prompt-settings-panel" role="tabpanel">
             <div className="settings-guidance"><AlertTriangle size={19} /><div><strong>{settings.data?.prompt_defaults.source === "SERVER" ? "默认提示词已从服务端加载" : "服务端暂不可用，当前使用本地缓存提示词"}</strong><span>{settings.data?.prompt_defaults.source === "SERVER" ? `配置频道：${settings.data.prompt_defaults.channel}。客户端会优先采用服务端发布版本；手动编辑后仅在本机覆盖对应提示词。` : "重新打开设置时会再次尝试读取服务端；手动编辑的本地覆盖不会被替换。"}</span></div></div>
@@ -101,7 +105,7 @@ export function AiSettingsModal({ onClose }: { onClose: () => void }) {
           {save.isSuccess && <div className="settings-success"><CheckCircle2 size={16} /> {t("settingsSaved")}</div>}
         </>}
       </div>
-      <footer><button className="secondary-button" type="button" onClick={onClose}>{t("cancel")}</button><button className="primary-button" type="button" disabled={save.isPending || !settings.data || !generationAssetsDirectory.trim() || videoStoryboardPrompt.trim().length < 50 || videoStoryboardDetailedPrompt.trim().length < 50 || characterImagePrompt.trim().length < 50} onClick={() => save.mutate()}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />} {t("saveSettings")}</button></footer>
+      <footer><button className="secondary-button" type="button" onClick={onClose}>{t("cancel")}</button><button className="primary-button" type="button" disabled={save.isPending || !settings.data || !projectDirectory.trim() || !generationAssetsDirectory.trim() || videoStoryboardPrompt.trim().length < 50 || videoStoryboardDetailedPrompt.trim().length < 50 || characterImagePrompt.trim().length < 50} onClick={() => save.mutate()}>{save.isPending ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />} {t("saveSettings")}</button></footer>
     </section>
   </div>;
 }

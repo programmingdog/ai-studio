@@ -87,6 +87,28 @@ fn task_status(value: &Value) -> &str {
         .unwrap_or("")
 }
 
+const TASK_RECOVERY_PENDING: &str = "PLATFORM_TASK_RECOVERY_PENDING";
+
+pub(crate) fn task_recovery_pending_error(message: &str) -> bool {
+    serde_json::from_str::<Value>(message)
+        .ok()
+        .is_some_and(|value| {
+            value.get("code").and_then(Value::as_str) == Some(TASK_RECOVERY_PENDING)
+        })
+        || message.contains(TASK_RECOVERY_PENDING)
+        || message.contains("暂时查不到已提交任务的结果")
+}
+
+fn recovery_pending_error(request_id: &str) -> String {
+    json!({
+        "code": TASK_RECOVERY_PENDING,
+        "message": "已提交任务暂时查不到结果，系统会继续恢复原任务，不会重新创建或重复扣分。",
+        "request_id": request_id,
+        "retryable": true,
+    })
+    .to_string()
+}
+
 pub async fn generate(
     api_base: &str,
     provider_model_id: &str,
@@ -447,18 +469,37 @@ async fn generate_request(
     } else {
         None
     };
+    let mut persisted_request_id = None;
     if let Some((root, _, _)) = &workflow {
         if let Some(receipt) = crate::workflow_credit::receipt(root, local_task_id, &base)? {
             if let Some(response) = receipt.response {
                 return Ok(response);
             }
             let token = &workflow_session.as_ref().unwrap().access_token;
-            let task = recover_request(&client, &base, token, &receipt.request_id).await?;
-            let result =
-                wait_for_result(&client, &base, token, task, &workflow, local_task_id).await?;
-            crate::workflow_credit::save_response(root, local_task_id, &result)
-                .map_err(|e| crate::workflow_credit::error(&e))?;
-            return Ok(result);
+            match recover_request(&client, &base, token, &receipt.request_id).await {
+                Ok(task) => {
+                    let result = wait_for_result(
+                        &client,
+                        &base,
+                        token,
+                        task,
+                        &workflow,
+                        local_task_id,
+                    )
+                    .await?;
+                    crate::workflow_credit::save_response(root, local_task_id, &result)
+                        .map_err(|e| crate::workflow_credit::error(&e))?;
+                    return Ok(result);
+                }
+                Err(error) if task_recovery_pending_error(&error) => {
+                    // Replaying the exact same local task id and idempotency key
+                    // is safe: the server returns the original task when it
+                    // exists and creates it once only when the first POST never
+                    // reached the server.
+                    persisted_request_id = Some(receipt.request_id);
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
     let mut workflow_lock: Option<crate::workflow_credit::WorkflowReservation> = None;
@@ -526,9 +567,13 @@ async fn generate_request(
     } else {
         crate::platform_session::valid_access_token(&base).await?
     };
-    let request_id = uuid::Uuid::new_v4().to_string();
-    if let Some((root, _, _)) = &workflow {
-        crate::workflow_credit::begin_request(root, local_task_id, &base, &request_id)?;
+    let request_id = persisted_request_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if persisted_request_id.is_none() {
+        if let Some((root, _, _)) = &workflow {
+            crate::workflow_credit::begin_request(root, local_task_id, &base, &request_id)?;
+        }
     }
     let request_body = json!({
         "local_task_id": request_id,
@@ -622,9 +667,7 @@ async fn recover_request(
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    Err(crate::workflow_credit::error(
-        "暂时查不到已提交任务的结果，自动制作已停止，不会重新提交或重复扣分。",
-    ))
+    Err(recovery_pending_error(request_id))
 }
 
 async fn wait_for_result(
@@ -944,6 +987,28 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(recovered["task"]["id"], "original");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn missing_submitted_task_is_recoverable_instead_of_stopping_credit_workflow() {
+        let (base, server) = fixture(vec![
+            ("GET /tasks/by-local/request-missing ", 404, json!({"message":"not found"}));
+            5
+        ]);
+        let error = tauri::async_runtime::block_on(recover_request(
+            &Client::new(),
+            &base,
+            "test",
+            "request-missing",
+        ))
+        .unwrap_err();
+        let value: Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(value["code"], TASK_RECOVERY_PENDING);
+        assert_eq!(value["request_id"], "request-missing");
+        assert_eq!(value["retryable"], true);
+        assert!(!error.contains("WORKFLOW_CREDIT_STOPPED"));
+        assert!(task_recovery_pending_error(&error));
         server.join().unwrap();
     }
 

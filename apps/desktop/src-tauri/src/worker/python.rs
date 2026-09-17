@@ -105,6 +105,23 @@ pub fn download_douyin(
     call_worker(&request)
 }
 
+pub fn download_resolved_video(
+    video_info: &Value,
+    output_path: &Path,
+    cookie_file_path: Option<&str>,
+) -> Result<Vec<WorkerEvent>, String> {
+    let request = json!({
+        "version": "1.0", "id": format!("req_{}", uuid::Uuid::new_v4().simple()), "type": "request",
+        "method": "input.download_resolved_video",
+        "params": {
+            "video_info": video_info,
+            "output_path": output_path.to_string_lossy().to_string(),
+            "cookie_file_path": cookie_file_path
+        }
+    });
+    call_worker(&request)
+}
+
 pub fn download_douyin_auto(
     share_text: &str,
     output_path: &Path,

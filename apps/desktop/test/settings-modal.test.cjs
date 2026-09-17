@@ -30,6 +30,7 @@ function renderSettings(data, activeTab = 'general') {
     if (name === '../services/backend') return {
       getAiSettings: () => data,
       saveAiSettings: (input) => { saved = input; return input; },
+      chooseProjectDirectory: async () => 'C:\\Projects',
       chooseGenerationAssetsDirectory: async () => 'C:\\Media',
     };
     if (name === '../prompts/videoStoryboard') return { VIDEO_STORYBOARD_PROMPT: prompt, VIDEO_STORYBOARD_DETAILED_PROMPT: prompt };
@@ -46,6 +47,8 @@ function renderSettings(data, activeTab = 'general') {
 }
 
 const settings = {
+  project_directory: 'C:\\Program Files\\Yingjiang\\assets',
+  default_project_directory: 'C:\\Program Files\\Yingjiang\\assets',
   generation_assets_directory: 'C:\\Program Files\\Yingjiang\\assets',
   default_generation_assets_directory: 'C:\\Program Files\\Yingjiang\\assets',
   base_url: 'https://example.test', agent_model: 'custom-agent', video_model: 'custom-understanding',
@@ -62,7 +65,10 @@ test('settings renders only general and prompt tabs, with both retained panels a
     assert.match(html, /promptSettings/);
     assert.doesNotMatch(html, /interfaceSettings|积分消耗|API Key|interface-settings-panel|credit-settings-panel/);
     assert.match(html, tab === 'general' ? /language-settings-panel/ : /prompt-settings-panel/);
-    if (tab === 'general') assert.match(html, /生成素材保存目录/);
+    if (tab === 'general') {
+      assert.match(html, /项目保存目录/);
+      assert.match(html, /生成素材保存目录/);
+    }
   }
 });
 
@@ -70,7 +76,7 @@ test('saving remaining settings preserves hidden interface and credit configurat
   const rendered = renderSettings(settings);
   rendered.save();
   const saved = rendered.saved();
-  for (const key of Object.keys(settings).filter((key) => !['prompt_defaults', 'default_generation_assets_directory'].includes(key))) {
+  for (const key of Object.keys(settings).filter((key) => !['prompt_defaults', 'default_project_directory', 'default_generation_assets_directory'].includes(key))) {
     assert.deepEqual(saved[key], settings[key], key);
   }
   assert.equal(Object.hasOwn(saved, 'api_key'), false);

@@ -20,6 +20,10 @@ fn default_storyboard_duration_mode() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateVideoRemixTaskInput {
     source_task_id: String,
+    #[serde(default)]
+    source_type: Option<String>,
+    #[serde(default)]
+    source_text: Option<String>,
     project_name: String,
     creative_direction: String,
     originality: String,
@@ -82,6 +86,10 @@ fn open(app: &tauri::AppHandle) -> Result<Connection, String> {
 
 fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let input_json: String = row.get(7)?;
+    let mut public_input = serde_json::from_str::<Value>(&input_json).unwrap_or_else(|_| json!({}));
+    if let Some(object) = public_input.as_object_mut() {
+        object.remove("source_text");
+    }
     let result_json: Option<String> = row.get(8)?;
     let error_json: Option<String> = row.get(9)?;
     Ok(json!({
@@ -92,7 +100,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "stage": row.get::<_, String>(4)?,
         "progress": row.get::<_, f64>(5)?,
         "message": row.get::<_, String>(6)?,
-        "input": serde_json::from_str::<Value>(&input_json).unwrap_or_else(|_| json!({})),
+        "input": public_input,
         "result": result_json.and_then(|value| serde_json::from_str::<Value>(&value).ok()),
         "error": error_json.and_then(|value| serde_json::from_str::<Value>(&value).ok()),
         "project_path": row.get::<_, Option<String>>(10)?,
@@ -1110,23 +1118,16 @@ fn validate_result(mut result: Value, input: &CreateVideoRemixTaskInput) -> Resu
 
 fn spawn_task(app: tauri::AppHandle, task_id: String) {
     tauri::async_runtime::spawn(async move {
-        let loaded = open(&app).and_then(|connection| {
+        let input_json = match open(&app).and_then(|connection| {
             connection
                 .query_row(
-                    "SELECT r.input_json, d.result_json FROM video_remix_tasks r
-                     JOIN douyin_understanding_tasks d ON d.id = r.source_task_id
-                     WHERE r.id = ?1 AND d.status = 'COMPLETED'",
+                    "SELECT input_json FROM video_remix_tasks WHERE id = ?1",
                     [&task_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                    |row| row.get::<_, String>(0),
                 )
                 .map_err(|error| error.to_string())
-        });
-        let (input_json, source_result_json) = match loaded {
-            Ok((input, Some(source))) => (input, source),
-            Ok((_, None)) => {
-                finish_failed(&app, &task_id, "原视频理解任务没有可用结果".to_owned());
-                return;
-            }
+        }) {
+            Ok(value) => value,
             Err(error) => {
                 finish_failed(&app, &task_id, error);
                 return;
@@ -1139,12 +1140,41 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 return;
             }
         };
-        let source_analysis = serde_json::from_str::<Value>(&source_result_json)
-            .ok()
-            .and_then(|value| value.get("text").and_then(Value::as_str).map(str::to_owned))
-            .unwrap_or_default();
+        let source_analysis = if let Some(source_text) = input
+            .source_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            source_text.to_owned()
+        } else {
+            let source_result_json = match open(&app).and_then(|connection| {
+                connection
+                    .query_row(
+                        "SELECT result_json FROM douyin_understanding_tasks
+                         WHERE id = ?1 AND status = 'COMPLETED'",
+                        [&input.source_task_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    finish_failed(&app, &task_id, "原视频理解任务没有可用结果".to_owned());
+                    return;
+                }
+                Err(error) => {
+                    finish_failed(&app, &task_id, error);
+                    return;
+                }
+            };
+            serde_json::from_str::<Value>(&source_result_json)
+                .ok()
+                .and_then(|value| value.get("text").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_default()
+        };
         if source_analysis.trim().is_empty() {
-            finish_failed(&app, &task_id, "原视频解析文案为空".to_owned());
+            finish_failed(&app, &task_id, "二次创作来源内容为空".to_owned());
             return;
         }
         let mut revision_note: Option<String> = None;
@@ -1205,7 +1235,21 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
 
 fn validate_input(input: &CreateVideoRemixTaskInput) -> Result<(), String> {
     if input.source_task_id.trim().is_empty() {
-        return Err("请选择已完成的视频解析任务".to_owned());
+        return Err("请选择二次创作来源".to_owned());
+    }
+    if let Some(source_type) = input.source_type.as_deref() {
+        if !matches!(source_type, "video" | "script_library") {
+            return Err("二次创作来源类型无效".to_owned());
+        }
+    }
+    if let Some(source_text) = input.source_text.as_deref() {
+        let source_length = source_text.trim().chars().count();
+        if source_length > 0 && source_length < 30 {
+            return Err("二次创作来源内容过短".to_owned());
+        }
+        if source_length > 500_000 {
+            return Err("二次创作来源内容过长".to_owned());
+        }
     }
     if input.project_name.trim().is_empty() {
         return Err("请输入二创项目名称".to_owned());
@@ -1238,15 +1282,21 @@ pub fn create_video_remix_task(
 ) -> Result<Value, String> {
     validate_input(&input)?;
     let connection = open(&app)?;
-    let source_exists = connection
-        .query_row(
-            "SELECT COUNT(*) FROM douyin_understanding_tasks WHERE id = ?1 AND status = 'COMPLETED' AND result_json IS NOT NULL",
-            [&input.source_task_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|error| error.to_string())? > 0;
-    if !source_exists {
-        return Err("原视频理解任务尚未完成或结果不存在".to_owned());
+    let has_source_text = input
+        .source_text
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    if !has_source_text {
+        let source_exists = connection
+            .query_row(
+                "SELECT COUNT(*) FROM douyin_understanding_tasks WHERE id = ?1 AND status = 'COMPLETED' AND result_json IS NOT NULL",
+                [&input.source_task_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())? > 0;
+        if !source_exists {
+            return Err("原视频理解任务尚未完成或结果不存在".to_owned());
+        }
     }
     let id = format!("REMIX_{}", uuid::Uuid::new_v4().simple());
     let now = Utc::now().to_rfc3339();
@@ -1447,6 +1497,8 @@ mod tests {
     fn rejects_invalid_remix_configuration() {
         let input = CreateVideoRemixTaskInput {
             source_task_id: "TASK_1".to_owned(),
+            source_type: Some("video".to_owned()),
+            source_text: None,
             project_name: "测试".to_owned(),
             creative_direction: "全新都市悬疑故事".to_owned(),
             originality: "copy".to_owned(),
@@ -1457,6 +1509,27 @@ mod tests {
             language: "zh-CN".to_owned(),
         };
         assert!(validate_input(&input).is_err());
+    }
+
+    #[test]
+    fn accepts_script_library_source_snapshot() {
+        let input = CreateVideoRemixTaskInput {
+            source_task_id: "script-library:SCRIPT_1".to_owned(),
+            source_type: Some("script_library".to_owned()),
+            source_text: Some(
+                "一、项目剧情\n这是一个拥有完整人物、冲突、转折和分镜内容的剧本来源快照。"
+                    .to_owned(),
+            ),
+            project_name: "测试剧本·二创".to_owned(),
+            creative_direction: "保留主题并重构人物和事件".to_owned(),
+            originality: "high".to_owned(),
+            storyboard_duration_mode: "fixed".to_owned(),
+            target_duration: 120.0,
+            aspect_ratio: "9:16".to_owned(),
+            visual_style: "电影写实".to_owned(),
+            language: "zh-CN".to_owned(),
+        };
+        assert!(validate_input(&input).is_ok());
     }
 
     #[test]

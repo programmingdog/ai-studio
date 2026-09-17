@@ -72,6 +72,7 @@ function taskHarness(failure = false) {
       if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
       if (sql.includes('FROM ledger_entries')) return [[{ balance: 100 }]];
       if (sql.includes('FROM credit_holds')) return [[{ held: 0 }]];
+      if (sql.includes('FROM model_credit_pricing_config')) return [[{ cny_per_credit: 0.01 }]];
       throw Error(sql);
     },
     execute: async (sql, args) => {

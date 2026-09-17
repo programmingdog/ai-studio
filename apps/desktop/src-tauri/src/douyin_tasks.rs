@@ -2,7 +2,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf, time::Duration};
+use std::{collections::HashMap, fs, path::PathBuf, time::Duration};
 use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,9 +23,13 @@ pub struct CreateDouyinUnderstandingTaskInput {
     #[serde(default = "default_video_submission_mode")]
     video_submission_mode: String,
     #[serde(default)]
+    long_video_confirmed: bool,
+    #[serde(default)]
     provider_model_id: Option<String>,
     #[serde(default)]
     expected_credits: Option<f64>,
+    #[serde(default = "default_extraction_billing_mode")]
+    extraction_billing_mode: String,
     #[serde(default)]
     platform_api_base_url: Option<String>,
 }
@@ -34,6 +38,21 @@ fn default_video_submission_mode() -> String {
     // Tasks created by an older client used the download/upload path. Keeping
     // that default also makes retries of persisted tasks backward compatible.
     "upload".to_owned()
+}
+
+fn default_extraction_billing_mode() -> String {
+    "OVERALL".to_owned()
+}
+
+const LONG_VIDEO_THRESHOLD_SECONDS: f64 = 5.0 * 60.0;
+const LONG_VIDEO_SEGMENT_SECONDS: f64 = 5.0 * 60.0;
+
+fn long_video_segment_count(duration: f64) -> usize {
+    if duration > LONG_VIDEO_THRESHOLD_SECONDS {
+        (duration / LONG_VIDEO_SEGMENT_SECONDS).ceil() as usize
+    } else {
+        1
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +267,32 @@ fn update_progress(
     }
 }
 
+fn completed_worker_download(
+    events: Vec<crate::worker::python::WorkerEvent>,
+) -> Result<(), String> {
+    for event in events {
+        match event {
+            crate::worker::python::WorkerEvent::Result(_) => return Ok(()),
+            crate::worker::python::WorkerEvent::Error(error) => return Err(error.to_string()),
+            crate::worker::python::WorkerEvent::Progress { .. } => {}
+        }
+    }
+    Err(json!({
+        "code": "VIDEO_DOWNLOAD_EMPTY_RESULT",
+        "message": "视频下载器没有返回结果",
+        "retryable": true
+    })
+    .to_string())
+}
+
+fn video_duration_is_complete(actual: f64, expected: Option<f64>) -> bool {
+    let Some(expected) = expected.filter(|value| value.is_finite() && *value > 0.0) else {
+        return actual.is_finite() && actual > 0.0;
+    };
+    let tolerance = (expected * 0.01).max(2.0);
+    actual.is_finite() && actual + tolerance >= expected
+}
+
 async fn resolve_link_video(
     app: &tauri::AppHandle,
     input: &CreateDouyinUnderstandingTaskInput,
@@ -374,6 +419,309 @@ fn link_analysis_prompt(input: &CreateDouyinUnderstandingTaskInput) -> Result<St
     Ok(prompt)
 }
 
+fn long_video_segment_prompt(
+    base_prompt: &str,
+    index: usize,
+    count: usize,
+    start: f64,
+    duration: f64,
+    total_duration: f64,
+) -> String {
+    format!(
+        "{base_prompt}\n\n【长视频分段分析规则（最高优先级，覆盖前文冲突要求）】\n完整原视频时长为 {total_duration:.3} 秒，本文件是第 {current}/{count} 段，覆盖原片 {start:.3}～{end:.3} 秒。只分析本文件中真实存在的内容，不得分析或虚构其他片段。分镜标题的时间轴必须从本片段的 0 秒开始，连续覆盖到 {duration:.3} 秒；不要在标题中叠加原片偏移，客户端会在合并时统一换算为全片时间。仍须输出完整的“一、项目剧情、二、全局角色库、三、全局场景库、四、分镜列表”四个部分。固定秒数模式也只生成覆盖当前片段的分镜。",
+        current = index + 1,
+        end = start + duration,
+    )
+}
+
+#[derive(Default)]
+struct StoryboardSections {
+    project: String,
+    characters: String,
+    scenes: String,
+    shots: String,
+}
+
+fn content_after_heading<'a>(value: &'a str, heading: &str) -> &'a str {
+    value
+        .strip_prefix(heading)
+        .unwrap_or(value)
+        .trim_start_matches(['\r', '\n', ' '])
+}
+
+fn split_storyboard_sections(text: &str) -> Option<StoryboardSections> {
+    let project_index = text.find("一、项目剧情")?;
+    let characters_index = text[project_index..].find("二、全局角色库")? + project_index;
+    let scenes_index = text[characters_index..].find("三、全局场景库")? + characters_index;
+    let shots_index = text[scenes_index..].find("四、分镜列表")? + scenes_index;
+    Some(StoryboardSections {
+        project: content_after_heading(&text[project_index..characters_index], "一、项目剧情")
+            .trim()
+            .to_owned(),
+        characters: content_after_heading(
+            &text[characters_index..scenes_index],
+            "二、全局角色库",
+        )
+        .trim()
+        .to_owned(),
+        scenes: content_after_heading(&text[scenes_index..shots_index], "三、全局场景库")
+            .trim()
+            .to_owned(),
+        shots: content_after_heading(&text[shots_index..], "四、分镜列表")
+            .trim()
+            .to_owned(),
+    })
+}
+
+fn entry_blocks(section: &str, marker: &str) -> Vec<String> {
+    let starts = section
+        .match_indices(marker)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if starts.is_empty() {
+        return if section.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![section.trim().to_owned()]
+        };
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(position, start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(section.len());
+            section[*start..end].trim().to_owned()
+        })
+        .collect()
+}
+
+fn numeric_id_after(value: &str, prefix: &str) -> Option<String> {
+    let start = value.find(prefix)?;
+    let rest = &value[start..];
+    let digits = rest[prefix.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .count();
+    (digits > 0).then(|| rest[..prefix.len() + digits].to_owned())
+}
+
+fn catalog_name(block: &str) -> String {
+    block
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("名称：")
+                .or_else(|| line.trim().strip_prefix("名称:"))
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+fn merge_catalog(
+    section: &str,
+    marker: &str,
+    prefix: &str,
+    known_names: &mut HashMap<String, String>,
+    next_id: &mut usize,
+) -> (Vec<String>, HashMap<String, String>) {
+    let mut kept = Vec::new();
+    let mut mapping = HashMap::new();
+    for block in entry_blocks(section, marker) {
+        let Some(old_id) = numeric_id_after(&block, prefix) else {
+            kept.push(block);
+            continue;
+        };
+        let name = catalog_name(&block);
+        let normalized_name = name.trim().to_lowercase();
+        let (new_id, is_new) = if !normalized_name.is_empty() {
+            if let Some(existing) = known_names.get(&normalized_name) {
+                (existing.clone(), false)
+            } else {
+                let value = format!("{prefix}{:03}", *next_id);
+                *next_id += 1;
+                known_names.insert(normalized_name, value.clone());
+                (value, true)
+            }
+        } else {
+            let value = format!("{prefix}{:03}", *next_id);
+            *next_id += 1;
+            (value, true)
+        };
+        mapping.insert(old_id.clone(), new_id.clone());
+        if is_new {
+            kept.push(block.replace(&old_id, &new_id));
+        }
+    }
+    (kept, mapping)
+}
+
+fn replace_ids(mut value: String, mapping: &HashMap<String, String>) -> String {
+    let mut entries = mapping.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(old, _)| std::cmp::Reverse(old.len()));
+    for (old, new) in entries {
+        value = value.replace(old, new);
+    }
+    value
+}
+
+fn format_time(value: f64) -> String {
+    if (value - value.round()).abs() < 0.001 {
+        format!("{:.0}", value)
+    } else {
+        format!("{value:.3}").trim_end_matches('0').trim_end_matches('.').to_owned()
+    }
+}
+
+fn offset_shot_titles(value: &str, offset: f64, next_shot: &mut usize) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            let Some(open) = trimmed.find('（') else {
+                return line.to_owned();
+            };
+            if !trimmed.starts_with('第') || !trimmed[..open].ends_with('段') {
+                return line.to_owned();
+            }
+            let Some(close_relative) = trimmed[open + '（'.len_utf8()..].find("秒）") else {
+                return line.to_owned();
+            };
+            let close = open + '（'.len_utf8() + close_relative;
+            let range = &trimmed[open + '（'.len_utf8()..close];
+            let Some((start_text, end_text)) = range
+                .split_once('～')
+                .or_else(|| range.split_once('~'))
+                .or_else(|| range.split_once('-'))
+            else {
+                return line.to_owned();
+            };
+            let (Ok(start), Ok(end)) = (
+                start_text.trim().parse::<f64>(),
+                end_text.trim().parse::<f64>(),
+            ) else {
+                return line.to_owned();
+            };
+            let already_global = offset > 0.0 && start >= offset - 0.5;
+            let actual_offset = if already_global { 0.0 } else { offset };
+            let replacement = format!(
+                "第{}段（{}～{}秒）",
+                *next_shot,
+                format_time(start + actual_offset),
+                format_time(end + actual_offset)
+            );
+            *next_shot += 1;
+            replacement
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn story_summary(project: &str) -> String {
+    project
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("故事概要：")
+                .or_else(|| line.trim().strip_prefix("故事概要:"))
+        })
+        .unwrap_or("未单独输出概要，完整内容见本段分镜。")
+        .trim()
+        .to_owned()
+}
+
+fn merge_long_video_results(
+    results: &[crate::ai::VideoUnderstandingResult],
+    segment_durations: &[f64],
+    total_duration: f64,
+    video_name: String,
+    size_bytes: u64,
+) -> Result<crate::ai::VideoUnderstandingResult, String> {
+    if results.is_empty() || results.len() != segment_durations.len() {
+        return Err("长视频分段解析结果不完整，无法合并".to_owned());
+    }
+    let mut first_project = String::new();
+    let mut character_blocks = Vec::new();
+    let mut scene_blocks = Vec::new();
+    let mut shot_blocks = Vec::new();
+    let mut summaries = Vec::new();
+    let mut character_names = HashMap::new();
+    let mut scene_names = HashMap::new();
+    let mut next_character = 1;
+    let mut next_scene = 1;
+    let mut next_shot = 1;
+    let mut offset = 0.0;
+
+    for (index, (result, duration)) in results.iter().zip(segment_durations).enumerate() {
+        let Some(sections) = split_storyboard_sections(&result.text) else {
+            summaries.push(format!(
+                "- 第 {} 段（{}～{}秒）：模型未单独输出分段概要，完整原文已保留在分镜列表中。",
+                index + 1,
+                format_time(offset),
+                format_time((offset + duration).min(total_duration)),
+            ));
+            shot_blocks.push(offset_shot_titles(&result.text, offset, &mut next_shot));
+            offset += duration;
+            continue;
+        };
+        if first_project.is_empty() {
+            first_project = sections.project.clone();
+        }
+        summaries.push(format!(
+            "- 第 {} 段（{}～{}秒）：{}",
+            index + 1,
+            format_time(offset),
+            format_time((offset + duration).min(total_duration)),
+            story_summary(&sections.project)
+        ));
+        let (characters, character_mapping) = merge_catalog(
+            &sections.characters,
+            "【角色 ",
+            "CHAR_",
+            &mut character_names,
+            &mut next_character,
+        );
+        let (scenes, scene_mapping) = merge_catalog(
+            &sections.scenes,
+            "【场景 ",
+            "SCENE_",
+            &mut scene_names,
+            &mut next_scene,
+        );
+        character_blocks.extend(characters);
+        scene_blocks.extend(scenes);
+        let shots = replace_ids(
+            replace_ids(sections.shots, &character_mapping),
+            &scene_mapping,
+        );
+        shot_blocks.push(offset_shot_titles(&shots, offset, &mut next_shot));
+        offset += duration;
+    }
+
+    if first_project.is_empty() {
+        first_project = format!(
+            "标题：{}\n主题：长视频内容解析\n基调：依据原视频\n一句话梗概：完整还原长视频各片段内容\n故事概要：各分段原始解析结果已按完整时间轴合并。",
+            video_name.trim_end_matches(".mp4")
+        );
+    }
+    let text = format!(
+        "一、项目剧情\n{first_project}\n长视频处理：完整视频共 {} 秒，已下载并拆分为 {} 段逐段解析后合并。\n分段剧情概要：\n{}\n\n二、全局角色库\n{}\n\n三、全局场景库\n{}\n\n四、分镜列表\n{}",
+        format_time(total_duration),
+        results.len(),
+        summaries.join("\n"),
+        character_blocks.join("\n\n"),
+        scene_blocks.join("\n\n"),
+        shot_blocks.join("\n\n"),
+    );
+    Ok(crate::ai::VideoUnderstandingResult {
+        text: crate::shot_policy::internalize_storyboard_dialogue_in_visual(&text),
+        model: results[0].model.clone(),
+        upload_mode: "server-upload-segmented".to_owned(),
+        video_name,
+        size_bytes,
+    })
+}
+
 fn spawn_task(app: tauri::AppHandle, task_id: String) {
     tauri::async_runtime::spawn(async move {
         let input_json = open(&app).and_then(|connection| {
@@ -436,6 +784,22 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 0.14,
                 "链接解析完成，正在准备视频理解与分镜生成",
             );
+        }
+        if input
+            .video_info
+            .get("duration")
+            .and_then(Value::as_f64)
+            .is_some_and(|duration| duration > LONG_VIDEO_THRESHOLD_SECONDS)
+        {
+            if !input.long_video_confirmed {
+                finish_failed(
+                    &app,
+                    &task_id,
+                    "已解析到视频超过 5 分钟，需要先由用户确认下载、分段解析和较长等待时间。请重新提交任务。".to_owned(),
+                );
+                return;
+            }
+            input.video_submission_mode = "upload".to_owned();
         }
         let ext = value_text(&input.video_info, "ext").to_ascii_lowercase();
         let prompt = match link_analysis_prompt(&input) {
@@ -530,6 +894,11 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
         let managed = input.managed;
         let browser_cookie_source = input.browser_cookie_source.clone();
         let cookie_file_path = input.cookie_file_path.clone();
+        let resolved_video_info = input.video_info.clone();
+        let expected_download_duration = resolved_video_info
+            .get("duration")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0);
         let profile_root = match app.path().app_data_dir() {
             Ok(path) => path.join("douyin-managed-chrome"),
             Err(error) => {
@@ -546,6 +915,30 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             "详细模式：正在下载真实视频并固化分析副本",
         );
         let download = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            if !value_text(&resolved_video_info, "download_url").is_empty() {
+                if let Ok(events) = crate::worker::python::download_resolved_video(
+                    &resolved_video_info,
+                    &download_target,
+                    cookie_file_path.as_deref(),
+                ) {
+                    if completed_worker_download(events).is_ok() {
+                        let direct_download_is_complete = crate::media_tools::probe_video_metadata(
+                            &download_target,
+                        )
+                        .map(|metadata| {
+                            video_duration_is_complete(
+                                metadata.duration,
+                                expected_download_duration,
+                            )
+                        })
+                        .unwrap_or(false);
+                        if direct_download_is_complete {
+                            return Ok(());
+                        }
+                        let _ = fs::remove_file(&download_target);
+                    }
+                }
+            }
             let events = if managed {
                 crate::worker::python::download_douyin_auto(
                     &share_text,
@@ -560,21 +953,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                     cookie_file_path.as_deref(),
                 )?
             };
-            for event in events {
-                match event {
-                    crate::worker::python::WorkerEvent::Result(_) => return Ok(()),
-                    crate::worker::python::WorkerEvent::Error(error) => {
-                        return Err(error.to_string())
-                    }
-                    crate::worker::python::WorkerEvent::Progress { .. } => {}
-                }
-            }
-            Err(json!({
-                "code": "VIDEO_DOWNLOAD_EMPTY_RESULT",
-                "message": "视频下载器没有返回结果",
-                "retryable": true
-            })
-            .to_string())
+            completed_worker_download(events)
         })
         .await;
         match download {
@@ -596,8 +975,8 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             crate::media_tools::probe_video_metadata(&downloaded_probe_path)
         })
         .await;
-        let downloaded_size = match downloaded_metadata {
-            Ok(Ok(metadata)) => metadata.size_bytes,
+        let downloaded_metadata = match downloaded_metadata {
+            Ok(Ok(metadata)) => metadata,
             Ok(Err(error)) => {
                 let _ = tokio::fs::remove_file(&downloaded_path).await;
                 finish_failed(&app, &task_id, error);
@@ -609,6 +988,197 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 return;
             }
         };
+        let downloaded_size = downloaded_metadata.size_bytes;
+        let actual_duration = downloaded_metadata.duration;
+        let expected_duration = input
+            .video_info
+            .get("duration")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > 0.0);
+        if !video_duration_is_complete(actual_duration, expected_duration) {
+            let _ = tokio::fs::remove_file(&downloaded_path).await;
+            finish_failed(
+                &app,
+                &task_id,
+                json!({
+                    "code": "VIDEO_DOWNLOAD_INCOMPLETE",
+                    "message": format!(
+                        "视频下载不完整：解析时长约 {} 秒，下载文件仅 {} 秒。已停止解析且不会提交不完整视频，请重试当前任务。",
+                        format_time(expected_duration.unwrap_or_default()),
+                        format_time(actual_duration)
+                    ),
+                    "retryable": true
+                })
+                .to_string(),
+            );
+            return;
+        }
+        let segment_count = long_video_segment_count(actual_duration);
+        if segment_count > 1 && !input.long_video_confirmed {
+            let _ = tokio::fs::remove_file(&downloaded_path).await;
+            finish_failed(
+                &app,
+                &task_id,
+                format!(
+                    "下载校验后确认视频真实时长为 {}，超过 5 分钟。请重新提交并确认长视频分段解析与当前扣费模式。",
+                    format_time(actual_duration)
+                ),
+            );
+            return;
+        }
+
+        if segment_count > 1 {
+            let segment_dir = temp_dir.join(format!(
+                "{}-segments",
+                uuid::Uuid::new_v4().simple()
+            ));
+            if let Err(error) = tokio::fs::create_dir_all(&segment_dir).await {
+                let _ = tokio::fs::remove_file(&downloaded_path).await;
+                finish_failed(&app, &task_id, format!("无法创建长视频分段目录：{error}"));
+                return;
+            }
+            let mut segment_results = Vec::with_capacity(segment_count);
+            let mut segment_durations = Vec::with_capacity(segment_count);
+            let mut segment_error = None;
+            for index in 0..segment_count {
+                let start = index as f64 * LONG_VIDEO_SEGMENT_SECONDS;
+                let duration = (actual_duration - start).min(LONG_VIDEO_SEGMENT_SECONDS);
+                let segment_path = segment_dir.join(format!("part-{:03}.mp4", index + 1));
+                update_progress(
+                    &app,
+                    &task_id,
+                    "segmenting",
+                    0.48 + 0.12 * index as f64 / segment_count as f64,
+                    &format!(
+                        "长视频共 {segment_count} 段，正在准备第 {} 段（{}～{}）",
+                        index + 1,
+                        format_time(start),
+                        format_time((start + duration).min(actual_duration))
+                    ),
+                );
+                let compression_source = downloaded_path.clone();
+                let compression_target = segment_path.clone();
+                let prepare = tauri::async_runtime::spawn_blocking(move || {
+                    crate::media_tools::compress_video_segment_for_inline_analysis(
+                        &compression_source,
+                        &compression_target,
+                        start,
+                        duration,
+                        crate::ai::LINGKE_INLINE_TARGET,
+                    )
+                })
+                .await;
+                match prepare {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        segment_error = Some(format!("长视频分段任务异常：{error}"));
+                        break;
+                    }
+                }
+                let validation_path = segment_path.clone();
+                let segment_size = match tauri::async_runtime::spawn_blocking(move || {
+                    crate::media_tools::probe_video_metadata(&validation_path)
+                })
+                .await
+                {
+                    Ok(Ok(metadata)) => metadata.size_bytes,
+                    Ok(Err(error)) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        segment_error = Some(format!("长视频分段有效性检查异常：{error}"));
+                        break;
+                    }
+                };
+                update_progress(
+                    &app,
+                    &task_id,
+                    "segment_analyzing",
+                    0.60 + 0.34 * index as f64 / segment_count as f64,
+                    &format!(
+                        "正在解析长视频第 {} / {} 段，请保持客户端运行且不要中途退出",
+                        index + 1,
+                        segment_count
+                    ),
+                );
+                let segment_prompt = long_video_segment_prompt(
+                    &prompt,
+                    index,
+                    segment_count,
+                    start,
+                    duration,
+                    actual_duration,
+                );
+                let segment_name = format!("{}-第{}段.mp4", video_name, index + 1);
+                let analysis = match (&input.provider_model_id, input.expected_credits) {
+                    (Some(provider_model_id), Some(expected_credits)) => {
+                        crate::platform_video_understanding::understand_uploaded_file_confirmed(
+                            input.platform_api_base_url.as_deref(),
+                            &segment_path,
+                            &segment_prompt,
+                            segment_name,
+                            segment_size,
+                            provider_model_id,
+                            expected_credits,
+                            &format!(
+                                "{task_id}-{execution_key}-segment-{}-of-{segment_count}",
+                                index + 1
+                            ),
+                            Some(crate::platform_video_understanding::VideoUnderstandingBilling {
+                                group_id: &execution_key,
+                                segment_index: index,
+                                segment_count,
+                                expected_mode: &input.extraction_billing_mode,
+                            }),
+                        )
+                        .await
+                    }
+                    _ => Err("长视频分段缺少已确认的模型报价，请重新提交任务，本次没有继续扣分".to_owned()),
+                };
+                let _ = tokio::fs::remove_file(&segment_path).await;
+                match analysis {
+                    Ok(result) => {
+                        segment_results.push(result);
+                        segment_durations.push(duration);
+                    }
+                    Err(error) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let _ = tokio::fs::remove_dir_all(&segment_dir).await;
+            let _ = tokio::fs::remove_file(&downloaded_path).await;
+            let _ = tokio::fs::remove_file(&compressed_path).await;
+            if let Some(error) = segment_error {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            update_progress(
+                &app,
+                &task_id,
+                "merging",
+                0.96,
+                "所有视频片段解析完成，正在合并完整分镜、人物和场景",
+            );
+            match merge_long_video_results(
+                &segment_results,
+                &segment_durations,
+                actual_duration,
+                video_name,
+                downloaded_size,
+            ) {
+                Ok(result) => finish_completed(&app, &task_id, &result),
+                Err(error) => finish_failed(&app, &task_id, error),
+            }
+            return;
+        }
+
         let mut analysis_path = downloaded_path.clone();
         if downloaded_size > crate::ai::LINGKE_INLINE_TARGET {
             update_progress(
@@ -681,6 +1251,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                     provider_model_id,
                     expected_credits,
                     &format!("{task_id}-{execution_key}-detailed"),
+                    None,
                 )
                 .await
             }
@@ -724,10 +1295,23 @@ fn spawn_local_task(app: tauri::AppHandle, task_id: String) {
             }
         };
         let source_path = PathBuf::from(&input.video_path);
-        let metadata = match tokio::fs::metadata(&source_path).await {
-            Ok(value) if value.is_file() && value.len() > 0 => value,
-            _ => {
-                finish_failed(&app, &task_id, "本地视频文件不存在或已经被移动".to_owned());
+        if !source_path.is_file() {
+            finish_failed(&app, &task_id, "本地视频文件不存在或已经被移动".to_owned());
+            return;
+        }
+        let probe_path = source_path.clone();
+        let metadata = match tauri::async_runtime::spawn_blocking(move || {
+            crate::media_tools::probe_video_metadata(&probe_path)
+        })
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            Err(error) => {
+                finish_failed(&app, &task_id, format!("本地视频有效性检查异常：{error}"));
                 return;
             }
         };
@@ -747,8 +1331,195 @@ fn spawn_local_task(app: tauri::AppHandle, task_id: String) {
             finish_failed(&app, &task_id, format!("无法创建视频缓存目录：{error}"));
             return;
         }
-        let compressed_path =
-            temp_dir.join(format!("{}-compressed.mp4", uuid::Uuid::new_v4().simple()));
+
+        update_progress(&app, &task_id, "quoting", 0.06, "正在读取视频理解价格与扣费模式");
+        let api_base = input.platform_api_base_url.as_deref().unwrap_or("");
+        let quote = match crate::platform_media::quote(
+            api_base,
+            None,
+            Some("VIDEO_UNDERSTANDING"),
+            &json!({}),
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+        };
+        let provider_model_id = match quote.get("provider_model_id").and_then(Value::as_str) {
+            Some(value) if !value.trim().is_empty() => value.to_owned(),
+            _ => {
+                finish_failed(&app, &task_id, "视频理解报价缺少模型信息，本次没有扣分".to_owned());
+                return;
+            }
+        };
+        let unit_credits = match quote.get("credits").and_then(Value::as_f64) {
+            Some(value) if value.is_finite() && value >= 0.0 => value,
+            _ => {
+                finish_failed(&app, &task_id, "视频理解报价无效，本次没有扣分".to_owned());
+                return;
+            }
+        };
+        let billing_mode = quote
+            .get("extraction_billing_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("OVERALL")
+            .to_ascii_uppercase();
+        if !matches!(billing_mode.as_str(), "OVERALL" | "PER_SEGMENT") {
+            finish_failed(&app, &task_id, "视频理解扣费模式无效，本次没有扣分".to_owned());
+            return;
+        }
+        let segment_count = long_video_segment_count(metadata.duration);
+        let charge_count = if billing_mode == "PER_SEGMENT" {
+            segment_count
+        } else {
+            1
+        };
+        let mut confirmation_quote = quote.clone();
+        confirmation_quote["credits"] = json!(unit_credits * charge_count as f64);
+        confirmation_quote["unit_credits"] = json!(unit_credits);
+        confirmation_quote["segment_count"] = json!(segment_count);
+        confirmation_quote["charge_count"] = json!(charge_count);
+        let operation = if segment_count > 1 {
+            format!(
+                "本地长视频理解与分镜解析（拆分 {segment_count} 段，{}）",
+                if billing_mode == "PER_SEGMENT" { "分段单独扣费" } else { "整体仅扣一次" }
+            )
+        } else {
+            "本地视频理解与分镜解析".to_owned()
+        };
+        if let Err(error) = crate::credit_confirmation::confirm(&operation, confirmation_quote).await {
+            finish_failed(&app, &task_id, error);
+            return;
+        }
+
+        let execution_key = uuid::Uuid::new_v4().to_string();
+        if segment_count > 1 {
+            let segment_dir = temp_dir.join(format!("{}-segments", uuid::Uuid::new_v4().simple()));
+            if let Err(error) = tokio::fs::create_dir_all(&segment_dir).await {
+                finish_failed(&app, &task_id, format!("无法创建长视频分段目录：{error}"));
+                return;
+            }
+            let mut segment_results = Vec::with_capacity(segment_count);
+            let mut segment_durations = Vec::with_capacity(segment_count);
+            let mut segment_error = None;
+            for index in 0..segment_count {
+                let start = index as f64 * LONG_VIDEO_SEGMENT_SECONDS;
+                let duration = (metadata.duration - start).min(LONG_VIDEO_SEGMENT_SECONDS);
+                let segment_path = segment_dir.join(format!("part-{:03}.mp4", index + 1));
+                update_progress(
+                    &app,
+                    &task_id,
+                    "segmenting",
+                    0.12 + 0.32 * index as f64 / segment_count as f64,
+                    &format!("本地长视频共 {segment_count} 段，正在准备第 {} 段", index + 1),
+                );
+                let compression_source = source_path.clone();
+                let compression_target = segment_path.clone();
+                match tauri::async_runtime::spawn_blocking(move || {
+                    crate::media_tools::compress_video_segment_for_inline_analysis(
+                        &compression_source,
+                        &compression_target,
+                        start,
+                        duration,
+                        crate::ai::LINGKE_INLINE_TARGET,
+                    )
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        segment_error = Some(format!("本地长视频分段任务异常：{error}"));
+                        break;
+                    }
+                }
+                let validation_path = segment_path.clone();
+                let segment_size = match tauri::async_runtime::spawn_blocking(move || {
+                    crate::media_tools::probe_video_metadata(&validation_path)
+                })
+                .await
+                {
+                    Ok(Ok(value)) => value.size_bytes,
+                    Ok(Err(error)) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        segment_error = Some(format!("本地长视频分段校验异常：{error}"));
+                        break;
+                    }
+                };
+                update_progress(
+                    &app,
+                    &task_id,
+                    "segment_analyzing",
+                    0.44 + 0.48 * index as f64 / segment_count as f64,
+                    &format!("正在解析本地长视频第 {} / {} 段", index + 1, segment_count),
+                );
+                let segment_prompt = long_video_segment_prompt(
+                    &input.prompt,
+                    index,
+                    segment_count,
+                    start,
+                    duration,
+                    metadata.duration,
+                );
+                let segment_name = format!("{}-第{}段.mp4", original_name, index + 1);
+                let analysis = crate::platform_video_understanding::understand_uploaded_file_confirmed(
+                    input.platform_api_base_url.as_deref(),
+                    &segment_path,
+                    &segment_prompt,
+                    segment_name,
+                    segment_size,
+                    &provider_model_id,
+                    unit_credits,
+                    &format!("{task_id}-{execution_key}-segment-{}-of-{segment_count}", index + 1),
+                    Some(crate::platform_video_understanding::VideoUnderstandingBilling {
+                        group_id: &execution_key,
+                        segment_index: index,
+                        segment_count,
+                        expected_mode: &billing_mode,
+                    }),
+                )
+                .await;
+                let _ = tokio::fs::remove_file(&segment_path).await;
+                match analysis {
+                    Ok(result) => {
+                        segment_results.push(result);
+                        segment_durations.push(duration);
+                    }
+                    Err(error) => {
+                        segment_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let _ = tokio::fs::remove_dir_all(&segment_dir).await;
+            if let Some(error) = segment_error {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+            update_progress(&app, &task_id, "merging", 0.96, "所有视频片段解析完成，正在合并完整分镜、人物和场景");
+            match merge_long_video_results(
+                &segment_results,
+                &segment_durations,
+                metadata.duration,
+                original_name,
+                metadata.size_bytes,
+            ) {
+                Ok(result) => finish_completed(&app, &task_id, &result),
+                Err(error) => finish_failed(&app, &task_id, error),
+            }
+            return;
+        }
+
+        let compressed_path = temp_dir.join(format!("{}-compressed.mp4", uuid::Uuid::new_v4().simple()));
         update_progress(
             &app,
             &task_id,
@@ -786,29 +1557,21 @@ fn spawn_local_task(app: tauri::AppHandle, task_id: String) {
             0.48,
             "正在上传压缩视频，服务端 AI 随后会理解视频并生成分镜脚本",
         );
-        let analysis = crate::platform_video_understanding::understand_uploaded_file(
+        let analysis = crate::platform_video_understanding::understand_uploaded_file_confirmed(
             input.platform_api_base_url.as_deref(),
             &compressed_path,
             &input.prompt,
             original_name,
-            metadata.len(),
+            metadata.size_bytes,
+            &provider_model_id,
+            unit_credits,
+            &format!("{task_id}-{execution_key}-detailed"),
+            None,
         )
         .await;
         let _ = tokio::fs::remove_file(&compressed_path).await;
         match analysis {
-            Ok(result) => {
-                if let (Ok(connection), Ok(result_json)) =
-                    (open(&app), serde_json::to_string(&result))
-                {
-                    let now = Utc::now().to_rfc3339();
-                    let _ = connection.execute(
-                        "UPDATE douyin_understanding_tasks SET status = 'COMPLETED', stage = 'completed',
-                         progress = 1, message = '视频理解与分镜生成完成', result_json = ?2,
-                         error_json = NULL, updated_at = ?3, finished_at = ?3 WHERE id = ?1",
-                        params![task_id, result_json, now],
-                    );
-                }
-            }
+            Ok(result) => finish_completed(&app, &task_id, &result),
             Err(error) => finish_failed(&app, &task_id, error),
         }
     });
@@ -841,6 +1604,22 @@ pub fn create_douyin_understanding_task(
     if !matches!(input.video_submission_mode.as_str(), "url" | "upload") {
         return Err("视频提交方式无效".to_owned());
     }
+    if let Some(duration) = input
+        .video_info
+        .get("duration")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > LONG_VIDEO_THRESHOLD_SECONDS)
+    {
+        if !input.long_video_confirmed {
+            return Err(format!(
+                "该视频时长为 {:.0} 秒，超过 5 分钟。请确认长视频将下载、分段解析并合并后再开始。",
+                duration
+            ));
+        }
+        if input.video_submission_mode != "upload" {
+            return Err("超过 5 分钟的视频必须使用下载、分段上传解析模式".to_owned());
+        }
+    }
     if input
         .provider_model_id
         .as_deref()
@@ -850,6 +1629,9 @@ pub fn create_douyin_understanding_task(
             .is_none_or(|value| !value.is_finite() || value < 0.0)
     {
         return Err("请先确认本次视频理解所需积分".to_owned());
+    }
+    if !matches!(input.extraction_billing_mode.as_str(), "OVERALL" | "PER_SEGMENT") {
+        return Err("提取剧本扣费模式无效，请重新获取报价".to_owned());
     }
     input.fixed_seconds = normalized_fixed_seconds(&input.mode, input.fixed_seconds)?;
     let connection = open(&app)?;
@@ -1204,7 +1986,11 @@ pub fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_fixed_seconds;
+    use super::{
+        long_video_segment_count, merge_long_video_results, normalized_fixed_seconds,
+        offset_shot_titles, video_duration_is_complete,
+    };
+    use crate::ai::VideoUnderstandingResult;
 
     #[test]
     fn fixed_mode_defaults_to_ten_and_rejects_unsupported_durations() {
@@ -1215,5 +2001,66 @@ mod tests {
             normalized_fixed_seconds("standard", Some(10)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn splits_only_videos_longer_than_five_minutes() {
+        assert_eq!(long_video_segment_count(300.0), 1);
+        assert_eq!(long_video_segment_count(300.1), 2);
+        assert_eq!(long_video_segment_count(11.0 * 60.0 + 43.0), 3);
+    }
+
+    #[test]
+    fn rejects_truncated_downloads_using_the_resolved_duration() {
+        assert!(video_duration_is_complete(703.0, Some(703.448)));
+        assert!(!video_duration_is_complete(360.0, Some(703.448)));
+        assert!(video_duration_is_complete(12.0, None));
+    }
+
+    #[test]
+    fn offsets_local_segment_titles_onto_the_full_video_timeline() {
+        let mut next = 31;
+        let output = offset_shot_titles(
+            "第1段（0～10秒）\n画面：测试\n\n第2段（10～15.5秒）",
+            300.0,
+            &mut next,
+        );
+        assert!(output.contains("第31段（300～310秒）"));
+        assert!(output.contains("第32段（310～315.5秒）"));
+        assert_eq!(next, 33);
+    }
+
+    #[test]
+    fn merges_segment_catalogs_and_shots_without_duplicate_named_characters() {
+        let first = VideoUnderstandingResult {
+            text: "一、项目剧情\n标题：测试\n故事概要：第一段事件\n\n二、全局角色库\n【角色 CHAR_001】\n名称：讲述者\n外貌锁定：测试\n\n三、全局场景库\n【场景 SCENE_001】\n名称：室内\n场景锁定：测试\n\n四、分镜列表\n第1段（0～10秒）\n人物引用：CHAR_001｜讲述者\n场景引用：SCENE_001｜室内\n画面：测试"
+                .to_owned(),
+            model: "test-model".to_owned(),
+            upload_mode: "server-upload".to_owned(),
+            video_name: "part-1.mp4".to_owned(),
+            size_bytes: 1,
+        };
+        let second = VideoUnderstandingResult {
+            text: "一、项目剧情\n标题：测试\n故事概要：第二段事件\n\n二、全局角色库\n【角色 CHAR_001】\n名称：讲述者\n外貌锁定：测试\n\n三、全局场景库\n【场景 SCENE_001】\n名称：室外\n场景锁定：测试\n\n四、分镜列表\n第1段（0～10秒）\n人物引用：CHAR_001｜讲述者\n场景引用：SCENE_001｜室外\n画面：测试"
+                .to_owned(),
+            model: "test-model".to_owned(),
+            upload_mode: "server-upload".to_owned(),
+            video_name: "part-2.mp4".to_owned(),
+            size_bytes: 1,
+        };
+        let merged = merge_long_video_results(
+            &[first, second],
+            &[300.0, 103.0],
+            403.0,
+            "full.mp4".to_owned(),
+            2,
+        )
+        .unwrap();
+        assert_eq!(merged.text.matches("【角色 CHAR_001】").count(), 1);
+        assert!(merged.text.contains("【场景 SCENE_002】"));
+        assert!(merged.text.contains("第2段（300～310秒）"));
+        assert!(merged.text.contains("第一段事件"));
+        assert!(merged.text.contains("第二段事件"));
+        assert_eq!(merged.upload_mode, "server-upload-segmented");
     }
 }

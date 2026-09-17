@@ -48,6 +48,62 @@ pub fn create_project(app: tauri::AppHandle, input: CreateProjectInput) -> Resul
     Ok(bundle)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateCanonicalProjectInput {
+    root_path: String,
+    source_path: Option<String>,
+    source_text: Option<String>,
+    creation_spec: Value,
+    canonical: Value,
+}
+
+fn validate_canonical(value: &Value) -> Result<(), String> {
+    let object = value.as_object().ok_or("规范剧本必须是 JSON 对象")?;
+    if !object.get("story").is_some_and(Value::is_object) {
+        return Err("规范剧本缺少 story 对象".to_owned());
+    }
+    for field in ["characters", "scenes", "sequences", "shots"] {
+        if !object.get(field).is_some_and(Value::is_array) {
+            return Err(format!("规范剧本缺少 {field} 数组"));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_canonical_project(app: tauri::AppHandle, input: CreateCanonicalProjectInput) -> Result<Value, String> {
+    validate_canonical(&input.canonical)?;
+    let mut spec = input.creation_spec;
+    let title = spec.get("project_name").and_then(Value::as_str).unwrap_or("").trim();
+    if title.is_empty() {
+        let extracted = input.canonical.pointer("/story/title").and_then(Value::as_str).unwrap_or("未命名剧本");
+        spec["project_name"] = json!(extracted);
+    }
+    spec["input_type"] = json!("SCRIPT");
+    let duration: f64 = input.canonical.get("shots").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|shot| shot.get("duration").and_then(Value::as_f64)).filter(|value| *value > 0.0).sum();
+    if duration > 0.0 { spec["target_duration"] = json!(duration); }
+    let source_path = input.source_path.filter(|value| !value.trim().is_empty());
+    let source_type = if source_path.is_some() { "SCRIPT_FILE" } else { "SCRIPT_TEXT" };
+    let source_text = input.source_text.or_else(|| Some("规范化剧本数据（由剧本库或标准模板导入）".to_owned()));
+    let bundle = crate::project::manager::create(crate::project::manager::CreateProjectInput {
+        root_path: input.root_path,
+        source_type: source_type.to_owned(),
+        source_text,
+        source_path,
+        creation_spec: spec,
+    })?;
+    let project_id = bundle.pointer("/project/id").and_then(Value::as_str).ok_or("项目缺少 ID")?.to_owned();
+    let project_path = bundle.pointer("/project/project_path").and_then(Value::as_str).ok_or("项目缺少路径")?.to_owned();
+    let mut connection = crate::database::open(&PathBuf::from(&project_path))?;
+    let job_id = crate::jobs::create(&connection, &project_id, "IMPORT_STANDARD_SCRIPT", &json!({"source": "STANDARD_SCRIPT_V1"}))?;
+    crate::database::repository::save_canonical(&mut connection, &project_id, &input.canonical)?;
+    crate::jobs::update(&connection, &job_id, "COMPLETED", 1.0, Some("completed"), Some("规范剧本导入完成"))?;
+    let completed = crate::database::repository::load_bundle(&connection)?;
+    crate::project::registry::register(&app, &completed, false)?;
+    Ok(completed)
+}
+
 #[tauri::command]
 pub async fn list_projects(app: tauri::AppHandle) -> Result<Value, String> {
     crate::background::run("读取项目列表", move || registry::list(&app)).await
@@ -61,6 +117,14 @@ pub async fn list_asset_library(
         database::asset_library::list(&app)
     })
     .await
+}
+
+#[tauri::command]
+pub fn import_asset_library_reference_image(
+    app: tauri::AppHandle,
+    source_path: String,
+) -> Result<database::asset_library::AssetLibraryItem, String> {
+    database::asset_library::import_free_creation_reference(&app, &PathBuf::from(source_path))
 }
 
 #[tauri::command]
@@ -139,6 +203,32 @@ pub fn save_text_file(output_path: String, content: String) -> Result<String, St
     std::fs::write(&path, content.as_bytes())
         .map_err(|error| format!("保存 TXT 文件失败：{error}"))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn save_json_file(output_path: String, content: String) -> Result<String, String> {
+    if content.len() > 10 * 1024 * 1024 { return Err("JSON 内容不能超过 10 MB".into()); }
+    serde_json::from_str::<Value>(&content).map_err(|error| format!("JSON 内容无效：{error}"))?;
+    let path = PathBuf::from(output_path.trim());
+    if !path.is_absolute() || !path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("json")) {
+        return Err("请选择有效的绝对 JSON 保存路径".into());
+    }
+    let parent = path.parent().ok_or("JSON 保存目录无效")?;
+    fs::create_dir_all(parent).map_err(|error| format!("创建保存目录失败：{error}"))?;
+    fs::write(&path, content.as_bytes()).map_err(|error| format!("保存 JSON 失败：{error}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn import_standard_script_file(app: tauri::AppHandle, root_path: String, source_path: String, creation_spec: Value) -> Result<Value, String> {
+    let path = PathBuf::from(source_path.trim());
+    if !path.is_file() || !path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("json")) {
+        return Err("请选择有效的规范剧本 JSON 文件".to_owned());
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("读取规范剧本失败：{error}"))?;
+    if bytes.len() > 10 * 1024 * 1024 { return Err("规范剧本不能超过 10 MB".to_owned()); }
+    let canonical: Value = serde_json::from_slice(&bytes).map_err(|error| format!("规范剧本 JSON 格式错误：{error}"))?;
+    create_canonical_project(app, CreateCanonicalProjectInput { root_path, source_path: Some(path.to_string_lossy().into_owned()), source_text: None, creation_spec, canonical })
 }
 
 #[tauri::command]

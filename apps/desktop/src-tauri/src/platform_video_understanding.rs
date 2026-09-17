@@ -3,6 +3,13 @@ use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
 
 use crate::ai::VideoUnderstandingResult;
+
+pub struct VideoUnderstandingBilling<'a> {
+    pub group_id: &'a str,
+    pub segment_index: usize,
+    pub segment_count: usize,
+    pub expected_mode: &'a str,
+}
 const DEVELOPMENT_API_BASE_URL: &str = "http://localhost:3101/api/v1";
 const PRODUCTION_API_BASE_URL: &str = "https://ai-studio.yuntianxing.net/api/v1";
 fn api_base_url(task_url: Option<&str>) -> Result<String, String> {
@@ -254,6 +261,7 @@ pub async fn understand_uploaded_file_confirmed(
     provider_model_id: &str,
     expected_credits: f64,
     idempotency_key: &str,
+    billing: Option<VideoUnderstandingBilling<'_>>,
 ) -> Result<VideoUnderstandingResult, String> {
     let bytes = tokio::fs::read(path)
         .await
@@ -273,12 +281,19 @@ pub async fn understand_uploaded_file_confirmed(
         .file_name("compressed-video.mp4")
         .mime_str("video/mp4")
         .map_err(|error| format!("无法创建视频上传内容：{error}"))?;
-    let form = multipart::Form::new()
+    let mut form = multipart::Form::new()
         .text("idempotency_key", idempotency_key.to_owned())
         .text("provider_model_id", provider_model_id.to_owned())
         .text("expected_credits", expected_credits.to_string())
-        .text("prompt", crate::ai::video_understanding_prompt(prompt))
-        .part("video", part);
+        .text("prompt", crate::ai::video_understanding_prompt(prompt));
+    if let Some(billing) = billing {
+        form = form
+            .text("billing_group_id", billing.group_id.to_owned())
+            .text("billing_segment_index", billing.segment_index.to_string())
+            .text("billing_segment_count", billing.segment_count.to_string())
+            .text("expected_billing_mode", billing.expected_mode.to_owned());
+    }
+    form = form.part("video", part);
     let response = client
         .post(format!("{base}/tasks/video-understanding/upload"))
         .bearer_auth(token)

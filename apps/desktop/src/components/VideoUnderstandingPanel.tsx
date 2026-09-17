@@ -17,7 +17,7 @@ function formatDuration(seconds: number): string {
   return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
 }
 
-export function VideoUnderstandingPanel({ onRequestModeSelection, onTaskCreated, records }: { onRequestModeSelection: (handler: (selection: StoryboardUnderstandingSelection) => void) => void; onTaskCreated: () => Promise<void>; records?: ReactNode }) {
+export function VideoUnderstandingPanel({ onRequestModeSelection, onTaskCreated, records }: { onRequestModeSelection: (handler: (selection: StoryboardUnderstandingSelection) => void, metadata: LocalVideoMetadata) => void; onTaskCreated: () => Promise<void>; records?: ReactNode }) {
   const { t } = useI18n();
   const [videoPath, setVideoPath] = useState("");
   const [videoMetadata, setVideoMetadata] = useState<LocalVideoMetadata>();
@@ -55,10 +55,10 @@ export function VideoUnderstandingPanel({ onRequestModeSelection, onTaskCreated,
     <label>{t("uploadVideo")}<button className="file-picker video-picker" type="button" onClick={pickVideo}>{probeVideo.isPending ? <LoaderCircle className="spin" size={22} /> : videoPath ? <FileVideo2 size={22} /> : <Upload size={22} />}<span><strong>{videoPath ? videoPath.split(/[\\/]/).pop() : t("selectVideo")}</strong><small>{probeVideo.isPending ? "正在读取完整视频时长与画面尺寸…" : videoMetadata ? `${formatDuration(videoMetadata.duration)} · ${videoMetadata.duration.toFixed(2)}秒 · ${videoMetadata.width}×${videoMetadata.height} · ${videoMetadata.aspect_ratio}` : videoPath || "MP4 / MOV / AVI / WEBM · 提交前自动读取真实时长"}</small></span></button></label>
     {probeVideo.error && <div className="error-banner">视频信息读取失败：{readableError(probeVideo.error)}</div>}
     {createTask.error && <div className="error-banner">{readableError(createTask.error)}</div>}
-    <div className="video-understanding-start-action"><button className="primary-button analyze-button" type="button" onClick={() => onRequestModeSelection((selection) => createTask.mutate(selection))} disabled={createTask.isPending || probeVideo.isPending || !videoPath || !videoMetadata || settings.isLoading}>
+    <div className="video-understanding-start-action"><button className="primary-button analyze-button" type="button" onClick={() => videoMetadata && onRequestModeSelection((selection) => createTask.mutate(selection), videoMetadata)} disabled={createTask.isPending || probeVideo.isPending || !videoPath || !videoMetadata || settings.isLoading}>
       {createTask.isPending ? <><LoaderCircle className="spin" size={18} /> 正在提交任务…</> : <><ScanSearch size={18} /> 开始视频理解</>}
     </button></div>
     {records}
-    <p className="resolver-notice"><Clapperboard size={13} /> 本地视频会先在客户端压缩，再上传到服务端默认视频理解模型；本机压缩临时文件会在提交后自动删除。</p>
+    <p className="resolver-notice"><Clapperboard size={13} /> 本地视频超过 5 分钟时会按每 5 分钟拆分、逐段解析并自动合并；扣费次数以管理后台当前模式为准。本机临时文件会在提交后自动删除。</p>
   </div>;
 }

@@ -5,12 +5,13 @@ import sys
 import tempfile
 import unittest
 from urllib.error import HTTPError
+from unittest.mock import patch
 
 ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ENGINE_ROOT not in sys.path:
     sys.path.insert(0, ENGINE_ROOT)
 
-from inputs.douyin_input import DouyinResolverError, detect_video_platform, download_douyin, extract_douyin_url, probe_douyin_url, resolve_douyin
+from inputs.douyin_input import DouyinResolverError, detect_video_platform, download_direct_video, download_douyin, extract_douyin_url, probe_douyin_url, resolve_douyin
 
 
 class DouyinInputTests(unittest.TestCase):
@@ -217,6 +218,81 @@ class DouyinInputTests(unittest.TestCase):
             self.assertEqual(captured["command"][captured["command"].index("--output") + 1], output_path)
             self.assertEqual(result["saved_path"], output_path)
             self.assertEqual(result["size_bytes"], 11)
+
+    def test_download_reports_empty_data_blocks_as_refreshable_video_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = os.path.join(directory, "video.mp4")
+
+            def runner(*_args, **_kwargs):
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr="ERROR: Did not get any data blocks",
+                )
+
+            with self.assertRaises(DouyinResolverError) as context:
+                download_douyin(
+                    "https://www.douyin.com/video/123",
+                    output_path,
+                    runner=runner,
+                    executable="yt-dlp.exe",
+                )
+
+            self.assertEqual(context.exception.code, "DOUYIN_DOWNLOAD_NO_DATA")
+            self.assertIn("刷新视频地址", str(context.exception))
+
+    @patch("inputs.douyin_input._download_direct_http")
+    def test_direct_download_falls_back_when_ytdlp_gets_no_data_blocks(self, http_download):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = os.path.join(directory, "video.mp4")
+            http_download.return_value = {"saved_path": output_path, "size_bytes": 123}
+
+            def runner(*_args, **_kwargs):
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr="ERROR: Did not get any data blocks",
+                )
+
+            video_info = {
+                "download_url": "https://cdn.test/video.mp4",
+                "webpage_url": "https://www.douyin.com/video/123",
+                "user_agent": "Test Browser",
+            }
+            result = download_direct_video(
+                video_info,
+                output_path,
+                runner=runner,
+                executable="yt-dlp.exe",
+            )
+
+            self.assertEqual(result["size_bytes"], 123)
+            http_download.assert_called_once_with(video_info, output_path, "")
+
+    @patch("inputs.douyin_input._download_direct_http")
+    def test_direct_download_rotates_detail_api_cdn_mirrors(self, http_download):
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = os.path.join(directory, "video.mp4")
+            http_download.side_effect = [
+                DouyinResolverError("DOUYIN_DIRECT_HTTP_DOWNLOAD_FAILED", "empty", retryable=True),
+                {"saved_path": output_path, "size_bytes": 456},
+            ]
+
+            def runner(*_args, **_kwargs):
+                return subprocess.CompletedProcess([], 1, stdout="", stderr="ERROR: Did not get any data blocks")
+
+            video_info = {
+                "download_url": "https://cdn-1.test/video.mp4",
+                "download_urls": ["https://cdn-1.test/video.mp4", "https://cdn-2.test/video.mp4"],
+                "webpage_url": "https://www.douyin.com/video/123",
+            }
+            result = download_direct_video(video_info, output_path, runner=runner, executable="yt-dlp.exe")
+
+            self.assertEqual(result["size_bytes"], 456)
+            self.assertEqual(http_download.call_args_list[0].args[0]["download_url"], "https://cdn-1.test/video.mp4")
+            self.assertEqual(http_download.call_args_list[1].args[0]["download_url"], "https://cdn-2.test/video.mp4")
 
 
 if __name__ == "__main__":

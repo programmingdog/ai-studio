@@ -58,6 +58,71 @@ interface DashboardTrendRow extends RowDataPacket {
   count: number | string | null;
 }
 
+type FinancialMetric = {
+  cash_revenue_fen: number; recognized_revenue_fen: number; model_cost_fen: number;
+  gross_profit_fen: number; commission_fen: number; net_profit_fen: number; payout_fen: number;
+  consumed_credits: number; consumption_count: number; paid_orders: number;
+  unpriced_credits: number; unpriced_records: number;
+};
+
+function emptyFinancialMetric(): FinancialMetric {
+  return { cash_revenue_fen: 0, recognized_revenue_fen: 0, model_cost_fen: 0, gross_profit_fen: 0,
+    commission_fen: 0, net_profit_fen: 0, payout_fen: 0, consumed_credits: 0,
+    consumption_count: 0, paid_orders: 0, unpriced_credits: 0, unpriced_records: 0 };
+}
+
+function finalizeFinancialMetric(value: FinancialMetric): FinancialMetric {
+  return { ...value, gross_profit_fen: value.recognized_revenue_fen - value.model_cost_fen,
+    net_profit_fen: value.recognized_revenue_fen - value.model_cost_fen - value.commission_fen };
+}
+
+function chinaDateKey(now = new Date()): string {
+  return new Date(now.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function dateKeyOffset(dateKey: string, days: number): string {
+  return new Date(`${dateKey}T00:00:00Z`).getTime() + days * 86_400_000 > 0
+    ? new Date(new Date(`${dateKey}T00:00:00Z`).getTime() + days * 86_400_000).toISOString().slice(0, 10) : dateKey;
+}
+
+function mondayKey(dateKey: string): string {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  return dateKeyOffset(dateKey, -((date.getUTCDay() + 6) % 7));
+}
+
+export function buildFinancialReport(rows: Array<Record<string, unknown>>, now = new Date()) {
+  const today = chinaDateKey(now);
+  const weekStart = mondayKey(today);
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const last30Start = dateKeyOffset(today, -29);
+  const normalized = rows.map((row) => finalizeFinancialMetric({
+    ...emptyFinancialMetric(),
+    ...Object.fromEntries(Object.keys(emptyFinancialMetric()).map((key) => [key, numberValue(row[key])])),
+  } as FinancialMetric));
+  const sum = (selected: typeof normalized) => finalizeFinancialMetric(selected.reduce((total, row) => {
+    for (const key of Object.keys(emptyFinancialMetric()) as Array<keyof FinancialMetric>) total[key] += row[key];
+    return total;
+  }, emptyFinancialMetric()));
+  const withDate = normalized.map((item, index) => ({ date: String(rows[index]?.date || ""), ...item }));
+  const period = (start: string) => sum(withDate.filter((row) => row.date >= start && row.date <= today));
+  const group = (keys: string[]) => keys.map((key) => ({ period: key, ...sum(withDate.filter((row) => {
+    if (key.length === 7) return row.date.startsWith(key);
+    return row.date >= key && row.date < dateKeyOffset(key, 7);
+  })) }));
+  const dailyKeys = Array.from({ length: 90 }, (_, index) => dateKeyOffset(today, index - 89));
+  const weeklyKeys = Array.from({ length: 26 }, (_, index) => dateKeyOffset(weekStart, (index - 25) * 7));
+  const currentMonth = new Date(`${monthStart}T00:00:00Z`);
+  const monthlyKeys = Array.from({ length: 12 }, (_, index) => {
+    const date = new Date(Date.UTC(currentMonth.getUTCFullYear(), currentMonth.getUTCMonth() + index - 11, 1));
+    return date.toISOString().slice(0, 7);
+  });
+  const byDate = new Map(withDate.map((row) => [row.date, row]));
+  return {
+    periods: { today: period(today), current_week: period(weekStart), current_month: period(monthStart), last_30_days: period(last30Start), all_time: sum(withDate) },
+    trends: { daily: dailyKeys.map((date) => ({ date, ...(byDate.get(date) || emptyFinancialMetric()) })), weekly: group(weeklyKeys), monthly: group(monthlyKeys) },
+  };
+}
+
 const chinaDayStartSql = "DATE_SUB(DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)), INTERVAL 29 DAY), INTERVAL 8 HOUR)";
 
 function numberValue(value: unknown): number {
@@ -376,6 +441,66 @@ export class AdminService {
     };
   }
 
+  async financials(): Promise<Record<string, unknown>> {
+    const dateExpression = (column: string) => `DATE_FORMAT(DATE_ADD(${column}, INTERVAL 8 HOUR), '%Y-%m-%d')`;
+    const [cashRows, consumptionRows, commissionRows, payoutRows, categoryRows, capabilityRows, liabilityRows] = await Promise.all([
+      this.database.query<RowDataPacket[]>(`
+        SELECT ${dateExpression("COALESCE(paid_at, updated_at)")} date,
+               SUM(COALESCE(payer_paid_amount_fen, amount_fen)) cash_revenue_fen,
+               COUNT(*) paid_orders
+        FROM payment_orders WHERE status='PAID' GROUP BY date ORDER BY date`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT ${dateExpression("occurred_at")} date,
+               SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL THEN ROUND(credits_consumed * revenue_cny_per_credit * 100) ELSE 0 END) recognized_revenue_fen,
+               SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL AND cost_credits IS NOT NULL THEN ROUND(cost_credits * revenue_cny_per_credit * 100) ELSE 0 END) model_cost_fen,
+               SUM(credits_consumed) consumed_credits, COUNT(*) consumption_count,
+               SUM(CASE WHEN revenue_cny_per_credit IS NULL THEN credits_consumed ELSE 0 END) unpriced_credits,
+               SUM(revenue_cny_per_credit IS NULL) unpriced_records
+        FROM credit_consumption_records WHERE status='CONFIRMED' GROUP BY date ORDER BY date`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT ${dateExpression("created_at")} date, SUM(amount_fen) commission_fen
+        FROM commission_records GROUP BY date ORDER BY date`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT ${dateExpression("created_at")} date, SUM(amount_fen) payout_fen
+        FROM manual_payout_records GROUP BY date ORDER BY date`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT category name, COUNT(*) consumption_count, SUM(credits_consumed) consumed_credits,
+               SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL THEN ROUND(credits_consumed * revenue_cny_per_credit * 100) ELSE 0 END) recognized_revenue_fen,
+               SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL AND cost_credits IS NOT NULL THEN ROUND(cost_credits * revenue_cny_per_credit * 100) ELSE 0 END) model_cost_fen,
+               SUM(revenue_cny_per_credit IS NULL) unpriced_records
+        FROM credit_consumption_records WHERE status='CONFIRMED' GROUP BY category ORDER BY recognized_revenue_fen DESC`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT COALESCE(pm.capability, ccr.category) name, COUNT(*) consumption_count, SUM(ccr.credits_consumed) consumed_credits,
+               SUM(CASE WHEN ccr.revenue_cny_per_credit IS NOT NULL THEN ROUND(ccr.credits_consumed * ccr.revenue_cny_per_credit * 100) ELSE 0 END) recognized_revenue_fen,
+               SUM(CASE WHEN ccr.revenue_cny_per_credit IS NOT NULL AND ccr.cost_credits IS NOT NULL THEN ROUND(ccr.cost_credits * ccr.revenue_cny_per_credit * 100) ELSE 0 END) model_cost_fen,
+               SUM(ccr.revenue_cny_per_credit IS NULL) unpriced_records
+        FROM credit_consumption_records ccr LEFT JOIN provider_models pm ON pm.id=ccr.provider_model_id
+        WHERE ccr.status='CONFIRMED' GROUP BY COALESCE(pm.capability, ccr.category) ORDER BY recognized_revenue_fen DESC`),
+      this.database.query<RowDataPacket[]>(`
+        SELECT (SELECT COALESCE(SUM(available_fen),0) FROM commission_wallets) commission_available_fen,
+               (SELECT COALESCE(SUM(frozen_fen),0) FROM commission_wallets) commission_frozen_fen,
+               (SELECT COALESCE(SUM(amount_fen),0) FROM withdrawal_applications WHERE status IN ('PENDING','APPROVED','PROCESSING')) withdrawal_waiting_fen`),
+    ]);
+    const dates = new Map<string, Record<string, unknown>>();
+    for (const source of [cashRows, consumptionRows, commissionRows, payoutRows]) {
+      for (const row of source) {
+        const date = String(row.date);
+        dates.set(date, { ...(dates.get(date) || { date }), ...row, date });
+      }
+    }
+    const report = buildFinancialReport([...dates.values()]);
+    const breakdown = (rows: RowDataPacket[]) => rows.map((row) => {
+      const revenue = numberValue(row.recognized_revenue_fen); const cost = numberValue(row.model_cost_fen);
+      return { name: String(row.name), consumption_count: numberValue(row.consumption_count), consumed_credits: numberValue(row.consumed_credits),
+        recognized_revenue_fen: revenue, model_cost_fen: cost, gross_profit_fen: revenue - cost, unpriced_records: numberValue(row.unpriced_records) };
+    });
+    const liabilities = (liabilityRows[0] || {}) as RowDataPacket;
+    return { ...report, breakdown: { categories: breakdown(categoryRows), capabilities: breakdown(capabilityRows) },
+      liabilities: { commission_available_fen: numberValue(liabilities.commission_available_fen), commission_frozen_fen: numberValue(liabilities.commission_frozen_fen), withdrawal_waiting_fen: numberValue(liabilities.withdrawal_waiting_fen) },
+      accounting_note: "利润采用权责口径：已确认积分消耗收入－模型成本－全部分润；现金收入单列，提现打款仅结算分润负债，不重复扣减利润。",
+      generated_at: new Date().toISOString() };
+  }
+
   async listConfigs(category?: string): Promise<Record<string, unknown>[]> {
     const parameters: unknown[] = [];
     let where = "";
@@ -621,23 +746,25 @@ export class AdminService {
 
   async getScriptAnalysisConfig(): Promise<Record<string, unknown>> {
     const rows = await this.database.query<RowDataPacket[]>(
-      "SELECT prompt, credit_cost, revision, updated_at FROM script_analysis_config WHERE id = 1 LIMIT 1",
+      "SELECT prompt, credit_cost, extraction_billing_mode, revision, updated_at FROM script_analysis_config WHERE id = 1 LIMIT 1",
     );
     if (!rows.length) throw new NotFoundException("剧本提取配置不存在");
     return { ...rows[0], credit_cost: Number(rows[0]!.credit_cost), revision: Number(rows[0]!.revision) };
   }
 
-  async updateScriptAnalysisConfig(adminUserId: string, input: { prompt: string; creditCost: number; revision: number }): Promise<Record<string, unknown>> {
+  async updateScriptAnalysisConfig(adminUserId: string, input: { prompt: string; creditCost: number; extractionBillingMode: string; revision: number }): Promise<Record<string, unknown>> {
     const prompt = input.prompt.trim();
     if (prompt.length < 100 || prompt.length > 100_000) throw new BadRequestException("剧本提取提示词必须为 100～100000 个字符");
     if (!Number.isFinite(input.creditCost) || input.creditCost < 0 || input.creditCost > 1_000_000) throw new BadRequestException("剧本提取积分必须为 0～1000000");
+    const extractionBillingMode = input.extractionBillingMode.toUpperCase();
+    if (!["OVERALL", "PER_SEGMENT"].includes(extractionBillingMode)) throw new BadRequestException("提取剧本扣费模式不正确");
     const result = await this.database.execute(
-      `UPDATE script_analysis_config SET prompt = ?, credit_cost = ?, revision = revision + 1, updated_by = ?
+      `UPDATE script_analysis_config SET prompt = ?, credit_cost = ?, extraction_billing_mode = ?, revision = revision + 1, updated_by = ?
        WHERE id = 1 AND revision = ?`,
-      [prompt, input.creditCost, adminUserId, input.revision],
+      [prompt, input.creditCost, extractionBillingMode, adminUserId, input.revision],
     );
     if (!result.affectedRows) throw new ConflictException("剧本提取配置已被其他管理员修改，请刷新后重试");
-    await this.audit.record({ adminUserId, action: "script_analysis_config.update", entityType: "script_analysis_config", entityId: "1", details: { creditCost: input.creditCost } });
+    await this.audit.record({ adminUserId, action: "script_analysis_config.update", entityType: "script_analysis_config", entityId: "1", details: { creditCost: input.creditCost, extractionBillingMode } });
     return this.getScriptAnalysisConfig();
   }
 

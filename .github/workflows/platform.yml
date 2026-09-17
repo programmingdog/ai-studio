@@ -65,6 +65,7 @@ jobs:
           mkdir -p /tmp/aivs-ci
           printenv | grep -E '^(DB_|JWT_SECRET=|CREDENTIAL_ENCRYPTION_KEY=)' > /tmp/aivs-ci/api.env
           docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/database/migrate.js
+          docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/seed-script-library.js --hot-only
           docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/seed-default-configs.js
           docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/backfill-invite-codes.js
           sudo install -d -m 700 /opt/aivs/shared

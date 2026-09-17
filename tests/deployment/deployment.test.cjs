@@ -12,6 +12,8 @@ test('production runtime includes compiled migrations and seed assets, not local
   assert.match(dockerfile, /COPY apps\/server\/src\/database\/migrations \.\/dist\/database\/migrations/);
   assert.match(dockerfile, /COPY apps\/desktop\/src\/prompts/);
   assert.match(dockerfile, /creative-type-presets\.json/);
+  assert.match(dockerfile, /COPY --chown=node:node 剧本 \/app\/剧本/);
+  assert.match(read('deploy/deploy.sh'), /seed-script-library\.js --hot-only/);
   assert.match(dockerfile, /\.next\/standalone/);
   assert.match(dockerfile, /\.next\/static/);
   assert.match(dockerfile, /NEXT_PUBLIC_API_BASE_URL=\/api\/v1/);

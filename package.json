@@ -20,6 +20,11 @@
     "db:inspect": "npm run db:inspect --workspace @aivs/server",
     "db:migrate": "npm run db:migrate --workspace @aivs/server",
     "db:seed-config": "npm run db:seed-config --workspace @aivs/server",
+    "db:seed-script-library": "npm run db:seed-script-library --workspace @aivs/server",
+    "db:seed-hot-script-library": "npm run db:seed-hot-script-library --workspace @aivs/server",
+    "db:normalize-regular-script-library": "npm run db:normalize-regular-script-library --workspace @aivs/server",
+    "db:validate-regular-script-library": "npm run db:validate-regular-script-library --workspace @aivs/server",
+    "db:validate-hot-script-library": "npm run db:validate-hot-script-library --workspace @aivs/server",
     "db:bootstrap-admin": "npm run db:bootstrap-admin --workspace @aivs/server",
     "test:python": "python -m unittest discover -s python-engine/tests -v"
   },

@@ -9,9 +9,10 @@ import { HealthController } from "./health.controller";
 import { UserAuthModule } from "./user-auth/user-auth.module";
 import { CreditsModule } from "./credits/credits.module";
 import { ModelGatewayModule } from "./gateway/model-gateway.module";
+import { ScriptLibraryModule } from "./script-library/script-library.module";
 
 @Module({
-  imports: [EnvironmentModule, DatabaseModule, CommonModule, AuthModule, UserAuthModule, CreditsModule, ModelGatewayModule, AdminModule, ClientConfigModule],
+  imports: [EnvironmentModule, DatabaseModule, CommonModule, AuthModule, UserAuthModule, CreditsModule, ModelGatewayModule, ScriptLibraryModule, AdminModule, ClientConfigModule],
   controllers: [HealthController],
 })
 export class AppModule {}

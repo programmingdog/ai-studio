@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { ArrowDown, ArrowUp, Check, Clapperboard, Coins, Download, Grid2X2, List, LoaderCircle, Play, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Clapperboard, Coins, Download, Grid2X2, ImagePlus, List, LoaderCircle, Play, Plus, Sparkles, Trash2, X } from "lucide-react";
 import type { AssetLibraryItem, FreeCreationAspectRatio, FreeCreationTask, FreeCreationWorkspace, VisualStylePreset } from "@aivs/schemas";
-import { composeFreeCreationVideos, createFreeCreationVideo, ensureFreeCreationWorkspace, listAssetLibrary, listFreeCreationTasks, saveGenerationRecordAsset } from "../services/backend";
+import { chooseFreeCreationReferenceImage, composeFreeCreationVideos, createFreeCreationVideo, ensureFreeCreationWorkspace, importAssetLibraryReferenceImage, listAssetLibrary, listFreeCreationTasks, saveGenerationRecordAsset } from "../services/backend";
 import { getCreditBalance, getMediaCreditQuote, listMediaModels, listVisualStyles, platformApiBaseUrl } from "../services/platform";
 import { creditText } from "../services/creditCopy";
 import { workflowErrorMessage } from "../services/workflowState";
@@ -26,7 +26,7 @@ const assetTabLabels: Record<AssetTab, string> = { all: "全部", scene: "场景
 const tokenForAsset = (asset: AssetLibraryItem, duplicates: Map<string, number>) => `@${asset.name}${(duplicates.get(asset.name) ?? 0) > 1 ? `（${assetTabLabels[asset.asset_type]}·${asset.id.slice(-4)}）` : ""}`;
 const errorText = (error: unknown) => workflowErrorMessage(error);
 
-function FreePromptEditor({ value, onChange, assets, projectPath }: { value: string; onChange: (value: string) => void; assets: AssetLibraryItem[]; projectPath: string }) {
+function FreePromptEditor({ value, onChange, assets, projectPath, maxReferences, selectedAssetIds }: { value: string; onChange: (value: string) => void; assets: AssetLibraryItem[]; projectPath: string; maxReferences?: number; selectedAssetIds: Set<string> }) {
   const duplicates = useMemo(() => assets.reduce((map, asset) => map.set(asset.name, (map.get(asset.name) ?? 0) + 1), new Map<string, number>()), [assets]);
   const items = useMemo<VisualMentionItem[]>(() => assets.map((asset) => ({
     id: asset.id,
@@ -36,7 +36,8 @@ function FreePromptEditor({ value, onChange, assets, projectPath }: { value: str
     relativePath: asset.image_path,
     imageSource: convertFileSrc(asset.image_path),
     group: asset.asset_type,
-  })), [assets, duplicates]);
+    disabled: maxReferences !== undefined && selectedAssetIds.size >= maxReferences && !selectedAssetIds.has(asset.id),
+  })), [assets, duplicates, maxReferences, selectedAssetIds]);
   return <div className="free-prompt-editor">
     <VisualMentionEditor value={value} onChange={onChange} items={items} projectPath={projectPath} rich picker="asset-modal" placeholder="描述想生成的视频；输入 @ 调用资产库中的图片" ariaLabel="自由创作视频提示词" />
     <VideoContentReviewTip />
@@ -110,6 +111,8 @@ export function FreeCreationPage() {
   const [showCompose, setShowCompose] = useState(false);
   const [savingTaskId, setSavingTaskId] = useState("");
   const [taskSaveResult, setTaskSaveResult] = useState<{ taskId: string; message: string; error: boolean }>();
+  const [importingReference, setImportingReference] = useState(false);
+  const [referenceError, setReferenceError] = useState("");
   const model = models.data?.find((item) => item.id === modelId);
   const style = styles.data?.find((item) => item.id === styleId);
   const aspectRatioOptions = model?.aspect_ratio_options?.length ? model.aspect_ratio_options : fallbackAspectRatios;
@@ -118,11 +121,42 @@ export function FreeCreationPage() {
   const quote = useQuery({ queryKey: ["free-creation-quote", modelId, resolution, duration], queryFn: () => getMediaCreditQuote(modelId, resolution, duration), enabled: Boolean(modelId && resolution && duration >= 1 && duration <= 60), retry: false });
   const nameCounts = useMemo(() => (assets.data ?? []).reduce((map, asset) => map.set(asset.name, (map.get(asset.name) ?? 0) + 1), new Map<string, number>()), [assets.data]);
   const selectedAssets = (assets.data ?? []).filter((asset) => prompt.includes(tokenForAsset(asset, nameCounts)));
+  const selectedAssetIds = new Set(selectedAssets.map((asset) => asset.id));
+  const maxReferences = model?.max_reference_images ?? 0;
   const tooManyReferences = Boolean(model && selectedAssets.length > model.max_reference_images);
+  const removeReference = (asset: AssetLibraryItem) => {
+    const token = tokenForAsset(asset, nameCounts);
+    setPrompt((current) => current.split(token).join("").replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim());
+    setReferenceError("");
+  };
+  const addReference = async () => {
+    if (!model || importingReference) return;
+    if (selectedAssets.length >= maxReferences) {
+      setReferenceError(maxReferences > 0 ? `当前模型最多支持 ${maxReferences} 张参考图。` : "当前模型不支持参考图。");
+      return;
+    }
+    setImportingReference(true);
+    setReferenceError("");
+    try {
+      const sourcePath = await chooseFreeCreationReferenceImage();
+      if (!sourcePath) return;
+      const imported = await importAssetLibraryReferenceImage(sourcePath);
+      const currentAssets = queryClient.getQueryData<AssetLibraryItem[]>(["asset-library"]) ?? assets.data ?? [];
+      const mergedAssets = currentAssets.some((asset) => asset.id === imported.id) ? currentAssets : [imported, ...currentAssets];
+      queryClient.setQueryData<AssetLibraryItem[]>(["asset-library"], mergedAssets);
+      const mergedCounts = mergedAssets.reduce((map, asset) => map.set(asset.name, (map.get(asset.name) ?? 0) + 1), new Map<string, number>());
+      const token = tokenForAsset(imported, mergedCounts);
+      setPrompt((current) => current.includes(token) ? current : `${current.trimEnd()}${current.trim() ? " " : ""}${token}`);
+    } catch (error) {
+      setReferenceError(errorText(error));
+    } finally {
+      setImportingReference(false);
+    }
+  };
   const resetForm = () => {
     const first = models.data?.[0];
     const firstRatios = first?.aspect_ratio_options?.length ? first.aspect_ratio_options : fallbackAspectRatios;
-    setPrompt(""); setStyleId(""); setAspectRatio(firstRatios.includes("9:16") ? "9:16" : firstRatios[0]!);
+    setPrompt(""); setReferenceError(""); setStyleId(""); setAspectRatio(firstRatios.includes("9:16") ? "9:16" : firstRatios[0]!);
     setModelId(first?.id ?? ""); setResolution(first?.resolution_prices[0]?.resolution ?? ""); setDuration(first?.video_duration_options?.[0] ?? 10);
   };
   const create = useMutation({
@@ -158,7 +192,9 @@ export function FreeCreationPage() {
   const ready = Boolean(workspace.data && model && resolution && duration >= 1 && duration <= 60 && prompt.trim().length >= 10 && quote.data && !quote.isFetching && !quote.error && !tooManyReferences);
   const taskRows = tasks.data ?? [];
   return <div className="free-creation-page">
-    <section className="free-creation-form"><header><span className="section-label">FREE CREATION</span><h1>自由创作</h1><p>描述画面、选择生成参数后即可提交；任务会在后台并发执行。</p></header><label>视频提示词<FreePromptEditor value={prompt} onChange={setPrompt} assets={assets.data ?? []} projectPath={workspace.data?.project_path ?? ""} /></label>
+    <section className="free-creation-form"><header><span className="section-label">FREE CREATION</span><h1>自由创作</h1><p>描述画面、选择生成参数后即可提交；任务会在后台并发执行。</p></header>
+      <section className="free-reference-picker" aria-label="参考图选择"><header><div><strong>参考图</strong><span>{model ? `${selectedAssets.length} / ${maxReferences}` : "请先选择模型"}</span></div><small>新图片会自动查重并存入资产库，也可在提示词中输入 @ 选择。</small></header><div className="free-reference-grid">{selectedAssets.map((asset) => <article className="free-reference-tile" key={asset.id}><img src={convertFileSrc(asset.image_path)} alt={asset.name} /><span title={asset.name}>{asset.name}</span><button type="button" aria-label={`移除参考图：${asset.name}`} title="移除参考图" onClick={() => removeReference(asset)}><X size={13} /></button></article>)}<button className="free-reference-add" type="button" disabled={!model || importingReference || selectedAssets.length >= maxReferences} onClick={() => void addReference()} aria-label="添加新的参考图" title={!model ? "请先选择视频大模型" : selectedAssets.length >= maxReferences ? `当前模型最多支持 ${maxReferences} 张参考图` : "选择新图片并加入资产库"}>{importingReference ? <LoaderCircle className="spin" size={23} /> : <Plus size={25} />}<span>{importingReference ? "入库中" : "添加"}</span></button></div>{maxReferences === 0 && model && <p><ImagePlus size={14} />当前模型不支持参考图，请切换支持参考图的视频大模型。</p>}{referenceError && <p className="error"><ImagePlus size={14} />{referenceError}</p>}</section>
+      <label>视频提示词<FreePromptEditor value={prompt} onChange={setPrompt} assets={assets.data ?? []} projectPath={workspace.data?.project_path ?? ""} maxReferences={model?.max_reference_images} selectedAssetIds={selectedAssetIds} /></label>
       <div className="free-creation-fields"><label>视频大模型<select value={modelId} onChange={(event) => { const next = models.data?.find((item) => item.id === event.target.value); const nextRatios = next?.aspect_ratio_options?.length ? next.aspect_ratio_options : fallbackAspectRatios; setModelId(event.target.value); setResolution(next?.resolution_prices[0]?.resolution ?? ""); setDuration(next?.video_duration_options?.[0] ?? 10); setAspectRatio((current) => nextRatios.includes(current) ? current : nextRatios[0]!); }}><option value="">请选择</option>{models.data?.map((item) => <option key={item.id} value={item.id}>{item.model_alias}{item.recommended ? "（推荐）" : ""}</option>)}</select></label><label>时长{durationOptions.length ? <select value={duration} onChange={(event) => setDuration(Number(event.target.value))}>{durationOptions.map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}</select> : <span className="unit-input"><input type="number" min={1} max={60} step={1} value={duration} onChange={(event) => setDuration(Number(event.target.value))} /><span>秒</span></span>}</label><label>分辨率<select value={resolution} onChange={(event) => setResolution(event.target.value)}>{model?.resolution_prices.map((item) => <option key={item.resolution} value={item.resolution}>{item.label || item.resolution.toUpperCase()}</option>)}</select></label><label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as FreeCreationAspectRatio)}>{aspectRatioOptions.map((ratio) => <option key={ratio} value={ratio}>{aspectRatioLabels[ratio] ?? ratio}</option>)}</select></label><label className="free-style-field">画风<select value={styleId} onChange={(event) => setStyleId(event.target.value)}><option value="">默认画风</option>{Array.from(new Set(styles.data?.map((item) => item.category) ?? [])).flatMap((category) => [<option disabled key={`group-${category}`}>{category}</option>, ...(styles.data ?? []).filter((item) => item.category === category).map((item: VisualStylePreset) => <option key={item.id} value={item.id}>　{item.name}</option>)])}</select></label></div>
       {tooManyReferences && <p className="error-banner">当前模型最多支持 {model?.max_reference_images} 张参考图，请从提示词中移除多余的 @ 图片。</p>}
       <div className="free-credit-total"><span><Coins size={20} />本次预计消耗</span><strong>{quote.isFetching ? "计算中…" : quote.data ? `${creditText(quote.data.credits)} 积分` : "—"}</strong></div>{quote.error && <p className="error-banner">{errorText(quote.error)}</p>}{create.error && !confirming && <p className="error-banner">{errorText(create.error)}</p>}

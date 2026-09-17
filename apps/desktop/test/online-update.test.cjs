@@ -36,7 +36,8 @@ test("renamed NSIS installer migrates legacy installations without deleting user
   assert.match(hooks, /uninstall\.exe\" \/UPDATE \/P/);
   assert.match(hooks, /DeleteRegKey SHCTX "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\$LegacyProductName"/);
   assert.doesNotMatch(hooks, /APPDATA|LOCALAPPDATA|AI Video Studio Projects/);
-  assert.match(app, /C:\\\\AI Video Studio Projects/);
+  assert.doesNotMatch(app, /C:\\\\AI Video Studio Projects/);
+  assert.match(app, /localAiSettings\.data\?\.project_directory/);
   assert.match(registry, /C:\\AI Video Studio Projects/);
   assert.match(session, /AI Video Studio Platform Session/);
 });

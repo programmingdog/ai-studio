@@ -119,7 +119,12 @@ pub fn list_unfinished_videos(connection: &Connection) -> Result<Vec<GenerationR
         .prepare(&format!(
             "SELECT {COLUMNS} FROM generation_records WHERE media_type = 'video'
          AND (status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
-           OR (status = 'FAILED' AND (error_json LIKE '%PLATFORM_LOGIN_REQUIRED%' OR error_json LIKE '%登录已过期%')))
+           OR (status = 'FAILED' AND (
+             error_json LIKE '%PLATFORM_LOGIN_REQUIRED%'
+             OR error_json LIKE '%登录已过期%'
+             OR error_json LIKE '%PLATFORM_TASK_RECOVERY_PENDING%'
+             OR error_json LIKE '%暂时查不到已提交任务的结果%'
+           )))
          ORDER BY created_at"
         ))
         .map_err(|error| error.to_string())?;
@@ -214,6 +219,26 @@ pub fn mark_auth_required(
                 now,
                 id
             ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn mark_recovery_pending(
+    connection: &Connection,
+    id: &str,
+    message: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let error_value = serde_json::from_str::<Value>(message).unwrap_or_else(
+        |_| json!({"code":"PLATFORM_TASK_RECOVERY_PENDING","message":message,"retryable":true}),
+    );
+    connection
+        .execute(
+            "UPDATE generation_records SET status = ?1, progress = MAX(progress, .2),
+         error_json = ?2, updated_at = ?3, finished_at = NULL
+         WHERE id = ?4 AND status != 'CANCELLED'",
+            params![STATUS_REMOTE_PROCESSING, error_value.to_string(), now, id],
         )
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -714,5 +739,45 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.id == record.id));
+    }
+
+    #[test]
+    fn uncertain_submitted_video_remains_resumable_including_legacy_error() {
+        let connection = database();
+        let record = create(
+            &connection,
+            NewGenerationRecord {
+                project_id: "P_TEST",
+                media_type: "video",
+                target_type: "shot",
+                target_id: "A-001",
+                base_url: "https://example.com",
+                model: "video-model",
+                protocol: "platform",
+                prompt: "测试视频提示词",
+                aspect_ratio: "9:16",
+            },
+        )
+        .unwrap();
+        fail(
+            &connection,
+            &record.id,
+            "暂时查不到已提交任务的结果，自动制作已停止，不会重新提交或重复扣分。",
+        )
+        .unwrap();
+        assert!(list_unfinished_videos(&connection)
+            .unwrap()
+            .iter()
+            .any(|item| item.id == record.id));
+
+        mark_recovery_pending(
+            &connection,
+            &record.id,
+            r#"{"code":"PLATFORM_TASK_RECOVERY_PENDING","message":"继续恢复"}"#,
+        )
+        .unwrap();
+        let waiting = get(&connection, &record.id).unwrap().unwrap();
+        assert_eq!(waiting.status, STATUS_REMOTE_PROCESSING);
+        assert_eq!(waiting.finished_at, None);
     }
 }

@@ -12,7 +12,7 @@ export type PendingCredit = { id: string; operation: string; quote: ModelCreditQ
 export function ModelCreditNotice({ capability, action = capability === "VIDEO_UNDERSTANDING" ? "视频解析" : "内容生成" }: { capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING"; action?: string }) {
   const quote = useQuery({ queryKey: ["model-credit-quote", capability], queryFn: () => getModelCreditQuote(capability), staleTime: 30_000, retry: false });
   return <p className="credit-operation-notice"><Coins size={16} /><span>{quote.data
-    ? creditNotice(action, quote.data.credits)
+    ? `${creditNotice(action, quote.data.credits)}${capability === "VIDEO_UNDERSTANDING" ? quote.data.extraction_billing_mode === "PER_SEGMENT" ? " 长视频按分段次数分别扣费。" : " 长视频默认整体只扣 1 次。" : ""}`
     : quote.isLoading ? "正在查看需要多少积分…" : "暂时查不到所需积分，请稍后再试。现在不会扣分。"}</span></p>;
 }
 

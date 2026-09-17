@@ -115,6 +115,114 @@ pub fn list(app: &AppHandle) -> Result<Vec<AssetLibraryItem>, String> {
         .map_err(|error| error.to_string())
 }
 
+fn imported_image_extension(bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Ok("png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Ok("jpg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Ok("webp")
+    } else {
+        Err("仅支持 PNG、JPG/JPEG 或 WebP 图片".to_owned())
+    }
+}
+
+fn same_image_content(path: &Path, expected: &[u8]) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.len() == expected.len() as u64)
+        && fs::read(path).is_ok_and(|bytes| bytes == expected)
+}
+
+fn unique_import_name(connection: &Connection, source: &Path) -> Result<String, String> {
+    let base = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("参考图")
+        .chars()
+        .take(80)
+        .collect::<String>();
+    let mut name = base.clone();
+    let mut suffix = 2;
+    loop {
+        let exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM asset_library WHERE name = ?1)",
+                [&name],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            return Ok(name);
+        }
+        name = format!("{base}（{suffix}）");
+        suffix += 1;
+    }
+}
+
+pub fn import_free_creation_reference(
+    app: &AppHandle,
+    source_path: &Path,
+) -> Result<AssetLibraryItem, String> {
+    let source = fs::canonicalize(source_path)
+        .map_err(|error| format!("无法读取所选图片：{error}"))?;
+    if !source.is_file() {
+        return Err("所选路径不是有效图片文件".to_owned());
+    }
+    let bytes = fs::read(&source).map_err(|error| format!("读取所选图片失败：{error}"))?;
+    if bytes.is_empty() || bytes.len() > 40 * 1024 * 1024 {
+        return Err("图片为空或超过 40MB".to_owned());
+    }
+    let extension = imported_image_extension(&bytes)?;
+    let connection = open(app)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, asset_type, name, prompt, image_path, source_project_id,
+                    source_project_path, source_target_type, source_target_id, created_at, updated_at
+             FROM asset_library",
+        )
+        .map_err(|error| error.to_string())?;
+    let existing = statement
+        .query_map([], row_item)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .find(|asset| same_image_content(Path::new(&asset.image_path), &bytes));
+    drop(statement);
+    if let Some(asset) = existing {
+        return Ok(asset);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let name = unique_import_name(&connection, &source)?;
+    let destination_dir = library_root(app)?.join("images").join("prop");
+    fs::create_dir_all(&destination_dir)
+        .map_err(|error| format!("创建资产图片目录失败：{error}"))?;
+    let destination = destination_dir.join(format!("{id}.{extension}"));
+    fs::write(&destination, &bytes)
+        .map_err(|error| format!("复制图片到资产库失败：{error}"))?;
+    let now = Utc::now().to_rfc3339();
+    let source_key = format!("free-creation-reference:{id}");
+    if let Err(error) = connection.execute(
+        "INSERT INTO asset_library(id, asset_type, name, prompt, image_path, source_key,
+          source_project_id, source_project_path, source_target_type, source_target_id, created_at, updated_at)
+         VALUES (?1, 'prop', ?2, '自由创作参考图', ?3, ?4, NULL, NULL, 'free_creation_reference', NULL, ?5, ?5)",
+        params![id, name, destination.to_string_lossy(), source_key, now],
+    ) {
+        let _ = fs::remove_file(&destination);
+        return Err(format!("写入资产库记录失败：{error}"));
+    }
+    connection
+        .query_row(
+            "SELECT id, asset_type, name, prompt, image_path, source_project_id,
+                    source_project_path, source_target_type, source_target_id, created_at, updated_at
+             FROM asset_library WHERE id = ?1",
+            [&id],
+            row_item,
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn target_details(
     project_root: &Path,
     target_type: &str,
@@ -584,7 +692,7 @@ pub fn sync_registered_projects(app: &AppHandle) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_from_library, legacy_target, migrate, open_library, Connection};
+    use super::{delete_from_library, imported_image_extension, legacy_target, migrate, open_library, same_image_content, Connection};
     use rusqlite::params;
     use std::{fs, path::Path};
 
@@ -632,6 +740,20 @@ mod tests {
                 "CHAR_002_STATE_001".to_owned()
             ))
         );
+    }
+
+    #[test]
+    fn imported_reference_images_are_validated_and_compared_by_content() {
+        assert_eq!(imported_image_extension(b"\x89PNG\r\n\x1a\npixels"), Ok("png"));
+        assert_eq!(imported_image_extension(b"\xff\xd8\xffpixels"), Ok("jpg"));
+        assert_eq!(imported_image_extension(b"RIFF0000WEBPpixels"), Ok("webp"));
+        assert!(imported_image_extension(b"not-an-image").is_err());
+
+        let path = std::env::temp_dir().join(format!("aivs-reference-content-{}", uuid::Uuid::new_v4()));
+        fs::write(&path, b"same-image-bytes").unwrap();
+        assert!(same_image_content(&path, b"same-image-bytes"));
+        assert!(!same_image_content(&path, b"different-image-bytes"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

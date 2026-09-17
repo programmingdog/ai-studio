@@ -85,7 +85,7 @@ pub fn create(input: CreateProjectInput) -> Result<Value, String> {
             .and_then(|value| value.to_str())
             .unwrap_or("txt")
             .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "txt" | "md" | "docx" | "pdf") {
+        if !matches!(extension.as_str(), "txt" | "md" | "docx" | "pdf" | "json") {
             return Err(format!("unsupported script extension: .{extension}"));
         }
         let relative = format!("source/original.{extension}");

@@ -280,6 +280,12 @@ def download_douyin(
             if cookie_path:
                 raise DouyinResolverError("DOUYIN_COOKIE_FILE_STALE", "Cookie 已失效，请重新登录后下载", retryable=True)
             raise DouyinResolverError("DOUYIN_BROWSER_COOKIES_STALE", "Cookie 已失效，请重新登录后下载", retryable=True)
+        if "did not get any data blocks" in detail.lower():
+            raise DouyinResolverError(
+                "DOUYIN_DOWNLOAD_NO_DATA",
+                "视频平台的下载节点没有继续返回数据，需要刷新视频地址后重试。",
+                retryable=True,
+            )
         raise DouyinResolverError("DOUYIN_DOWNLOAD_FAILED", detail or "视频下载失败", retryable=True)
     if not os.path.isfile(destination):
         raise DouyinResolverError("DOUYIN_DOWNLOAD_FILE_MISSING", "下载已结束，但没有找到保存的视频文件", retryable=True)
@@ -293,9 +299,27 @@ def download_direct_video(
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     executable: Optional[str] = None,
 ) -> Dict[str, Any]:
-    download_url = str(video_info.get("download_url") or "").strip()
-    if not download_url.startswith(("http://", "https://")):
+    download_urls: List[str] = []
+    for value in [video_info.get("download_url"), *(video_info.get("download_urls") or [])]:
+        url = str(value or "").strip()
+        if url.startswith(("http://", "https://")) and url not in download_urls:
+            download_urls.append(url)
+    if not download_urls:
         raise DouyinResolverError("DOUYIN_DIRECT_URL_MISSING", "浏览器页面没有返回可下载的视频地址", retryable=True)
+    valid_download_urls = []
+    for download_url in download_urls:
+        try:
+            media_path = urlparse(download_url).path.lower()
+        except ValueError:
+            continue
+        if not media_path.endswith((".gif", ".jpg", ".jpeg", ".png", ".webp", ".svg", ".ico")):
+            valid_download_urls.append(download_url)
+    if not valid_download_urls:
+        raise DouyinResolverError(
+            "DOUYIN_DIRECT_URL_INVALID",
+            "浏览器返回的是图片或统计资源，不是可下载的视频地址，正在重新解析。",
+            retryable=True,
+        )
     requested_destination = str(output_path or "").strip()
     if not requested_destination:
         raise DouyinResolverError("DOUYIN_DOWNLOAD_PATH_REQUIRED", "请选择视频保存位置")
@@ -309,35 +333,187 @@ def download_direct_video(
     yt_dlp = executable or find_yt_dlp()
     if not yt_dlp:
         raise DouyinResolverError("DOUYIN_RESOLVER_NOT_INSTALLED", "未找到 yt-dlp，无法下载视频")
-    command = [
-        yt_dlp,
-        "--no-warnings",
-        "--no-progress",
-        "--force-overwrites",
-        "--socket-timeout", "20",
-        "--retries", "2",
-        "--output", destination,
-    ]
-    if cookie_path:
-        command.extend(["--cookies", cookie_path])
     webpage_url = str(video_info.get("webpage_url") or "").strip()
-    if webpage_url:
-        command.extend(["--referer", webpage_url])
     user_agent = str(video_info.get("user_agent") or "").strip()
-    if user_agent:
-        command.extend(["--user-agent", user_agent])
-    command.append(download_url)
+    errors: List[str] = []
+    for index, download_url in enumerate(valid_download_urls):
+        candidate_info = dict(video_info)
+        candidate_info["download_url"] = download_url
+        command = [
+            yt_dlp,
+            "--no-warnings",
+            "--no-progress",
+            "--force-overwrites",
+            "--socket-timeout", "20",
+            "--retries", "2",
+            "--output", destination,
+        ]
+        if cookie_path:
+            command.extend(["--cookies", cookie_path])
+        if webpage_url:
+            command.extend(["--referer", webpage_url])
+        if user_agent:
+            command.extend(["--user-agent", user_agent])
+        command.append(download_url)
+        try:
+            completed = runner(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=1800,
+                check=False,
+            )
+            yt_dlp_error = _last_error(completed.stderr) or "浏览器视频地址下载失败"
+        except subprocess.TimeoutExpired:
+            completed = None
+            yt_dlp_error = "视频下载超时"
+        except OSError as exc:
+            completed = None
+            yt_dlp_error = "无法启动视频下载：{0}".format(exc)
+        if completed is not None and completed.returncode == 0 and os.path.isfile(destination) and os.path.getsize(destination) > 0:
+            return {"saved_path": destination, "size_bytes": os.path.getsize(destination)}
+        try:
+            if os.path.isfile(destination):
+                os.remove(destination)
+        except OSError:
+            pass
+        try:
+            return _download_direct_http(candidate_info, destination, cookie_path)
+        except DouyinResolverError as http_error:
+            errors.append("节点 {0}: {1}；HTTP: {2}".format(index + 1, yt_dlp_error, http_error))
+    raise DouyinResolverError(
+        "DOUYIN_DIRECT_DOWNLOAD_FAILED",
+        "多个真实视频节点均下载失败：{0}".format(" | ".join(errors[-3:])),
+        retryable=True,
+    )
+
+
+def _cookie_header(cookie_file_path: str, target_url: str) -> str:
+    if not cookie_file_path:
+        return ""
+    parsed = urlparse(target_url)
+    host = (parsed.hostname or "").lower()
+    request_path = parsed.path or "/"
+    secure = parsed.scheme.lower() == "https"
+    cookies: List[str] = []
     try:
-        completed = runner(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800, check=False)
-    except subprocess.TimeoutExpired:
-        raise DouyinResolverError("DOUYIN_DOWNLOAD_TIMEOUT", "视频下载超时，请检查网络后重试", retryable=True)
-    except OSError as exc:
-        raise DouyinResolverError("DOUYIN_DOWNLOAD_START_FAILED", "无法启动视频下载：{0}".format(exc), retryable=True)
-    if completed.returncode != 0:
-        raise DouyinResolverError("DOUYIN_DIRECT_DOWNLOAD_FAILED", _last_error(completed.stderr) or "浏览器视频地址下载失败", retryable=True)
-    if not os.path.isfile(destination):
-        raise DouyinResolverError("DOUYIN_DOWNLOAD_FILE_MISSING", "下载已结束，但没有找到保存的视频文件", retryable=True)
-    return {"saved_path": destination, "size_bytes": os.path.getsize(destination)}
+        with open(cookie_file_path, "r", encoding="utf-8", errors="replace") as cookie_file:
+            for raw_line in cookie_file:
+                line = raw_line.strip()
+                if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+                    continue
+                if line.startswith("#HttpOnly_"):
+                    line = line[len("#HttpOnly_"):]
+                fields = line.split("\t")
+                if len(fields) < 7:
+                    continue
+                domain, _, cookie_path, secure_flag, _, name, value = fields[:7]
+                normalized_domain = domain.lstrip(".").lower()
+                if not host or not (host == normalized_domain or host.endswith("." + normalized_domain)):
+                    continue
+                if cookie_path and not request_path.startswith(cookie_path):
+                    continue
+                if secure_flag.upper() == "TRUE" and not secure:
+                    continue
+                if name:
+                    cookies.append("{0}={1}".format(name, value))
+    except OSError:
+        return ""
+    return "; ".join(cookies)
+
+
+def _download_direct_http(
+    video_info: Dict[str, Any],
+    destination: str,
+    cookie_file_path: str = "",
+) -> Dict[str, Any]:
+    download_url = str(video_info.get("download_url") or "").strip()
+    try:
+        expected_size = int(video_info.get("filesize") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    webpage_url = str(video_info.get("webpage_url") or "").strip()
+    user_agent = str(video_info.get("user_agent") or "").strip() or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    partial_path = destination + ".part"
+    try:
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
+    except OSError:
+        pass
+    last_error = "服务器没有返回视频数据"
+    for attempt in range(4):
+        offset = os.path.getsize(partial_path) if os.path.isfile(partial_path) else 0
+        headers = {
+            "User-Agent": user_agent,
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Connection": "close",
+        }
+        if webpage_url:
+            headers["Referer"] = webpage_url
+        cookie_header = _cookie_header(cookie_file_path, download_url)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        if offset:
+            headers["Range"] = "bytes={0}-".format(offset)
+        try:
+            request = Request(download_url, headers=headers, method="GET")
+            with urlopen(request, timeout=60) as response:
+                status = int(getattr(response, "status", response.getcode()) or 200)
+                if offset and status != 206:
+                    offset = 0
+                mode = "ab" if offset and status == 206 else "wb"
+                received = 0
+                with open(partial_path, mode) as output_file:
+                    while True:
+                        block = response.read(1024 * 1024)
+                        if not block:
+                            break
+                        output_file.write(block)
+                        received += len(block)
+                if received <= 0:
+                    last_error = "服务器返回了空视频数据"
+                    continue
+                total = None
+                content_range = str(response.headers.get("Content-Range") or "")
+                range_match = re.search(r"/(\d+)$", content_range)
+                if range_match:
+                    total = int(range_match.group(1))
+                elif response.headers.get("Content-Length"):
+                    try:
+                        length = int(response.headers["Content-Length"])
+                    except (TypeError, ValueError):
+                        length = 0
+                    if length > 0:
+                        total = offset + length if status == 206 else length
+                current_size = os.path.getsize(partial_path)
+                if expected_size > 0 and current_size < expected_size:
+                    last_error = "视频连接提前中断（已下载 {0}/{1} 字节）".format(current_size, expected_size)
+                    continue
+                if total is not None and current_size < total:
+                    last_error = "视频连接提前中断（已下载 {0}/{1} 字节）".format(current_size, total)
+                    continue
+                os.replace(partial_path, destination)
+                return {"saved_path": destination, "size_bytes": os.path.getsize(destination)}
+        except HTTPError as exc:
+            last_error = "HTTP {0}".format(exc.code)
+            if exc.code in (401, 403, 404):
+                break
+        except (URLError, OSError, ValueError) as exc:
+            last_error = str(exc)
+        if attempt < 3:
+            continue
+    try:
+        if os.path.exists(partial_path):
+            os.remove(partial_path)
+    except OSError:
+        pass
+    raise DouyinResolverError("DOUYIN_DIRECT_HTTP_DOWNLOAD_FAILED", last_error, retryable=True)
 
 
 def find_yt_dlp() -> Optional[str]:
@@ -385,6 +561,11 @@ def _normalize_info(info: Dict[str, Any], input_url: str, platform: Optional[str
     download_url = selected.get("url") or info.get("url")
     if not download_url:
         raise DouyinResolverError("DOUYIN_DOWNLOAD_URL_MISSING", "已识别视频，但未返回可用媒体地址", retryable=True)
+    download_urls = []
+    for item in [selected, *candidates, info]:
+        candidate_url = str(item.get("url") or "")
+        if candidate_url.startswith(("http://", "https://")) and candidate_url not in download_urls:
+            download_urls.append(candidate_url)
     return {
         "id": str(info.get("id") or ""),
         "title": str(info.get("title") or info.get("description") or "短视频"),
@@ -393,6 +574,8 @@ def _normalize_info(info: Dict[str, Any], input_url: str, platform: Optional[str
         "thumbnail": info.get("thumbnail"),
         "webpage_url": str(info.get("webpage_url") or input_url),
         "download_url": str(download_url),
+        "download_urls": download_urls,
+        "filesize": selected.get("filesize") or selected.get("filesize_approx") or info.get("filesize") or info.get("filesize_approx"),
         "ext": str(selected.get("ext") or info.get("ext") or "mp4"),
         "width": selected.get("width") or info.get("width"),
         "height": selected.get("height") or info.get("height"),

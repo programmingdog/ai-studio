@@ -13,6 +13,7 @@ import pdfParse from "pdf-parse";
 import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
 import { ReferralsService } from "../referrals/referrals.service";
 import { modelBillingUnit, validVideoSeconds } from "../common/video-billing";
+import JSON5 from "json5";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
@@ -30,7 +31,16 @@ interface TaskRow extends RowDataPacket {
   created_at: Date; updated_at: Date; finished_at: Date | null;
 }
 interface ResolutionPriceRow extends RowDataPacket { credit_cost: number | string; }
-interface ScriptAnalysisConfigRow extends RowDataPacket { prompt: string; credit_cost: number | string; revision: number; }
+type ExtractionBillingMode = "OVERALL" | "PER_SEGMENT";
+interface ScriptAnalysisConfigRow extends RowDataPacket {
+  prompt: string; credit_cost: number | string; extraction_billing_mode?: string; revision: number;
+}
+interface ExtractionBillingInput {
+  groupId: string; segmentIndex: number; segmentCount: number; expectedMode: string; billingMode: ExtractionBillingMode;
+}
+interface ExtractionBillingGroupRow extends RowDataPacket {
+  provider_model_id: string; billing_mode: string; segment_count: number | string; unit_credits: number | string;
+}
 interface CredentialRow extends RowDataPacket {
   id: string; api_key_ciphertext: string; last_selected_at: Date | null; active_count?: number | string;
 }
@@ -45,6 +55,16 @@ const responseLimit = 64 * 1024 * 1024;
 const providerVideoRequestLimit = 48_000_000;
 const activeProviderTaskStatuses = ["ACCEPTED", "CREDIT_RESERVED", "SUBMITTING", "PROVIDER_ACCEPTED", "PROCESSING", "UNKNOWN"];
 const workflowQuoteLifetimeDays = 30;
+const extractionBillingModes = new Set<ExtractionBillingMode>(["OVERALL", "PER_SEGMENT"]);
+
+function extractionBillingMode(value: unknown): ExtractionBillingMode {
+  const normalized = String(value || "OVERALL").trim().toUpperCase() as ExtractionBillingMode;
+  return extractionBillingModes.has(normalized) ? normalized : "OVERALL";
+}
+
+export function videoUnderstandingSegmentCredits(mode: string, segmentIndex: number, unitCredits: number): number {
+  return extractionBillingMode(mode) === "PER_SEGMENT" || segmentIndex === 0 ? unitCredits : 0;
+}
 const geminiVideoMimeTypes = new Set([
   "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/x-flv",
   "video/mpg", "video/webm", "video/wmv", "video/3gpp",
@@ -151,10 +171,33 @@ function generatedText(value: unknown): string {
 }
 
 export function parseScriptAnalysis(value: unknown): Record<string, unknown> {
-  const raw = generatedText(value).replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const raw = generatedText(value)
+    .replace(/^\uFEFF/, "")
+    .replace(/&quot;|&#34;|&#x22;/gi, "\"")
+    .replace(/&apos;|&#39;|&#x27;/gi, "'")
+    .replace(/&nbsp;|&#160;|&#xa0;|&#32;|&#x20;/gi, " ")
+    .trim();
+  const unfenced = raw.replace(/^```(?:json5?|javascript|js)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const candidates = [unfenced];
+  const objectStart = unfenced.indexOf("{");
+  const objectEnd = unfenced.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(unfenced.slice(objectStart, objectEnd + 1));
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { throw new BadGatewayException("文本大模型返回的剧本提取结果不是合法 JSON"); }
+  for (const candidate of [...new Set(candidates)]) {
+    for (const parser of [(text: string) => JSON.parse(text), (text: string) => JSON5.parse(text)]) {
+      try {
+        parsed = parser(candidate);
+        if (typeof parsed === "string") parsed = parser(parsed);
+        if (Object.keys(asObject(parsed)).length) break;
+      } catch { parsed = undefined; }
+    }
+    if (Object.keys(asObject(parsed)).length) break;
+  }
+  if (!Object.keys(asObject(parsed)).length) {
+    throw new BadGatewayException("文本大模型返回的剧本提取结果不是合法 JSON");
+  }
   const result = asObject(parsed);
+  if (!Array.isArray(result.props)) result.props = [];
   const requiredArrays = ["episodes", "characters", "scenes", "sequences", "shots"];
   if (!Object.keys(asObject(result.story)).length || requiredArrays.some((key) => !Array.isArray(result[key]))) {
     throw new BadGatewayException("文本大模型返回的剧本提取结构不完整");
@@ -191,6 +234,8 @@ export function parseScriptAnalysis(value: unknown): Record<string, unknown> {
   });
   return result;
 }
+
+const scriptProjectFormatInstruction = `\n\n项目格式补充要求：顶层还必须输出 props 数组，用于项目道具库。每个道具包含 id、name、style、description、reference_assets、locked；ID 使用 PROP_001 这类稳定格式。每个镜头如使用道具，在 prop_ids 中引用对应道具 ID。只提取原文明确出现且对画面或剧情有意义的物件，禁止虚构。最终顶层字段必须为 story、episodes、characters、scenes、props、sequences、shots。`;
 
 export async function extractScriptText(file: { buffer: Buffer; originalname: string }): Promise<{ extension: string; mimeType: string; text: string }> {
   const extension = file.originalname.split(".").pop()?.toLowerCase() || "";
@@ -430,7 +475,7 @@ export class ModelGatewayService {
 
   private async scriptAnalysisConfig(): Promise<ScriptAnalysisConfigRow> {
     const rows = await this.database.query<ScriptAnalysisConfigRow[]>(
-      "SELECT prompt, credit_cost, revision FROM script_analysis_config WHERE id = 1 LIMIT 1",
+      "SELECT prompt, credit_cost, extraction_billing_mode, revision FROM script_analysis_config WHERE id = 1 LIMIT 1",
     );
     const config = rows[0];
     if (!config || !config.prompt?.trim()) throw new ServiceUnavailableException("尚未配置剧本提取提示词");
@@ -448,6 +493,7 @@ export class ModelGatewayService {
       capability: "SCRIPT_ANALYSIS",
       credits: Number(config.credit_cost),
       config_revision: Number(config.revision),
+      extraction_billing_mode: extractionBillingMode(config.extraction_billing_mode),
       billing_unit: "PER_SCRIPT",
     };
   }
@@ -464,18 +510,19 @@ export class ModelGatewayService {
     const [target, config, extracted] = await Promise.all([
       this.defaultTextTarget(), this.scriptAnalysisConfig(), extractScriptText(file),
     ]);
-    const instructions = `${config.prompt.trim()}\n\n下面是需要忠实提取的完整剧本。文件名：${originalName}\n--- 剧本原文开始 ---\n${extracted.text}\n--- 剧本原文结束 ---`;
+    const prompt = `${config.prompt.trim()}${scriptProjectFormatInstruction}`;
+    const instructions = `${prompt}\n\n下面是需要忠实提取的完整剧本。文件名：${originalName}\n--- 剧本原文开始 ---\n${extracted.text}\n--- 剧本原文结束 ---`;
     const payload = target.api_protocol.toLowerCase() === "gemini"
       ? {
           contents: [{ role: "user", parts: [
             { inline_data: { mime_type: extracted.mimeType, data: file.buffer.toString("base64") } },
-            { text: `${config.prompt.trim()}\n\n请读取前面的完整剧本文件并严格按要求输出。文件名：${originalName}` },
+            { text: `${prompt}\n\n请读取前面的完整剧本文件并严格按要求输出。文件名：${originalName}` },
           ] }],
           generationConfig: { temperature: 0, maxOutputTokens: 65_536, responseMimeType: "application/json" },
         }
       : target.generation_endpoint.toLowerCase().includes("/responses") ? {
           input: [
-            { role: "system", content: [{ type: "input_text", text: config.prompt.trim() }] },
+            { role: "system", content: [{ type: "input_text", text: prompt }] },
             { role: "user", content: [
               { type: "input_file", filename: originalName, file_data: `data:${extracted.mimeType};base64,${file.buffer.toString("base64")}` },
               { type: "input_text", text: `请读取前面的完整剧本文件并严格按要求输出。文件名：${originalName}` },
@@ -486,8 +533,8 @@ export class ModelGatewayService {
           text: { format: { type: "json_object" } },
         } : {
           messages: [
-            { role: "system", content: config.prompt.trim() },
-            { role: "user", content: instructions.slice(config.prompt.trim().length + 2) },
+            { role: "system", content: prompt },
+            { role: "user", content: instructions.slice(prompt.length + 2) },
           ],
           temperature: 0,
           max_tokens: 65_536,
@@ -517,9 +564,8 @@ export class ModelGatewayService {
     // Video understanding is the video-to-storyboard extraction feature. Its
     // customer-facing price is configured together with script extraction,
     // instead of exposing the selected provider model's internal base cost.
-    const credits = target.capability === "VIDEO_UNDERSTANDING"
-      ? Number((await this.scriptAnalysisConfig()).credit_cost)
-      : await this.estimatedCredits(target, payload);
+    const scriptConfig = target.capability === "VIDEO_UNDERSTANDING" ? await this.scriptAnalysisConfig() : undefined;
+    const credits = scriptConfig ? Number(scriptConfig.credit_cost) : await this.estimatedCredits(target, payload);
     return {
       provider_model_id: target.model_id, model_alias: target.model_alias || target.model_code,
       model_code: target.model_code, capability: target.capability, credits,
@@ -527,6 +573,8 @@ export class ModelGatewayService {
       seconds: target.capability === "VIDEO_GENERATION" ? Number(payload.seconds ?? payload.duration ?? asObject(payload.params).seconds ?? asObject(payload.params).duration) : null,
       billing_unit: target.capability === "VIDEO_GENERATION" ? modelBillingUnit(target.capability, target.billing_unit) : "PER_REQUEST",
       includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING",
+      extraction_billing_mode: scriptConfig ? extractionBillingMode(scriptConfig.extraction_billing_mode) : undefined,
+      config_revision: scriptConfig ? Number(scriptConfig.revision) : undefined,
     };
   }
 
@@ -632,7 +680,10 @@ export class ModelGatewayService {
     return Number(item.credits);
   }
 
-  async createVideoUnderstanding(userId: string, input: { idempotencyKey: string; prompt: string; videoUrl: string; mimeType?: string; providerModelId?: string; expectedCredits?: number }): Promise<Record<string, unknown>> {
+  async createVideoUnderstanding(userId: string, input: {
+    idempotencyKey: string; prompt: string; videoUrl: string; mimeType?: string; providerModelId?: string; expectedCredits?: number;
+    extractionBilling?: Omit<ExtractionBillingInput, "billingMode">;
+  }): Promise<Record<string, unknown>> {
     const [target, config] = await Promise.all([
       input.providerModelId ? this.target(input.providerModelId) : this.defaultVideoUnderstandingTarget(),
       this.scriptAnalysisConfig(),
@@ -643,6 +694,10 @@ export class ModelGatewayService {
       providerModelId: target.model_id,
       expectedCredits: input.expectedCredits,
       creditOverride: Number(config.credit_cost),
+      extractionBilling: input.extractionBilling ? {
+        ...input.extractionBilling,
+        billingMode: extractionBillingMode(config.extraction_billing_mode),
+      } : undefined,
       taskType: "VIDEO_UNDERSTANDING",
       providerTimeoutMs: 10 * 60_000,
       payload: {
@@ -660,6 +715,7 @@ export class ModelGatewayService {
     prompt: string;
     providerModelId?: string;
     expectedCredits?: number;
+    extractionBilling?: Omit<ExtractionBillingInput, "billingMode">;
     file?: { buffer: Buffer; mimetype: string; originalname: string; size: number };
   }): Promise<Record<string, unknown>> {
     const file = input.file;
@@ -676,6 +732,10 @@ export class ModelGatewayService {
       providerModelId: target.model_id,
       expectedCredits: input.expectedCredits,
       creditOverride: Number(config.credit_cost),
+      extractionBilling: input.extractionBilling ? {
+        ...input.extractionBilling,
+        billingMode: extractionBillingMode(config.extraction_billing_mode),
+      } : undefined,
       taskType: "VIDEO_UNDERSTANDING",
       providerTimeoutMs: 10 * 60_000,
       payload: {
@@ -961,9 +1021,11 @@ export class ModelGatewayService {
       const consumptionRecordId = randomUUID();
       await connection.execute(
         `INSERT INTO credit_consumption_records
-          (id, consumption_no, user_id, task_id, provider_model_id, category, credits_consumed, status, description, occurred_at)
-         VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, 'CONFIRMED', ?, UTC_TIMESTAMP(3))`,
-        [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount, `${task.logical_model_code} 模型任务`],
+          (id, consumption_no, user_id, task_id, provider_model_id, category, credits_consumed,
+           revenue_cny_per_credit, cost_credits, status, description, occurred_at)
+         VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, ?, ?, 'CONFIRMED', ?, UTC_TIMESTAMP(3))`,
+        [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount,
+          task.commission_cny_per_credit, task.commission_cost_credits, `${task.logical_model_code} 模型任务`],
       );
       await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, amount,
         task.commission_cost_credits == null ? null : Number(task.commission_cost_credits),
@@ -1000,11 +1062,20 @@ export class ModelGatewayService {
     creditOverride?: number; taskType?: string; validateResponse?: (value: unknown) => unknown;
     workflowQuoteApprovalId?: string; workflowQuoteItemKey?: string;
     providerTimeoutMs?: number;
+    extractionBilling?: ExtractionBillingInput;
   }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
     const temporaryReferenceTokens = this.referenceImages?.ownedTokens(payload, userId) || [];
     const localTaskId = input.localTaskId || randomUUID(); if (!/^[0-9a-f-]{36}$/i.test(localTaskId)) throw new BadRequestException("local_task_id 必须是 UUID");
-    const requestHash = createHash("sha256").update(JSON.stringify(canonical({ model: input.providerModelId, payload }))).digest("hex");
+    const requestHash = createHash("sha256").update(JSON.stringify(canonical({
+      model: input.providerModelId, payload,
+      extractionBilling: input.extractionBilling ? {
+        groupId: input.extractionBilling.groupId,
+        segmentIndex: input.extractionBilling.segmentIndex,
+        segmentCount: input.extractionBilling.segmentCount,
+        expectedMode: input.extractionBilling.expectedMode,
+      } : undefined,
+    }))).digest("hex");
     const replay = await this.existing(userId, input.idempotencyKey, requestHash); if (replay) return replay;
     let target: TargetRow;
     let currentCredits: number;
@@ -1013,11 +1084,23 @@ export class ModelGatewayService {
       target = await this.target(input.providerModelId);
       const pricing = input.creditOverride === undefined ? await this.estimatedPricing(target, payload) : null;
       currentCredits = pricing?.credits ?? Number(input.creditOverride);
-      if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(target.capability)) commissionCostCredits = pricing?.costCredits ?? (await this.estimatedPricing(target, payload)).costCredits;
+      commissionCostCredits = pricing?.costCredits ?? (await this.estimatedPricing(target, payload)).costCredits;
       if (!Number.isFinite(currentCredits) || currentCredits < 0) throw new ServiceUnavailableException("任务积分价格配置无效");
       const hasWorkflowQuote = Boolean(input.workflowQuoteApprovalId || input.workflowQuoteItemKey);
       if (hasWorkflowQuote && (!input.workflowQuoteApprovalId || !input.workflowQuoteItemKey)) throw new BadRequestException("自动制作锁定报价参数不完整");
-      if (!hasWorkflowQuote && input.expectedCredits !== undefined
+      const groupedBilling = input.extractionBilling;
+      if (groupedBilling) {
+        if (target.capability !== "VIDEO_UNDERSTANDING") throw new BadRequestException("分段扣费参数仅适用于视频理解任务");
+        if (!/^[0-9a-f-]{36}$/i.test(groupedBilling.groupId)) throw new BadRequestException("billing_group_id 必须是 UUID");
+        if (!Number.isInteger(groupedBilling.segmentCount) || groupedBilling.segmentCount < 2 || groupedBilling.segmentCount > 10_000
+          || !Number.isInteger(groupedBilling.segmentIndex) || groupedBilling.segmentIndex < 0 || groupedBilling.segmentIndex >= groupedBilling.segmentCount) {
+          throw new BadRequestException("视频分段扣费参数无效");
+        }
+        const expectedMode = String(groupedBilling.expectedMode || "").trim().toUpperCase();
+        if (!extractionBillingModes.has(expectedMode as ExtractionBillingMode)) throw new BadRequestException("提取剧本扣费模式不正确");
+        groupedBilling.expectedMode = expectedMode;
+      }
+      if (!hasWorkflowQuote && !groupedBilling && input.expectedCredits !== undefined
         && (!Number.isFinite(input.expectedCredits) || input.expectedCredits < 0 || input.expectedCredits !== currentCredits)) {
         const params = asObject(payload.params);
         this.logger.warn({ event: "task.quote_mismatch", userId, localTaskId,
@@ -1063,6 +1146,42 @@ export class ModelGatewayService {
         if (input.workflowQuoteApprovalId && input.workflowQuoteItemKey) {
           credits = await this.lockedWorkflowCredits(connection, userId, input.workflowQuoteApprovalId, input.workflowQuoteItemKey, target, payload, currentCredits);
         }
+        if (input.extractionBilling) {
+          const billing = input.extractionBilling;
+          const [billingRows] = await connection.query<ExtractionBillingGroupRow[]>(
+            "SELECT provider_model_id, billing_mode, segment_count, unit_credits FROM video_understanding_billing_groups WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE",
+            [billing.groupId, userId],
+          );
+          let lockedMode: ExtractionBillingMode;
+          let lockedUnitCredits: number;
+          if (!billingRows.length) {
+            if (billing.segmentIndex !== 0) throw new ConflictException("长视频首段尚未提交，请重新开始解析");
+            if (billing.expectedMode !== billing.billingMode) throw new ConflictException("提取剧本扣费模式已变化，请重新确认后再开始");
+            if (input.expectedCredits !== undefined && input.expectedCredits !== currentCredits) {
+              throw new ConflictException("本次需要的积分有变化，请重新确认后再开始");
+            }
+            lockedMode = billing.billingMode;
+            lockedUnitCredits = currentCredits;
+            await connection.execute(
+              `INSERT INTO video_understanding_billing_groups
+                (id, user_id, provider_model_id, billing_mode, segment_count, unit_credits)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [billing.groupId, userId, target.model_id, lockedMode, billing.segmentCount, lockedUnitCredits],
+            );
+          } else {
+            const group = billingRows[0]!;
+            lockedMode = extractionBillingMode(group.billing_mode);
+            lockedUnitCredits = Number(group.unit_credits);
+            if (group.provider_model_id !== target.model_id || Number(group.segment_count) !== billing.segmentCount) {
+              throw new ConflictException("长视频分段参数与已锁定任务不一致");
+            }
+            if (billing.expectedMode !== lockedMode) throw new ConflictException("提取剧本扣费模式已变化，请重新确认后再开始");
+            if (input.expectedCredits !== undefined && input.expectedCredits !== lockedUnitCredits) {
+              throw new ConflictException("本次需要的积分有变化，请重新确认后再开始");
+            }
+          }
+          credits = videoUnderstandingSegmentCredits(lockedMode, billing.segmentIndex, lockedUnitCredits);
+        }
         if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) < credits) throw new ConflictException("可用积分不足");
         selectedCredential = await this.selectProviderCredential(connection, target.provider_id);
         let cnyPerCredit: number | null = null;
@@ -1075,11 +1194,14 @@ export class ModelGatewayService {
           `INSERT INTO ai_tasks
             (id, user_id, local_task_id, idempotency_key, request_hash, task_type, logical_model_code,
              provider_id, provider_model_id, provider_credential_id, workflow_quote_approval_id, workflow_quote_item_key,
+             extraction_billing_group_id, extraction_segment_index,
              status, estimated_credits, commission_cost_credits, commission_cny_per_credit)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CREDIT_RESERVED', ?, ?, ?)`,
           [taskId, userId, localTaskId, input.idempotencyKey, requestHash, input.taskType || target.capability,
             target.model_code, target.provider_id, target.model_id, selectedCredential.id,
-            input.workflowQuoteApprovalId || null, input.workflowQuoteItemKey || null, credits, commissionCostCredits, cnyPerCredit],
+            input.workflowQuoteApprovalId || null, input.workflowQuoteItemKey || null,
+            input.extractionBilling?.groupId || null, input.extractionBilling?.segmentIndex ?? null,
+            credits, commissionCostCredits, cnyPerCredit],
         );
         await connection.execute("INSERT INTO credit_holds (id, user_id, task_id, amount, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 MINUTE))", [randomUUID(), userId, taskId, credits]);
         await connection.execute(

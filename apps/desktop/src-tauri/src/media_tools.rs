@@ -186,15 +186,56 @@ pub fn compress_video_for_inline_analysis(
     destination: &Path,
     target_size: u64,
 ) -> Result<(), String> {
+    transcode_video_for_inline_analysis(source, destination, target_size, None)
+}
+
+pub fn compress_video_segment_for_inline_analysis(
+    source: &Path,
+    destination: &Path,
+    start_seconds: f64,
+    duration_seconds: f64,
+    target_size: u64,
+) -> Result<(), String> {
+    if !start_seconds.is_finite()
+        || !duration_seconds.is_finite()
+        || start_seconds < 0.0
+        || duration_seconds <= 0.0
+    {
+        return Err(metadata_error(
+            "VIDEO_SEGMENT_RANGE_INVALID",
+            "长视频分段的时间范围无效",
+        ));
+    }
+    transcode_video_for_inline_analysis(
+        source,
+        destination,
+        target_size,
+        Some((start_seconds, duration_seconds)),
+    )
+}
+
+fn transcode_video_for_inline_analysis(
+    source: &Path,
+    destination: &Path,
+    target_size: u64,
+    segment: Option<(f64, f64)>,
+) -> Result<(), String> {
     let ffmpeg = resolve("ffmpeg", "AIVS_FFMPEG_PATH").map_err(|message| {
         json!({"code": "FFMPEG_NOT_AVAILABLE", "message": message, "retryable": false}).to_string()
     })?;
     let attempts = [("720", "30", "12"), ("540", "34", "10"), ("360", "38", "8")];
     let mut last_error = String::new();
     for (width, crf, fps) in attempts {
-        let output = background_command(&ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(source)
+        let mut command = background_command(&ffmpeg);
+        command.args(["-hide_banner", "-loglevel", "error", "-y"]);
+        if let Some((start_seconds, _)) = segment {
+            command.args(["-ss", &format!("{start_seconds:.3}")]);
+        }
+        command.arg("-i").arg(source);
+        if let Some((_, duration_seconds)) = segment {
+            command.args(["-t", &format!("{duration_seconds:.3}")]);
+        }
+        let output = command
             .args([
                 "-vf",
                 &format!("scale=w={width}:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,fps={fps}"),
@@ -219,7 +260,7 @@ pub fn compress_video_for_inline_analysis(
             .arg(destination)
             .output()
             .map_err(|error| {
-                json!({"code": "FFMPEG_NOT_AVAILABLE", "message": format!("视频超过中转平台内嵌上限，但无法启动 FFmpeg 进行压缩：{error}"), "retryable": false}).to_string()
+                json!({"code": "FFMPEG_NOT_AVAILABLE", "message": format!("无法启动 FFmpeg 准备视频分析副本：{error}"), "retryable": false}).to_string()
             })?;
         if output.status.success() {
             if let Ok(metadata) = std::fs::metadata(destination) {
