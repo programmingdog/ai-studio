@@ -380,7 +380,7 @@ function defaultTestPayload(model: ProviderModel): Record<string, unknown> {
 }
 
 function isGeminiVideoUnderstanding(model: ProviderModel): boolean {
-  return model.model_code === "gem-3.7-flash" && model.capability === "VIDEO_UNDERSTANDING" && model.api_protocol.toLowerCase() === "gemini";
+  return model.capability === "VIDEO_UNDERSTANDING" && model.api_protocol.toLowerCase() === "gemini";
 }
 
 function ModelTestModal({ token, provider, model, credentials, onClose }: {

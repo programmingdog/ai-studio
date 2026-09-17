@@ -74,6 +74,7 @@ const catalog: CatalogModel[] = [
     supportsReferenceVideo: false,
     sortOrder: model.sortOrder,
   })),
+  { name: "gem-3.8-flash", alias: "GEM 3.8 Flash 视频理解", capability: "VIDEO_UNDERSTANDING", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: true, sortOrder: 5 },
   { name: "gem-3.7-flash", alias: "GEM 3.7 Flash 视频理解", capability: "VIDEO_UNDERSTANDING", initialCreditCost: 1, maxReferenceImages: 0, supportsReferenceVideo: true, sortOrder: 10 },
   { name: "tt-image-2.5", alias: "TT Image 2.5", capability: "IMAGE_GENERATION", initialCreditCost: 4, maxReferenceImages: 16, supportsReferenceVideo: false, sortOrder: 5, initialResolutions: ["1K", "2K", "4K"] },
   { name: "tt-image-2", alias: "TT Image 2", capability: "IMAGE_GENERATION", initialCreditCost: 2, maxReferenceImages: 10, supportsReferenceVideo: false, sortOrder: 10 },

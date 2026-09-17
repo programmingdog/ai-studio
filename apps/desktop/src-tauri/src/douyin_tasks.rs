@@ -1885,14 +1885,53 @@ pub fn retry_douyin_understanding_task(
 pub fn reparse_douyin_understanding_task(
     app: tauri::AppHandle,
     task_id: String,
+    provider_model_id: String,
+    expected_credits: f64,
+    extraction_billing_mode: String,
+    platform_api_base_url: Option<String>,
 ) -> Result<Value, String> {
+    if provider_model_id.trim().is_empty()
+        || !expected_credits.is_finite()
+        || expected_credits < 0.0
+    {
+        return Err("请先确认本次视频理解所需积分".to_owned());
+    }
+    if !matches!(extraction_billing_mode.as_str(), "OVERALL" | "PER_SEGMENT") {
+        return Err("提取剧本扣费模式无效，请重新获取报价".to_owned());
+    }
     let connection = open(&app)?;
+    let input_json = connection
+        .query_row(
+            "SELECT input_json FROM douyin_understanding_tasks
+             WHERE id = ?1 AND source_kind = 'LINK' AND status = 'COMPLETED'",
+            [&task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "只有已完成的视频链接任务可以重新解析".to_owned())?;
+    let mut input = serde_json::from_str::<CreateDouyinUnderstandingTaskInput>(&input_json)
+        .map_err(|error| format!("视频链接任务参数损坏：{error}"))?;
+
+    // Resolved media URLs are short-lived. A reparse must start from the
+    // original share text and obtain fresh metadata and a fresh download URL.
+    input.video_info = json!({});
+    input.source_width = None;
+    input.source_height = None;
+    input.aspect_ratio = None;
+    input.video_submission_mode = "upload".to_owned();
+    input.provider_model_id = Some(provider_model_id.trim().to_owned());
+    input.expected_credits = Some(expected_credits);
+    input.extraction_billing_mode = extraction_billing_mode;
+    input.platform_api_base_url = platform_api_base_url;
+    let refreshed_input_json = serde_json::to_string(&input).map_err(|error| error.to_string())?;
     let changed = connection
         .execute(
             "UPDATE douyin_understanding_tasks SET status = 'PENDING', stage = 'queued', progress = 0,
-             message = '已重新加入视频解析队列', error_json = NULL, finished_at = NULL, updated_at = ?2
+             message = '已重新加入视频解析队列，正在重新获取视频地址', input_json = ?3,
+             error_json = NULL, finished_at = NULL, updated_at = ?2
              WHERE id = ?1 AND source_kind = 'LINK' AND status = 'COMPLETED'",
-            params![task_id, Utc::now().to_rfc3339()],
+            params![task_id, Utc::now().to_rfc3339(), refreshed_input_json],
         )
         .map_err(|error| error.to_string())?;
     if changed == 0 {

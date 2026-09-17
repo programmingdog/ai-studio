@@ -67,10 +67,14 @@ test("the migration retires both TT models and seeds all approved replacements",
 
 test("provider models can reuse one model code across capabilities", () => {
   const migration = fs.readFileSync(path.join(__dirname, "../src/database/migrations/034_provider_model_multi_capability.sql"), "utf8");
+  const gem38Migration = fs.readFileSync(path.join(__dirname, "../src/database/migrations/054_wagaai_gem_3_8_flash_video_understanding.sql"), "utf8");
   const sync = fs.readFileSync(path.join(__dirname, "../src/scripts/sync-wagaai-models.ts"), "utf8");
   assert.match(migration, /DROP INDEX uq_provider_models_code/);
   assert.match(migration, /UNIQUE KEY uq_provider_models_code_capability \(provider_id, model_code, capability\)/);
   assert.match(migration, /'GEM 3\.7 Flash 视频理解', 'VIDEO_UNDERSTANDING'/);
   assert.match(migration, /SET dc\.video_understanding_model_id = pm\.id/);
   assert.match(sync, /name: "gem-3\.7-flash", alias: "GEM 3\.7 Flash 视频理解", capability: "VIDEO_UNDERSTANDING"/);
+  assert.match(sync, /name: "gem-3\.8-flash", alias: "GEM 3\.8 Flash 视频理解", capability: "VIDEO_UNDERSTANDING"/);
+  assert.match(gem38Migration, /'gem-3\.8-flash', 'GEM 3\.8 Flash', 'GEM 3\.8 Flash 视频理解'/);
+  assert.match(gem38Migration, /'VIDEO_UNDERSTANDING', 'gemini', '\/v1beta\/models\/\{model\}:generateContent'/);
 });

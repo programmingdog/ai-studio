@@ -30,7 +30,7 @@ pub struct DeleteAssetLibraryResult {
     pub deleted_ids: Vec<String>,
 }
 
-fn library_root(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn library_root(app: &AppHandle) -> Result<PathBuf, String> {
     crate::platform_session::user_scoped_directory(app, "asset-library")
 }
 
@@ -131,6 +131,105 @@ fn same_image_content(path: &Path, expected: &[u8]) -> bool {
     fs::metadata(path)
         .is_ok_and(|metadata| metadata.len() == expected.len() as u64)
         && fs::read(path).is_ok_and(|bytes| bytes == expected)
+}
+
+fn validate_custom_fields(asset_type: &str, name: &str, prompt: &str) -> Result<(), String> {
+    if !matches!(asset_type, "scene" | "character" | "prop") {
+        return Err("资产类型无效".to_owned());
+    }
+    let name_length = name.trim().chars().count();
+    if !(1..=80).contains(&name_length) {
+        return Err("资产名称长度必须在 1 到 80 个字符之间".to_owned());
+    }
+    if prompt.trim().chars().count() > 20_000 {
+        return Err("资产提示词不能超过 20000 个字符".to_owned());
+    }
+    Ok(())
+}
+
+pub fn store_custom(
+    app: &AppHandle,
+    asset_type: &str,
+    name: &str,
+    prompt: &str,
+    bytes: &[u8],
+    source_kind: &str,
+    stable_source_key: Option<&str>,
+) -> Result<AssetLibraryItem, String> {
+    validate_custom_fields(asset_type, name, prompt)?;
+    if bytes.is_empty() || bytes.len() > 40 * 1024 * 1024 {
+        return Err("图片为空或超过 40MB".to_owned());
+    }
+    let extension = imported_image_extension(bytes)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let connection = open(app)?;
+    let source_key = stable_source_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{source_kind}:{id}"));
+    let existing = connection
+        .query_row(
+            "SELECT id, asset_type, name, prompt, image_path, source_project_id,
+                    source_project_path, source_target_type, source_target_id, created_at, updated_at
+             FROM asset_library WHERE source_key = ?1",
+            [&source_key],
+            row_item,
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some(asset) = existing {
+        return Ok(asset);
+    }
+    let destination_dir = library_root(app)?.join("images").join(asset_type);
+    fs::create_dir_all(&destination_dir)
+        .map_err(|error| format!("创建资产图片目录失败：{error}"))?;
+    let destination = destination_dir.join(format!("{id}.{extension}"));
+    fs::write(&destination, bytes).map_err(|error| format!("写入资产图片失败：{error}"))?;
+    let now = Utc::now().to_rfc3339();
+    if let Err(error) = connection.execute(
+        "INSERT INTO asset_library(id, asset_type, name, prompt, image_path, source_key,
+          source_project_id, source_project_path, source_target_type, source_target_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, NULL, ?8, ?8)",
+        params![
+            id,
+            asset_type,
+            name.trim(),
+            prompt.trim(),
+            destination.to_string_lossy(),
+            source_key,
+            source_kind,
+            now,
+        ],
+    ) {
+        let _ = fs::remove_file(&destination);
+        return Err(format!("写入资产库记录失败：{error}"));
+    }
+    connection
+        .query_row(
+            "SELECT id, asset_type, name, prompt, image_path, source_project_id,
+                    source_project_path, source_target_type, source_target_id, created_at, updated_at
+             FROM asset_library WHERE id = ?1",
+            [&id],
+            row_item,
+        )
+        .map_err(|error| error.to_string())
+}
+
+pub fn import_custom(
+    app: &AppHandle,
+    asset_type: &str,
+    name: &str,
+    prompt: &str,
+    source_path: &Path,
+) -> Result<AssetLibraryItem, String> {
+    let source = fs::canonicalize(source_path)
+        .map_err(|error| format!("无法读取所选图片：{error}"))?;
+    if !source.is_file() {
+        return Err("所选路径不是有效图片文件".to_owned());
+    }
+    let bytes = fs::read(&source).map_err(|error| format!("读取所选图片失败：{error}"))?;
+    store_custom(app, asset_type, name, prompt, &bytes, "manual_upload", None)
 }
 
 fn unique_import_name(connection: &Connection, source: &Path) -> Result<String, String> {

@@ -294,6 +294,41 @@ export async function importAssetLibraryReferenceImage(sourcePath: string): Prom
   return invoke<AssetLibraryItem>("import_asset_library_reference_image", { sourcePath });
 }
 
+export async function chooseAssetLibraryImage(): Promise<string | undefined> {
+  if (!isTauri()) return undefined;
+  const selected = await openDialog({
+    multiple: false,
+    title: "选择要添加到资产库的图片",
+    filters: [{ name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp"] }],
+  });
+  return typeof selected === "string" ? selected : undefined;
+}
+
+export async function importAssetLibraryItem(input: { asset_type: AssetLibraryItem["asset_type"]; name: string; prompt: string; source_path: string }): Promise<AssetLibraryItem> {
+  if (!isTauri()) throw new Error("添加资产仅支持桌面应用");
+  return invoke<AssetLibraryItem>("import_asset_library_item", { input });
+}
+
+export async function getAssetLibraryWorkspace(): Promise<string> {
+  if (!isTauri()) throw new Error("资产库 AI 生图仅支持桌面应用");
+  return invoke<string>("get_asset_library_workspace");
+}
+
+export async function generateAssetLibraryItem(input: {
+  request_id: string;
+  workflow_credit_id: string;
+  asset_type: AssetLibraryItem["asset_type"];
+  name: string;
+  prompt: string;
+  aspect_ratio: "9:16" | "16:9";
+  platform_api_base_url: string;
+  provider_model_id: string;
+  resolution: string;
+}): Promise<AssetLibraryItem> {
+  if (!isTauri()) throw new Error("资产库 AI 生图仅支持桌面应用");
+  return invoke<AssetLibraryItem>("generate_asset_library_item", { input });
+}
+
 export async function deleteAssetLibrary(assetIds: string[]): Promise<DeleteAssetLibraryResult> {
   if (!isTauri()) throw new Error("批量删除资产仅支持桌面应用");
   return invoke<DeleteAssetLibraryResult>("delete_asset_library", { assetIds });
@@ -579,9 +614,19 @@ export async function retryDouyinUnderstandingTask(taskId: string): Promise<Douy
   return invoke<DouyinUnderstandingTask>("retry_douyin_understanding_task", { taskId });
 }
 
-export async function reparseDouyinUnderstandingTask(taskId: string): Promise<DouyinUnderstandingTask> {
+export async function reparseDouyinUnderstandingTask(taskId: string, quote: {
+  provider_model_id: string;
+  credits: number;
+  extraction_billing_mode?: "OVERALL" | "PER_SEGMENT";
+}): Promise<DouyinUnderstandingTask> {
   if (!isTauri()) throw new Error("视频链接重新解析仅支持桌面应用");
-  return invoke<DouyinUnderstandingTask>("reparse_douyin_understanding_task", { taskId });
+  return invoke<DouyinUnderstandingTask>("reparse_douyin_understanding_task", {
+    taskId,
+    providerModelId: quote.provider_model_id,
+    expectedCredits: quote.credits,
+    extractionBillingMode: quote.extraction_billing_mode || "OVERALL",
+    platformApiBaseUrl,
+  });
 }
 
 export async function createVideoRemixTask(input: CreateVideoRemixTaskInput): Promise<VideoRemixTask> {

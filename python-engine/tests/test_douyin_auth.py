@@ -69,6 +69,23 @@ class DouyinAuthTests(unittest.TestCase):
         self.assertEqual(result["duration"], 380.134)
         self.assertEqual(result["format_id"], "browser-network")
 
+    def test_normalizes_short_douyin_duration_from_milliseconds(self):
+        result = _normalize_browser_aweme({
+            "aweme_id": "123456",
+            "desc": "三秒短片",
+            "video": {
+                "duration": 3000,
+                "play_addr": {
+                    "url_list": [
+                        "https://v26-web.douyinvod.com/video/tos/cn/short/?mime_type=video_mp4"
+                    ],
+                },
+            },
+        }, "123456")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["duration"], 3.0)
+
     def test_network_capture_ignores_tracker_then_uses_douyin_detail(self):
         item = {
             "aweme_id": "7653460999785303331",
@@ -92,6 +109,17 @@ class DouyinAuthTests(unittest.TestCase):
                     "https://sp0.baidu.com/s.gif?l="
                     "https://www.douyin.com/video/7653460999785303331"
                 )}},
+            }),
+            json.dumps({
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "unrelated-media",
+                    "type": "Media",
+                    "response": {
+                        "url": "https://v26-web.douyinvod.com/unrelated/video/tos/clip/?mime_type=video_mp4",
+                        "mimeType": "video/mp4",
+                    },
+                },
             }),
             json.dumps({
                 "method": "Network.responseReceived",
@@ -149,15 +177,16 @@ class DouyinAuthTests(unittest.TestCase):
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
     @patch("core.engine.resolve_douyin")
-    @patch("core.engine.find_managed_browser")
-    def test_auto_flow_resolves_public_douyin_before_opening_browser(self, find_browser, resolve, _progress, probe):
+    @patch("core.engine.resolve_public_douyin")
+    @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
+    def test_auto_flow_uses_strict_detail_resolver_by_default(self, find_browser, public_resolve, resolve, _progress, probe):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
             "video_id": "123",
             "status": 200,
             "platform": "DOUYIN",
         }
-        resolve.return_value = {"id": "123", "download_url": "https://cdn.test/video.mp4"}
+        public_resolve.return_value = {"id": "123", "download_url": "https://cdn.test/video.mp4"}
         result = dispatch({
             "version": "1.0",
             "id": "req_public_douyin",
@@ -165,17 +194,23 @@ class DouyinAuthTests(unittest.TestCase):
             "method": "input.resolve_douyin_auto",
             "params": {"share_text": "https://www.douyin.com/video/123", "profile_root": "C:\\managed-profile"},
         })
-        resolve.assert_called_once_with("https://www.douyin.com/video/123")
-        find_browser.assert_not_called()
+        public_resolve.assert_called_once_with(
+            "chrome",
+            "chrome.exe",
+            "https://www.douyin.com/video/123",
+            timeout_seconds=45,
+        )
+        resolve.assert_not_called()
+        find_browser.assert_called_once()
         self.assertEqual(result["id"], "123")
 
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
-    @patch("core.engine.resolve_video_in_browser")
     @patch("core.engine.resolve_douyin")
+    @patch("core.engine.resolve_public_douyin")
     @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
-    def test_auto_flow_uses_detail_capture_when_public_extractor_fails(
-        self, _find_browser, resolve, browser_resolve, _progress, probe
+    def test_auto_flow_falls_back_to_ytdlp_when_detail_capture_fails(
+        self, _find_browser, public_resolve, resolve, _progress, probe
     ):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
@@ -183,8 +218,8 @@ class DouyinAuthTests(unittest.TestCase):
             "status": 200,
             "platform": "DOUYIN",
         }
-        resolve.side_effect = DouyinResolverError("DOUYIN_EXTRACT_FAILED", "failed", retryable=True)
-        browser_resolve.return_value = {
+        public_resolve.side_effect = DouyinAuthError("DOUYIN_DETAIL_NOT_FOUND", "failed", retryable=True)
+        resolve.return_value = {
             "id": "123",
             "download_url": "https://v26-web.douyinvod.com/video/tos/file/?mime_type=video_mp4",
         }
@@ -197,28 +232,26 @@ class DouyinAuthTests(unittest.TestCase):
             "params": {"share_text": "https://www.douyin.com/video/123", "profile_root": "C:\\managed-profile"},
         })
 
-        browser_resolve.assert_called_once_with(
-            "C:\\managed-profile\\chrome",
-            "chrome",
-            "chrome.exe",
-            "https://www.douyin.com/video/123",
-            platform="DOUYIN",
-            timeout_seconds=45,
-        )
+        resolve.assert_called_once_with("https://www.douyin.com/video/123")
         self.assertEqual(result["id"], "123")
 
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
+    @patch("core.engine.download_direct_video")
+    @patch("core.engine.resolve_public_douyin")
     @patch("core.engine.download_douyin")
-    @patch("core.engine.find_managed_browser")
-    def test_auto_downloads_public_douyin_before_opening_browser(self, find_browser, download, _progress, probe):
+    @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
+    def test_auto_download_uses_strict_detail_resolver_by_default(
+        self, find_browser, download, public_resolve, direct_download, _progress, probe
+    ):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
             "video_id": "123",
             "status": 200,
             "platform": "DOUYIN",
         }
-        download.return_value = {"saved_path": "C:\\video.mp4", "size_bytes": 1234}
+        public_resolve.return_value = {"id": "123", "download_url": "https://cdn.test/video.mp4"}
+        direct_download.return_value = {"saved_path": "C:\\video.mp4", "size_bytes": 1234}
         result = dispatch({
             "version": "1.0",
             "id": "req_public_douyin_download",
@@ -230,20 +263,27 @@ class DouyinAuthTests(unittest.TestCase):
                 "profile_root": "C:\\managed-profile",
             },
         })
-        download.assert_called_once_with("https://www.douyin.com/video/123", "C:\\video.mp4")
-        find_browser.assert_not_called()
+        public_resolve.assert_called_once_with(
+            "chrome",
+            "chrome.exe",
+            "https://www.douyin.com/video/123",
+            timeout_seconds=45,
+        )
+        direct_download.assert_called_once_with(public_resolve.return_value, "C:\\video.mp4")
+        download.assert_not_called()
+        find_browser.assert_called_once()
         self.assertEqual(result["size_bytes"], 1234)
 
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
     @patch("core.engine.download_direct_video")
-    @patch("core.engine.resolve_video_in_browser")
+    @patch("core.engine.resolve_public_douyin")
     @patch("core.engine.login_douyin")
     @patch("core.engine.download_douyin")
-    @patch("core.engine.has_managed_profile", return_value=True)
+    @patch("core.engine.has_managed_profile", return_value=False)
     @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
-    def test_auto_download_refreshes_browser_url_when_ytdlp_gets_no_data_blocks(
-        self, _find_browser, _has_profile, download, login, browser_resolve, direct_download, _progress, probe
+    def test_auto_download_falls_back_to_ytdlp_when_detail_download_fails(
+        self, _find_browser, _has_profile, download, login, public_resolve, direct_download, _progress, probe
     ):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
@@ -251,18 +291,15 @@ class DouyinAuthTests(unittest.TestCase):
             "status": 200,
             "platform": "DOUYIN",
         }
-        download.side_effect = DouyinResolverError(
-            "DOUYIN_DOWNLOAD_NO_DATA",
-            "视频平台的下载节点没有继续返回数据，需要刷新视频地址后重试。",
-            retryable=True,
-        )
-        browser_resolve.return_value = {
+        public_resolve.return_value = {
             "id": "123",
-            "cookie_file_path": "C:\\managed-profile\\chrome\\douyin-cookies.txt",
             "download_url": "https://cdn.test/refreshed-video.mp4",
             "webpage_url": "https://www.douyin.com/video/123",
         }
-        direct_download.return_value = {"saved_path": "C:\\video.mp4", "size_bytes": 5678}
+        direct_download.side_effect = DouyinResolverError(
+            "DOUYIN_DIRECT_DOWNLOAD_FAILED", "expired", retryable=True
+        )
+        download.return_value = {"saved_path": "C:\\video.mp4", "size_bytes": 5678}
 
         result = dispatch({
             "version": "1.0",
@@ -278,10 +315,10 @@ class DouyinAuthTests(unittest.TestCase):
 
         login.assert_not_called()
         direct_download.assert_called_once_with(
-            browser_resolve.return_value,
+            public_resolve.return_value,
             "C:\\video.mp4",
-            cookie_file_path=browser_resolve.return_value["cookie_file_path"],
         )
+        download.assert_called_once_with("https://www.douyin.com/video/123", "C:\\video.mp4")
         self.assertEqual(result["size_bytes"], 5678)
 
     def test_detects_managed_cookie_database(self):
@@ -371,12 +408,12 @@ class DouyinAuthTests(unittest.TestCase):
 
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
-    @patch("core.engine.resolve_video_in_browser")
+    @patch("core.engine.resolve_public_douyin")
     @patch("core.engine.login_douyin")
     @patch("core.engine.resolve_douyin")
     @patch("core.engine.has_managed_profile", return_value=False)
     @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
-    def test_auto_flow_logs_in_then_resolves(self, _find_browser, _has_profile, resolve, login, browser_resolve, _progress, probe):
+    def test_auto_flow_logs_in_then_resolves(self, _find_browser, _has_profile, resolve, login, public_resolve, _progress, probe):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
             "video_id": "123",
@@ -386,7 +423,7 @@ class DouyinAuthTests(unittest.TestCase):
             DouyinResolverError("DOUYIN_FRESH_COOKIES_REQUIRED", "login required", retryable=True),
             {"id": "123", "download_url": "https://cdn.test/video.mp4"},
         ]
-        browser_resolve.side_effect = DouyinAuthError("DOUYIN_BROWSER_AUTH_REQUIRED", "login required", retryable=True)
+        public_resolve.side_effect = DouyinAuthError("DOUYIN_BROWSER_AUTH_REQUIRED", "login required", retryable=True)
         login.return_value = {"cookie_file_path": "C:\\managed-profile\\chrome\\douyin-cookies.txt"}
         result = dispatch({
             "version": "1.0",
@@ -410,12 +447,12 @@ class DouyinAuthTests(unittest.TestCase):
 
     @patch("core.engine.probe_douyin_url")
     @patch("core.engine.progress")
-    @patch("core.engine.resolve_video_in_browser")
+    @patch("core.engine.resolve_public_douyin")
     @patch("core.engine.login_douyin")
     @patch("core.engine.resolve_douyin")
     @patch("core.engine.has_managed_profile", return_value=True)
     @patch("core.engine.find_managed_browser", return_value=("chrome", "chrome.exe"))
-    def test_auto_flow_reauthenticates_stale_cookie(self, _find_browser, _has_profile, resolve, login, browser_resolve, _progress, probe):
+    def test_auto_flow_reauthenticates_stale_cookie(self, _find_browser, _has_profile, resolve, login, public_resolve, _progress, probe):
         probe.return_value = {
             "canonical_url": "https://www.douyin.com/video/123",
             "video_id": "123",
@@ -427,7 +464,7 @@ class DouyinAuthTests(unittest.TestCase):
             DouyinResolverError("DOUYIN_BROWSER_COOKIES_STALE", "stale", retryable=True),
             {"id": "123", "download_url": "https://cdn.test/video.mp4"},
         ]
-        browser_resolve.side_effect = DouyinAuthError("DOUYIN_BROWSER_AUTH_REQUIRED", "login required", retryable=True)
+        public_resolve.side_effect = DouyinAuthError("DOUYIN_BROWSER_AUTH_REQUIRED", "login required", retryable=True)
         result = dispatch({
             "version": "1.0",
             "id": "req_auto",

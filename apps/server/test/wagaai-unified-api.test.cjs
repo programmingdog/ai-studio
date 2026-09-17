@@ -23,15 +23,30 @@ function target(overrides) {
   };
 }
 
-test('WagaAI text requests use the documented root URL and model protocol', () => {
+test('WagaAI Gemini and text requests use the documented root URL and model protocol', () => {
   const gateway = new ModelGatewayService({}, {});
-  const gem = gateway.request(target({
-    model_code: 'gem-3.7-flash',
+  for (const model of ['gem-3.7-flash', 'gem-3.8-flash']) {
+    const gem = gateway.request(target({
+      model_code: model,
+      api_protocol: 'gemini',
+      generation_endpoint: '/v1beta/models/{model}:generateContent',
+    }), { contents: [{ parts: [{ text: 'Hello' }] }] }, 'fixture-key');
+    assert.equal(gem.url, `https://api.lk888.ai/v1beta/models/${model}:generateContent`);
+    assert.equal(gem.headers.Authorization, 'Bearer fixture-key');
+  }
+
+  const video = gateway.request(target({
+    model_code: 'gem-3.8-flash',
+    model_alias: 'GEM 3.8 Flash 视频理解',
+    capability: 'VIDEO_UNDERSTANDING',
     api_protocol: 'gemini',
     generation_endpoint: '/v1beta/models/{model}:generateContent',
-  }), { contents: [{ parts: [{ text: 'Hello' }] }] }, 'fixture-key');
-  assert.equal(gem.url, 'https://api.lk888.ai/v1beta/models/gem-3.7-flash:generateContent');
-  assert.equal(gem.headers.Authorization, 'Bearer fixture-key');
+  }), { video_uri: 'https://example.com/video.mp4', mime_type: 'video/mp4', prompt: '分析视频' }, 'fixture-key');
+  assert.equal(video.url, 'https://api.lk888.ai/v1beta/models/gem-3.8-flash:generateContent');
+  assert.deepEqual(video.body.contents[0].parts, [
+    { file_data: { file_uri: 'https://example.com/video.mp4', mime_type: 'video/mp4' } },
+    { text: '分析视频' },
+  ]);
 
   for (const model of ['kimi-k2.6', 'glm-5.3-flash']) {
     const request = gateway.request(target({
@@ -50,6 +65,7 @@ test('sync and migration keep the WagaAI universal API contract aligned', () => 
   const ttImage25 = fs.readFileSync(path.join(__dirname, '../src/database/migrations/045_wagaai_tt_image_2_5.sql'), 'utf8');
   const newVideoModels = fs.readFileSync(path.join(__dirname, '../src/database/migrations/046_wagaai_gk_video_3_omni_flash.sql'), 'utf8');
   const viduTurbo = fs.readFileSync(path.join(__dirname, '../src/database/migrations/048_wagaai_viduq3_turbo_reference.sql'), 'utf8');
+  const gem38 = fs.readFileSync(path.join(__dirname, '../src/database/migrations/054_wagaai_gem_3_8_flash_video_understanding.sql'), 'utf8');
   assert.match(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai"/);
   assert.doesNotMatch(sync, /WAGAAI_BASE_URL = "https:\/\/api\.lk888\.ai\/api"/);
   assert.match(sync, /requestJson<Record<string, unknown>>\("\/v1\/skills\/guide"/);
@@ -76,4 +92,8 @@ test('sync and migration keep the WagaAI universal API contract aligned', () => 
   assert.match(viduTurbo, /'PER_SECOND'/);
   assert.match(viduTurbo, /JSON_ARRAY\('9:16', '16:9', '3:4', '4:3', '1:1'\)/);
   assert.match(viduTurbo, /UNION ALL SELECT '720p', 23, 1[\s\S]*UNION ALL SELECT '1080p', 28, 2/);
+  assert.match(sync, /name: "gem-3\.8-flash", alias: "GEM 3\.8 Flash 视频理解", capability: "VIDEO_UNDERSTANDING"/);
+  assert.match(gem38, /'gem-3\.8-flash'/);
+  assert.match(gem38, /'VIDEO_UNDERSTANDING', 'gemini', '\/v1beta\/models\/\{model\}:generateContent'/);
+  assert.match(gem38, /'PER_REQUEST'/);
 });

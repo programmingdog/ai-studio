@@ -41,7 +41,45 @@ class DouyinInputTests(unittest.TestCase):
 
         result = probe_douyin_url("https://v.douyin.com/AbCdEf/", opener=lambda *_args, **_kwargs: Response())
         self.assertEqual(result["video_id"], "1234567890")
+        self.assertEqual(result["canonical_url"], "https://www.douyin.com/video/1234567890")
         self.assertEqual(result["status"], 200)
+
+    def test_extracts_aweme_id_from_modal_url_and_canonicalizes_it(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def geturl(self):
+                return "https://www.douyin.com/?modal_id=7685702578495098112"
+
+        result = probe_douyin_url("https://v.douyin.com/AbCdEf/", opener=lambda *_args, **_kwargs: Response())
+        self.assertEqual(result["video_id"], "7685702578495098112")
+        self.assertEqual(result["canonical_url"], "https://www.douyin.com/video/7685702578495098112")
+
+    def test_extracts_aweme_id_from_share_page_html(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def geturl(self):
+                return "https://v.douyin.com/AbCdEf/"
+
+            def read(self, *_args):
+                return b'<script>window.location.href="https://www.douyin.com/video/7685702578495098112"</script>'
+
+        result = probe_douyin_url("https://v.douyin.com/AbCdEf/", opener=lambda *_args, **_kwargs: Response())
+        self.assertEqual(result["video_id"], "7685702578495098112")
+        self.assertEqual(result["canonical_url"], "https://www.douyin.com/video/7685702578495098112")
 
     def test_extracts_short_url_from_share_text(self):
         text = "复制此链接，打开抖音搜索，看看TA的作品 https://v.douyin.com/AbCdEf/ 8@3.com"
@@ -143,6 +181,25 @@ class DouyinInputTests(unittest.TestCase):
         )
         command = captured["command"]
         self.assertEqual(command[command.index("--cookies-from-browser") + 1], "edge")
+
+    def test_rejects_ytdlp_result_for_a_different_douyin_item(self):
+        payload = {
+            "id": "999",
+            "title": "推荐流里的其他作品",
+            "url": "https://cdn.test/unrelated.mp4",
+            "ext": "mp4",
+        }
+
+        def runner(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+
+        with self.assertRaises(DouyinResolverError) as context:
+            resolve_douyin(
+                "https://www.douyin.com/video/123",
+                runner=runner,
+                executable="yt-dlp.exe",
+            )
+        self.assertEqual(context.exception.code, "DOUYIN_VIDEO_ID_MISMATCH")
 
     def test_rejects_unapproved_cookie_browser(self):
         with self.assertRaises(DouyinResolverError) as context:

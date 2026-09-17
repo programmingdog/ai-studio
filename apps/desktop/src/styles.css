@@ -1345,6 +1345,8 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .asset-library-tabs button.active b { color: #6049a5; background: #eee9fb !important; }
 .asset-library-batch-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-left: auto; }
 .asset-library-batch-actions button { width: auto; min-width: max-content; margin: 0; }
+.create-card .asset-library-batch-actions .asset-add-entry,
+.create-card .asset-library-batch-actions .asset-batch-delete-entry { flex: 0 0 92px; align-self: center; width: 92px; min-width: 92px; height: 34px; min-height: 34px; margin: 0; padding: 7px 10px; border-radius: 8px; font-size: 11px; line-height: 1; }
 .asset-selected-count { margin-right: 2px; color: #66509d; font-size: 10px; font-weight: 650; white-space: nowrap; }
 .asset-batch-delete-entry { color: #a62a3c !important; border-color: #e9b8c0 !important; background: #fff7f8 !important; }
 .asset-batch-delete-entry:hover:not(:disabled) { color: #8f1728 !important; border-color: #d98692 !important; background: #ffeef1 !important; }
@@ -1383,6 +1385,35 @@ select option { color: var(--ui-text); background: var(--ui-surface); }
 .asset-delete-warning { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #efc4ca; border-radius: 10px; color: #a4283a; background: #fff4f5 !important; }
 .asset-delete-warning > div { display: grid; gap: 4px; }
 .asset-delete-warning small { color: var(--ui-text-muted); line-height: 1.55; }
+.asset-add-backdrop { z-index: 700; }
+.asset-add-modal { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; width: min(680px, calc(100vw - 48px)); max-height: calc(100vh - 48px); border: 1px solid #dedfe6; border-radius: 17px; background: #fff !important; box-shadow: 0 30px 90px rgba(25, 22, 38, .2); }
+.asset-add-modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 19px 22px 16px; border-bottom: 1px solid #e7e8ed; background: #fbfafd !important; }
+.asset-add-modal h2 { margin: 4px 0; color: #2d323b; font-size: 20px; }
+.asset-add-modal header p { margin: 0; color: var(--ui-text-muted); font-size: 11px; }
+.asset-add-body { display: grid; gap: 15px; overflow: auto; padding: 18px 22px 20px; }
+.asset-add-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(150px, .5fr); gap: 12px; }
+.asset-add-fields label, .asset-add-prompt, .asset-add-ai-options > label { display: grid; gap: 7px; color: #343944; font-size: 11px; font-weight: 650; }
+.asset-add-fields input, .asset-add-fields select, .asset-add-prompt textarea, .asset-add-ai-options select { width: 100%; border: 1px solid #dfe2e9; border-radius: 9px; color: #303541; background: #fff !important; font: inherit; font-weight: 450; }
+.asset-add-fields input, .asset-add-fields select, .asset-add-ai-options select { min-height: 38px; padding: 0 11px; }
+.asset-add-prompt textarea { min-height: 108px; padding: 10px 11px; resize: vertical; line-height: 1.6; }
+.asset-add-prompt small { color: var(--ui-text-muted); font-size: 9px; font-weight: 450; }
+.asset-add-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 4px; border: 1px solid #e1e4eb; border-radius: 11px; background: #f5f6f9 !important; }
+.asset-add-mode-tabs button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; border: 1px solid transparent; border-radius: 8px; color: var(--ui-text-muted) !important; background: transparent !important; font-size: 11px; font-weight: 650; cursor: pointer; }
+.asset-add-mode-tabs button.active { border-color: #d8d1ec; color: #5c45a0 !important; background: #fff !important; box-shadow: 0 2px 7px rgba(66, 52, 105, .08); }
+.asset-add-upload { display: grid; gap: 9px; }
+.asset-add-upload-picker { display: grid; place-items: center; align-content: center; gap: 7px; overflow: hidden; min-height: 190px; padding: 0; border: 1px dashed #cfc7e3; border-radius: 12px; color: #6b55a6 !important; background: #faf9fd !important; cursor: pointer; }
+.asset-add-upload-picker:hover:not(:disabled) { border-color: #8d73cb; background: #f5f1fc !important; }
+.asset-add-upload-picker img { display: block; width: 100%; height: 250px; object-fit: contain; background: #f0f1f5 !important; }
+.asset-add-upload-picker strong { font-size: 12px; }
+.asset-add-upload-picker span { color: var(--ui-text-muted); font-size: 9px; }
+.asset-add-upload > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.asset-add-upload > div span { overflow: hidden; color: var(--ui-text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.asset-add-upload > div button { flex: none; width: auto; }
+.asset-add-ai-options { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: end; gap: 12px; }
+.asset-add-ai-options > div { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 9px 11px; border: 1px solid #d9d1ec; border-radius: 9px; color: #66509d; background: #f7f4fc !important; font-size: 10px; line-height: 1.5; }
+.asset-add-ai-options > div svg { flex: none; }
+.asset-add-modal > footer { display: flex; justify-content: flex-end; gap: 9px; padding: 13px 22px 18px; border-top: 1px solid #e7e8ed; background: #fbfafd !important; }
+.asset-add-modal > footer button { width: auto; min-width: 104px; }
 
 .studio-shell { grid-template-columns: 252px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 .sidebar { width: 252px; padding: 0 12px 14px; }

@@ -14,7 +14,7 @@ import {
   Maximize2, Zap,
 } from "lucide-react";
 import type { AgentClientAction, AiSettings, ApplicationLogEntry, ApplicationLogLevel, AssetLibraryItem, AutomaticWorkflowStage, AutomaticWorkflowTaskSnapshot, BrowserCookieSource, CanonicalProject, Character, CharacterState, CreativeTypePreset, CreateDouyinUnderstandingTaskInput, CreateImageGenerationTaskItem, CreateProjectInput, CreateShotVideoGenerationInput, CreationSpec, DouyinUnderstandingTask, DouyinVideoInfo, Episode, GenerationRecord, GenerationReferenceAssetInput, IdeaDevelopmentAction, IdeaDevelopmentWorkflow, ImageGenerationTask, LocalVideoMetadata, ProjectBundle, ProjectListItem, ProjectSourceType, Prop, Scene, ScriptAnalysisTask, Shot, VideoCreditResolution, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask, VideoSubmissionMode } from "@aivs/schemas";
-import { chooseCookieFile, chooseProjectImage, chooseScriptFile, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createScriptAnalysisTask, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteScriptAnalysisTask, deleteVideoRemixTask, deleteVideoUnderstandingTask, exportAllGenerationAssets, getActiveAutomaticWorkflow, getAiSettings, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importProjectReferenceImage, importStandardScriptFile, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listScriptAnalysisTasks, listVideoRemixTasks, loadProject, readProjectAsset, reanalyzeScriptTask, reparseDouyinUnderstandingTask, resolveDouyinAuto, resolveDouyinUrl, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsJson, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
+import { chooseAssetLibraryImage, chooseCookieFile, chooseProjectImage, chooseScriptFile, composeProjectVideo, createAutomaticWorkflow, createDouyinUnderstandingTask, createImageGenerationTasks, createProject, createScriptAnalysisTask, createShotVideoGeneration, createVideoRemixProject, createVideoRemixTask, deleteAssetLibrary, deleteProject, deleteScriptAnalysisTask, deleteVideoRemixTask, deleteVideoUnderstandingTask, exportAllGenerationAssets, generateAssetLibraryItem, getActiveAutomaticWorkflow, getAiSettings, getAssetLibraryWorkspace, getDouyinBrowserAvailability, getIdeaDevelopmentWorkflow, importAssetLibraryItem, importProjectReferenceImage, importStandardScriptFile, listApplicationLogs, listAssetLibrary, listDouyinUnderstandingTasks, listGenerationRecords, listImageGenerationTasks, listLocalVideoUnderstandingTasks, listProjects, listScriptAnalysisTasks, listVideoRemixTasks, loadProject, readProjectAsset, reanalyzeScriptTask, reparseDouyinUnderstandingTask, resolveDouyinAuto, resolveDouyinUrl, resumeImageGenerationTasks, retryDouyinUnderstandingTask, retryLocalVideoUnderstandingTask, retryVideoRemixTask, runInitialWorkflow, saveCanonical, saveGenerationRecordAsset, saveTextAsJson, saveTextAsTxt, updateAutomaticWorkflow, updateIdeaDevelopmentWorkflow } from "./services/backend";
 import { type WorkspacePage, useStudioStore } from "./store";
 import { AssetLibraryPickerModal } from "./components/AssetLibraryPickerModal";
 import { AiSettingsModal } from "./components/AiSettingsModal";
@@ -67,6 +67,18 @@ function formatVideoDuration(seconds: number): string {
   const minutes = Math.floor((rounded % 3600) / 60);
   const rest = rounded % 60;
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}` : `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function taskUnderstandingSelection(task: DouyinUnderstandingTask): StoryboardUnderstandingSelection {
+  if (task.mode === "fixed") {
+    const fixedSeconds = task.fixed_seconds === 6 || task.fixed_seconds === 15 ? task.fixed_seconds : 10;
+    return { mode: "fixed", fixedSeconds };
+  }
+  return { mode: task.mode };
+}
+
+function videoTaskSegmentCount(task: DouyinUnderstandingTask): number {
+  return task.duration && task.duration > 300 ? Math.ceil(task.duration / 300) : 1;
 }
 
 function requestMediaModel(capability: PlatformMediaModel["capability"], title: string, projectPath: string, items: MediaPickerItem[], durationMode: VideoDurationMode = "automatic", preset?: MediaPickerPreset): Promise<MediaModelSelection> {
@@ -693,6 +705,7 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
   const [localVideoModeInfo, setLocalVideoModeInfo] = useState<LocalVideoMetadata>();
   const [resolvedVideoInfo, setResolvedVideoInfo] = useState<DouyinVideoInfo>();
   const [videoLinkConfirmation, setVideoLinkConfirmation] = useState<VideoLinkConfirmation>();
+  const [reparseConfirmationTask, setReparseConfirmationTask] = useState<DouyinUnderstandingTask>();
   const [localVideoTaskReviews, setLocalVideoTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [douyinTaskReviews, setDouyinTaskReviews] = useState<Record<string, DouyinTaskReviewState>>({});
   const [creatingDouyinTaskId, setCreatingDouyinTaskId] = useState<string>();
@@ -891,8 +904,12 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     onSuccess: () => douyinTasks.refetch(),
   });
   const reparseDouyinTask = useMutation({
-    mutationFn: reparseDouyinUnderstandingTask,
+    mutationFn: (taskId: string) => {
+      if (!videoLinkQuote.data) throw new Error("暂时无法获取视频理解积分，请稍后重试");
+      return reparseDouyinUnderstandingTask(taskId, videoLinkQuote.data);
+    },
     onSuccess: async (_, taskId) => {
+      setReparseConfirmationTask(undefined);
       setDouyinTaskReviews((reviews) => { const next = { ...reviews }; delete next[taskId]; return next; });
       await douyinTasks.refetch();
     },
@@ -915,8 +932,10 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
     }
   };
   const confirmReparseDouyinTask = (taskId: string) => {
-    if (!window.confirm("确定重新解析这个视频吗？重新解析会再次调用视频理解模型并消耗相应积分，成功后将用新结果替换当前结果。")) return false;
-    reparseDouyinTask.mutate(taskId);
+    const task = douyinTasks.data?.find((item) => item.id === taskId);
+    if (!task) return false;
+    reparseDouyinTask.reset();
+    setReparseConfirmationTask(task);
     return true;
   };
   const openDouyinTaskResult = (task: DouyinUnderstandingTask) => {
@@ -1190,12 +1209,13 @@ function CreateProjectScreen({ appVersion, initialBundle, onReady, onProjectCrea
       {projectPendingDelete && <DeleteProjectConfirmModal project={projectPendingDelete} deleting={deleteLocalProject.isPending} error={deleteLocalProject.error} onCancel={() => { if (!deleteLocalProject.isPending) { deleteLocalProject.reset(); setProjectPendingDelete(undefined); } }} onConfirm={() => deleteLocalProject.mutate(projectPendingDelete)} />}
       {scriptConfirmation && scriptQuote.data && <ScriptAnalysisCreditModal quote={scriptQuote.data} task={scriptConfirmation.kind === "reanalyze" ? scriptTasks.data?.find((item) => item.id === scriptConfirmation.taskId) : undefined} busy={scriptAnalysis.isPending} error={scriptAnalysis.error} onCancel={() => { if (!scriptAnalysis.isPending) setScriptConfirmation(undefined); }} onCreditsPurchased={() => scriptAnalysis.reset()} onConfirm={() => scriptAnalysis.mutate(scriptConfirmation)} />}
       {videoLinkConfirmation && videoLinkQuote.data && <VideoLinkCreditModal quote={videoLinkQuote.data} selection={videoLinkConfirmation.selection} submissionMode={videoLinkConfirmation.submissionMode} videoInfo={videoLinkConfirmation.videoInfo} segmentCount={videoLinkConfirmation.segmentCount} busy={douyinStoryboard.isPending} error={douyinStoryboard.error} onCancel={() => { if (!douyinStoryboard.isPending) setVideoLinkConfirmation(undefined); }} onCreditsPurchased={() => douyinStoryboard.reset()} onConfirm={() => douyinStoryboard.mutate(videoLinkConfirmation)} />}
+      {reparseConfirmationTask && videoLinkQuote.data && <VideoLinkCreditModal reparse quote={videoLinkQuote.data} selection={taskUnderstandingSelection(reparseConfirmationTask)} submissionMode="upload" videoInfo={reparseConfirmationTask} segmentCount={videoTaskSegmentCount(reparseConfirmationTask)} busy={reparseDouyinTask.isPending} error={reparseDouyinTask.error} onCancel={() => { if (!reparseDouyinTask.isPending) setReparseConfirmationTask(undefined); }} onCreditsPurchased={() => reparseDouyinTask.reset()} onConfirm={() => reparseDouyinTask.mutate(reparseConfirmationTask.id)} />}
     </div>
   );
 }
 
-function VideoLinkCreditModal({ quote, selection, submissionMode, videoInfo, segmentCount, busy, error, onCancel, onConfirm, onCreditsPurchased }: {
-  quote: ModelCreditQuote; selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode; videoInfo: DouyinVideoInfo; segmentCount: number; busy: boolean; error?: unknown; onCancel: () => void; onConfirm: () => void; onCreditsPurchased?: () => void;
+function VideoLinkCreditModal({ quote, selection, submissionMode, videoInfo, segmentCount, reparse = false, busy, error, onCancel, onConfirm, onCreditsPurchased }: {
+  quote: ModelCreditQuote; selection: StoryboardUnderstandingSelection; submissionMode: VideoSubmissionMode; videoInfo: { title?: string; duration?: number }; segmentCount: number; reparse?: boolean; busy: boolean; error?: unknown; onCancel: () => void; onConfirm: () => void; onCreditsPurchased?: () => void;
 }) {
   const balance = useQuery({ queryKey: ["credit-balance", "video-link-understanding"], queryFn: getCreditBalance, refetchOnMount: "always" });
   const chargeCount = quote.extraction_billing_mode === "PER_SEGMENT" ? segmentCount : 1;
@@ -1203,9 +1223,9 @@ function VideoLinkCreditModal({ quote, selection, submissionMode, videoInfo, seg
   const insufficient = Boolean(balance.data && balance.data.available < totalCredits);
   const purchaseRequired = insufficient || isInsufficientBalanceError(error);
   const modeLabel = selection.mode === "detailed" ? "详细分镜" : selection.mode === "fixed" ? `固定 ${selection.fixedSeconds ?? 10} 秒分镜` : "标准分镜";
-  const submissionLabel = submissionMode === "url" ? "极速模式（失败或 10 分钟超时后自动转详细模式）" : "详细模式";
+  const submissionLabel = reparse ? "重新获取地址、下载真实视频并上传分析" : submissionMode === "url" ? "极速模式（失败或 10 分钟超时后自动转详细模式）" : "详细模式";
   return createPortal(<div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="video-link-credit-title">
-    <header><span><Coins size={23} /></span><div><small>VIDEO LINK PIPELINE</small><h2 id="video-link-credit-title">确认解析视频并扣除积分</h2><p>已解析《{videoInfo.title || "链接视频"}》的真实时长为 {videoInfo.duration ? formatVideoDuration(videoInfo.duration) : "未知"}，确认后任务才会开始。</p></div><button type="button" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={17} /></button></header>
+    <header><span><Coins size={23} /></span><div><small>VIDEO LINK PIPELINE</small><h2 id="video-link-credit-title">{reparse ? "确认重新解析并扣除积分" : "确认解析视频并扣除积分"}</h2><p>{reparse ? "将重新获取" : "已解析"}《{videoInfo.title || "链接视频"}》的视频地址，真实时长为 {videoInfo.duration ? formatVideoDuration(videoInfo.duration) : "未知"}，确认后任务才会开始。</p></div><button type="button" aria-label="关闭" disabled={busy} onClick={onCancel}><X size={17} /></button></header>
     <div className="script-analysis-confirm-body"><div><span>本次最多所需积分</span><strong>{creditText(totalCredits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div><div><span>分镜与提交方式</span><strong>{modeLabel} · {submissionLabel}</strong></div>{segmentCount > 1 && <div><span>长视频处理</span><strong>下载后拆分 {segmentCount} 段解析并自动合并 · {chargeCount === 1 ? "整体仅扣 1 次" : `分段扣费 ${chargeCount} 次`}</strong></div>}<p><AlertTriangle size={17} />{segmentCount > 1 ? `长视频需要多次上传和模型分析，等待时间较长，请保持客户端运行且不要中途退出。当前按${chargeCount === 1 ? "整体任务" : "每个分段"}扣费；失败的模型请求会自动释放或回补对应积分。` : "任务失败或超时会自动释放并回补积分。极速模式失败后只会自动使用详细模式兜底一次；详细模式仍失败时任务会显示失败原因。"}</p>{purchaseRequired && <div className="insufficient-credit-callout"><div className="error-banner">{insufficient ? <>积分不足，需要 {creditText(totalCredits)} 分，当前可用 {creditText(balance.data!.available)} 分。</> : readableError(error)}</div><ImmediateCreditPurchaseButton onPurchased={() => { void balance.refetch(); onCreditsPurchased?.(); }} /></div>}{Boolean(balance.error) && <div className="error-banner">暂时无法确认积分余额，请稍后重试。</div>}{Boolean(error) && !purchaseRequired && <div className="error-banner">{readableError(error)}</div>}</div>
     <footer><button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>取消，不扣分</button><button className="primary-button" type="button" disabled={busy || balance.isLoading || Boolean(balance.error) || insufficient} onClick={onConfirm}>{busy ? <LoaderCircle className="spin" size={16} /> : <Coins size={16} />}{busy ? "正在加入后台任务…" : `确认并开始（最多 ${creditText(totalCredits)} 积分）`}</button></footer>
   </section></div>, document.body);
@@ -1578,12 +1598,108 @@ function DeleteAssetsConfirmModal({ count, deleting, error, onCancel, onConfirm 
   </div>, document.body);
 }
 
+function AddAssetLibraryModal({ onClose, onCreated }: { onClose: () => void; onCreated: (asset: AssetLibraryItem) => void }) {
+  const [name, setName] = useState("");
+  const [assetType, setAssetType] = useState<AssetLibraryItem["asset_type"]>("scene");
+  const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<"upload" | "ai">("upload");
+  const [sourcePath, setSourcePath] = useState("");
+  const [aspectRatio, setAspectRatio] = useState<"9:16" | "16:9">("16:9");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [approvedGeneration, setApprovedGeneration] = useState<{ requestId: string; workspace: string; selection: MediaModelSelection }>();
+  const releaseApproval = useCallback(() => {
+    if (!approvedGeneration?.selection.workflowCreditId) return;
+    void invoke("stop_workflow_credit", { projectPath: approvedGeneration.workspace, id: approvedGeneration.selection.workflowCreditId }).catch(() => undefined);
+  }, [approvedGeneration]);
+  const close = useCallback(() => {
+    if (busy) return;
+    releaseApproval();
+    onClose();
+  }, [busy, onClose, releaseApproval]);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [close]);
+  const chooseImage = async () => {
+    setError("");
+    try {
+      const selected = await chooseAssetLibraryImage();
+      if (selected) setSourcePath(selected);
+    } catch (reason) { setError(readableError(reason)); }
+  };
+  const submitUpload = async () => {
+    if (busy || !name.trim() || !sourcePath) return;
+    setBusy(true); setError("");
+    try {
+      const asset = await importAssetLibraryItem({ asset_type: assetType, name: name.trim(), prompt: prompt.trim(), source_path: sourcePath });
+      onCreated(asset);
+    } catch (reason) { setError(readableError(reason)); }
+    finally { setBusy(false); }
+  };
+  const submitAi = async () => {
+    if (busy || !name.trim() || prompt.trim().length < 10) return;
+    setBusy(true); setError("");
+    try {
+      let approval = approvedGeneration;
+      if (!approval) {
+        const requestId = crypto.randomUUID();
+        const workspace = await getAssetLibraryWorkspace();
+        const selection = await requestMediaModel("IMAGE_GENERATION", `为“${name.trim()}”生成资产图片`, workspace, [{ key: `image:asset:${requestId}` }]);
+        approval = { requestId, workspace, selection };
+        setApprovedGeneration(approval);
+      }
+      if (!approval.selection.workflowCreditId) throw new Error("本次 AI 生图尚未完成积分确认");
+      const asset = await generateAssetLibraryItem({
+        request_id: approval.requestId,
+        workflow_credit_id: approval.selection.workflowCreditId,
+        asset_type: assetType,
+        name: name.trim(),
+        prompt: prompt.trim(),
+        aspect_ratio: aspectRatio,
+        platform_api_base_url: platformApiBaseUrl,
+        provider_model_id: approval.selection.model.id,
+        resolution: approval.selection.resolution,
+      });
+      await invoke("stop_workflow_credit", { projectPath: approval.workspace, id: approval.selection.workflowCreditId }).catch(() => undefined);
+      onCreated(asset);
+    } catch (reason) {
+      const detail = readableError(reason);
+      if (!detail.includes("已取消选择生成模型和积分确认")) setError(detail);
+    } finally { setBusy(false); }
+  };
+  const switchMode = (next: "upload" | "ai") => {
+    if (busy || next === mode) return;
+    releaseApproval();
+    setApprovedGeneration(undefined);
+    setMode(next);
+    setError("");
+  };
+  const canUpload = Boolean(name.trim() && sourcePath && !busy);
+  const canGenerate = Boolean(name.trim() && prompt.trim().length >= 10 && !busy);
+  return createPortal(<div className="modal-backdrop asset-add-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <section className="asset-add-modal" role="dialog" aria-modal="true" aria-labelledby="asset-add-title">
+      <header><div><span className="eyebrow">ASSET LIBRARY</span><h2 id="asset-add-title">添加资产</h2><p>上传已有图片，或者填写提示词后使用 AI 生成新图片。</p></div><button className="modal-close" type="button" aria-label="关闭添加资产" onClick={close} disabled={busy}><X size={18} /></button></header>
+      <div className="asset-add-body">
+        <div className="asset-add-fields"><label>资产名称<input value={name} maxLength={80} disabled={busy || Boolean(approvedGeneration)} onChange={(event) => setName(event.target.value)} placeholder="例如：雨夜老街" /></label><label>资产类型<select value={assetType} disabled={busy || Boolean(approvedGeneration)} onChange={(event) => setAssetType(event.target.value as AssetLibraryItem["asset_type"])}><option value="scene">场景</option><option value="character">角色</option><option value="prop">道具</option></select></label></div>
+        <label className="asset-add-prompt">提示词<textarea rows={5} value={prompt} maxLength={20_000} disabled={busy || Boolean(approvedGeneration)} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "ai" ? "至少 10 个字符，描述主体、环境、构图、光线和风格" : "可选，记录图片内容或后续生成时可复用的提示词"} /><small>{mode === "ai" ? `AI 生成至少需要 10 个字符，当前 ${prompt.trim().length} 个` : "上传图片时提示词可以留空"}</small></label>
+        <div className="asset-add-mode-tabs" role="tablist" aria-label="添加资产方式"><button type="button" role="tab" aria-selected={mode === "upload"} className={mode === "upload" ? "active" : ""} disabled={busy || Boolean(approvedGeneration)} onClick={() => switchMode("upload")}><Upload size={17} />上传图片</button><button type="button" role="tab" aria-selected={mode === "ai"} className={mode === "ai" ? "active" : ""} disabled={busy || Boolean(approvedGeneration)} onClick={() => switchMode("ai")}><Sparkles size={17} />AI 生成</button></div>
+        {mode === "upload" ? <div className="asset-add-upload"><button type="button" className="asset-add-upload-picker" disabled={busy} onClick={() => void chooseImage()}>{sourcePath ? <img src={convertFileSrc(sourcePath)} alt="待上传资产预览" /> : <><ImageIcon size={30} /><strong>选择图片</strong><span>支持 PNG、JPG/JPEG、WebP，最大 40MB</span></>}</button>{sourcePath && <div><span title={sourcePath}>{sourcePath.split(/[\\/]/).pop()}</span><button className="secondary-button" type="button" disabled={busy} onClick={() => void chooseImage()}>更换图片</button></div>}</div> : <div className="asset-add-ai-options"><label>画面比例<select value={aspectRatio} disabled={busy || Boolean(approvedGeneration)} onChange={(event) => setAspectRatio(event.target.value as "9:16" | "16:9")}><option value="16:9">16:9 横屏</option><option value="9:16">9:16 竖屏</option></select></label><div><WandSparkles size={20} /><span>{approvedGeneration ? "模型和积分已确认；如果生成中断，可直接重试且不会重复提交。" : "点击生成后选择模型与清晰度，并确认本次所需积分。"}</span></div></div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
+      </div>
+      <footer><button className="secondary-button" type="button" onClick={close} disabled={busy}>取消</button>{mode === "upload" ? <button className="primary-button" type="button" disabled={!canUpload} onClick={() => void submitUpload()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}{busy ? "正在添加…" : "添加到资产库"}</button> : <button className="primary-button" type="button" disabled={!canGenerate} onClick={() => void submitAi()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{busy ? "正在生成并保存…" : approvedGeneration ? "重试生成（不会重复提交）" : "选择模型并生成"}</button>}</footer>
+    </section>
+  </div>, document.body);
+}
+
 function AssetLibraryPanel({ assets, loading, error, onRefresh }: { assets: AssetLibraryItem[]; loading: boolean; error: unknown; onRefresh: () => void }) {
   const [activeType, setActiveType] = useState<AssetLibraryFilter>("all");
   const [selectedAsset, setSelectedAsset] = useState<AssetLibraryItem>();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showAddAsset, setShowAddAsset] = useState(false);
   const filteredAssets = activeType === "all" ? assets : assets.filter((asset) => asset.asset_type === activeType);
   const activeLabel = assetLibraryTabs.find((tab) => tab.type === activeType)?.label ?? "全部";
   const allFilteredSelected = filteredAssets.length > 0 && filteredAssets.every((asset) => selectedIds.has(asset.id));
@@ -1623,12 +1739,13 @@ function AssetLibraryPanel({ assets, loading, error, onRefresh }: { assets: Asse
       {Boolean(error) && <div className="error-banner">{readableError(error)}</div>}
       <div className="asset-library-tab-row"><nav className="asset-library-tabs" role="tablist" aria-label="资产类型">
           {assetLibraryTabs.map((tab) => { const count = tab.type === "all" ? assets.length : assets.filter((asset) => asset.asset_type === tab.type).length; return <button key={tab.type} className={activeType === tab.type ? "active" : ""} type="button" role="tab" aria-selected={activeType === tab.type} onClick={() => setActiveType(tab.type)}><span>{tab.label}</span><b>{count}</b></button>; })}
-        </nav><div className="asset-library-batch-actions">{selectionMode ? <><span className="asset-selected-count">已选 {selectedIds.size} 项</span><button className="secondary-button toolbar-button" type="button" onClick={toggleAll} disabled={filteredAssets.length === 0}>{allFilteredSelected ? "取消全选" : "全选"}</button><button className="secondary-button toolbar-button" type="button" onClick={cancelSelection}>取消</button><button className="danger-button asset-batch-delete-confirm" type="button" disabled={selectedIds.size === 0} onClick={() => { deleteAssets.reset(); setShowDeleteConfirm(true); }}><Trash2 size={14} />删除所选</button></> : <button className="secondary-button toolbar-button asset-batch-delete-entry" type="button" onClick={() => { deleteAssets.reset(); setSelectionMode(true); }} disabled={assets.length === 0}><Trash2 size={14} />批量删除</button>}</div></div>
+        </nav><div className="asset-library-batch-actions">{selectionMode ? <><span className="asset-selected-count">已选 {selectedIds.size} 项</span><button className="secondary-button toolbar-button" type="button" onClick={toggleAll} disabled={filteredAssets.length === 0}>{allFilteredSelected ? "取消全选" : "全选"}</button><button className="secondary-button toolbar-button" type="button" onClick={cancelSelection}>取消</button><button className="danger-button asset-batch-delete-confirm" type="button" disabled={selectedIds.size === 0} onClick={() => { deleteAssets.reset(); setShowDeleteConfirm(true); }}><Trash2 size={14} />删除所选</button></> : <><button className="primary-button toolbar-button asset-add-entry" type="button" onClick={() => setShowAddAsset(true)}><Plus size={14} />添加资产</button><button className="secondary-button toolbar-button asset-batch-delete-entry" type="button" onClick={() => { deleteAssets.reset(); setSelectionMode(true); }} disabled={assets.length === 0}><Trash2 size={14} />批量删除</button></>}</div></div>
       {loading && assets.length === 0 ? <div className="asset-library-empty"><LoaderCircle className="spin" size={20} />加载中…</div> : filteredAssets.length === 0 ? <div className="asset-library-empty">暂无{activeLabel === "全部" ? "资产" : `${activeLabel}资产`}</div> : <div className="asset-library-masonry">
         {filteredAssets.map((asset) => { const selected = selectedIds.has(asset.id); return <button className={`asset-library-card${selectionMode ? " selecting" : ""}${selected ? " selected" : ""}`} type="button" key={asset.id} onClick={() => selectionMode ? toggleAsset(asset.id) : setSelectedAsset(asset)} aria-label={selectionMode ? `${selected ? "取消选择" : "选择"}资产 ${asset.name}` : `查看资产 ${asset.name}`} aria-pressed={selectionMode ? selected : undefined}>{selectionMode && <span className="asset-selection-check">{selected && <Check size={13} />}</span>}<span className="asset-library-image"><img src={convertFileSrc(asset.image_path)} alt={asset.name} /></span><span className="asset-library-card-copy"><strong>{asset.name}</strong><span>{asset.prompt || "暂无提示词"}</span></span></button>; })}
       </div>}
     </section>
     {selectedAsset && <AssetLibraryDetailModal asset={selectedAsset} onClose={() => setSelectedAsset(undefined)} />}
+    {showAddAsset && <AddAssetLibraryModal onClose={() => setShowAddAsset(false)} onCreated={(asset) => { setShowAddAsset(false); setActiveType(asset.asset_type); onRefresh(); }} />}
     {showDeleteConfirm && <DeleteAssetsConfirmModal count={selectedIds.size} deleting={deleteAssets.isPending} error={deleteAssets.error} onCancel={() => { if (!deleteAssets.isPending) { deleteAssets.reset(); setShowDeleteConfirm(false); } }} onConfirm={() => deleteAssets.mutate([...selectedIds])} />}
   </>;
 }
@@ -1636,7 +1753,7 @@ function AssetLibraryPanel({ assets, loading, error, onRefresh }: { assets: Asse
 function StoryboardModeModal({ showSubmissionMode, videoInfo, onClose, onSelect }: { showSubmissionMode: boolean; videoInfo?: { duration?: number }; onClose: () => void; onSelect: (selection: StoryboardUnderstandingSelection, submissionMode: VideoSubmissionMode) => void }) {
   const isLongVideo = Boolean(videoInfo?.duration && videoInfo.duration > 300);
   const segmentCount = isLongVideo ? Math.ceil(videoInfo!.duration! / 300) : 1;
-  const [submissionMode, setSubmissionMode] = useState<VideoSubmissionMode>("url");
+  const [submissionMode, setSubmissionMode] = useState<VideoSubmissionMode>("upload");
   const [selectedMode, setSelectedMode] = useState<StoryboardUnderstandingMode>("fixed");
   const [fixedSeconds, setFixedSeconds] = useState<FixedStoryboardSeconds>(10);
   useEffect(() => { if (isLongVideo) setSubmissionMode("upload"); }, [isLongVideo]);
@@ -1653,11 +1770,11 @@ function StoryboardModeModal({ showSubmissionMode, videoInfo, onClose, onSelect 
       {showSubmissionMode && <section className="submission-mode-section" aria-labelledby="submission-mode-title">
         <div className="storyboard-mode-section-title"><div><strong id="submission-mode-title">视频提交方式</strong><span>决定解析后的视频如何交给大模型</span></div></div>
         <div className="submission-mode-options">
-          <button className={`storyboard-mode-option submission-mode-option${submissionMode === "url" ? " active" : ""}`} type="button" disabled={isLongVideo} onClick={() => setSubmissionMode("url")} aria-pressed={submissionMode === "url"}>
-            <span className="mode-icon"><Zap size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>极速模式</strong><em>推荐</em></span><small>{isLongVideo ? "长视频需要下载并拆分，本次不可使用极速模式。" : "直接将刚解析出来的视频地址发给大模型，无需先下载和上传，开始更快。"}</small>{!isLongVideo && <span className="submission-mode-warning"><AlertTriangle size={14} />临时地址失效、生成失败或等待超过 10 分钟时，会自动切换详细模式重试一次。</span>}</span>{submissionMode === "url" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
-          </button>
           <button className={`storyboard-mode-option submission-mode-option${submissionMode === "upload" ? " active" : ""}`} type="button" onClick={() => setSubmissionMode("upload")} aria-pressed={submissionMode === "upload"}>
-            <span className="mode-icon"><Upload size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>详细模式</strong></span><small>先下载并校验视频，再压缩上传给大模型。准备时间更长，但对临时地址和防盗链更兼容。</small></span>{submissionMode === "upload" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
+            <span className="mode-icon"><Upload size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>详细模式</strong><em>推荐</em></span><small>先完整下载、校验并压缩上传给大模型，解析效果更好、稳定性更高；准备时间会稍长。</small></span>{submissionMode === "upload" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
+          </button>
+          <button className={`storyboard-mode-option submission-mode-option${submissionMode === "url" ? " active" : ""}`} type="button" disabled={isLongVideo} onClick={() => setSubmissionMode("url")} aria-pressed={submissionMode === "url"}>
+            <span className="mode-icon"><Zap size={22} /></span><span className="mode-copy"><span className="mode-title"><strong>极速模式</strong></span><small>{isLongVideo ? "长视频需要下载并拆分，本次不可使用极速模式。" : "直接将刚解析出来的视频地址发给大模型，开始更快，但解析效果和稳定性不如详细模式。"}</small>{!isLongVideo && <span className="submission-mode-warning"><AlertTriangle size={14} />临时地址失效、生成失败或等待超过 10 分钟时，会自动切换详细模式重试一次。</span>}</span>{submissionMode === "url" ? <CheckCircle2 size={20} /> : <ChevronRight size={20} />}
           </button>
         </div>
       </section>}
@@ -3919,7 +4036,18 @@ function StoryboardPage({ canonical, projectPath, projectId }: { canonical: Cano
 function JobsPage({ bundle }: { bundle: ProjectBundle }) {
   const { t } = useI18n();
   const douyinTasks = useQuery({ queryKey: ["douyin-understanding-tasks"], queryFn: listDouyinUnderstandingTasks, refetchInterval: 1_200 });
+  const videoQuote = useQuery({ queryKey: ["video-link-understanding-quote"], queryFn: () => getModelCreditQuote("VIDEO_UNDERSTANDING"), staleTime: 20_000 });
+  const [reparseConfirmationTask, setReparseConfirmationTask] = useState<DouyinUnderstandingTask>();
   const retryTask = useMutation({ mutationFn: retryDouyinUnderstandingTask, onSuccess: () => douyinTasks.refetch() });
-  const reparseTask = useMutation({ mutationFn: reparseDouyinUnderstandingTask, onSuccess: () => douyinTasks.refetch() });
-  return <div className="jobs-page-stack"><section className="panel jobs-panel"><div className="panel-title"><div><span className="section-label">PROJECT WORKFLOW</span><h3>{t("taskCenter")}</h3></div><span className="count-badge">{bundle.jobs.length}</span></div>{bundle.jobs.length === 0 ? <div className="empty-state">{t("noTasks")}</div> : bundle.jobs.map((job) => <div className="job-row" key={job.id}><div className="job-icon"><Check size={18} /></div><div><strong>{job.job_type}</strong><span>{job.stage ?? "—"} · {job.id.slice(0, 18)}</span></div><div className="progress"><i style={{ width: `${job.progress * 100}%` }} /></div><em>{job.status}</em></div>)}</section><DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryTask.isPending ? retryTask.variables : undefined} onRetry={(taskId) => retryTask.mutate(taskId)} reparsingTaskId={reparseTask.isPending ? reparseTask.variables : undefined} onReparse={(taskId) => { if (!window.confirm("确定重新解析这个视频吗？重新解析会再次调用视频理解模型并消耗相应积分，成功后将用新结果替换当前结果。")) return false; reparseTask.mutate(taskId); return true; }} reparseError={reparseTask.error} /></div>;
+  const reparseTask = useMutation({
+    mutationFn: (taskId: string) => {
+      if (!videoQuote.data) throw new Error("暂时无法获取视频理解积分，请稍后重试");
+      return reparseDouyinUnderstandingTask(taskId, videoQuote.data);
+    },
+    onSuccess: async () => {
+      setReparseConfirmationTask(undefined);
+      await douyinTasks.refetch();
+    },
+  });
+  return <div className="jobs-page-stack"><section className="panel jobs-panel"><div className="panel-title"><div><span className="section-label">PROJECT WORKFLOW</span><h3>{t("taskCenter")}</h3></div><span className="count-badge">{bundle.jobs.length}</span></div>{bundle.jobs.length === 0 ? <div className="empty-state">{t("noTasks")}</div> : bundle.jobs.map((job) => <div className="job-row" key={job.id}><div className="job-icon"><Check size={18} /></div><div><strong>{job.job_type}</strong><span>{job.stage ?? "—"} · {job.id.slice(0, 18)}</span></div><div className="progress"><i style={{ width: `${job.progress * 100}%` }} /></div><em>{job.status}</em></div>)}</section><DouyinTaskList tasks={douyinTasks.data ?? []} loading={douyinTasks.isLoading} retryingTaskId={retryTask.isPending ? retryTask.variables : undefined} onRetry={(taskId) => retryTask.mutate(taskId)} reparsingTaskId={reparseTask.isPending ? reparseTask.variables : undefined} onReparse={(taskId) => { const task = douyinTasks.data?.find((item) => item.id === taskId); if (!task || !videoQuote.data) return false; reparseTask.reset(); setReparseConfirmationTask(task); return true; }} reparseError={reparseTask.error ?? videoQuote.error} />{reparseConfirmationTask && videoQuote.data && <VideoLinkCreditModal reparse quote={videoQuote.data} selection={taskUnderstandingSelection(reparseConfirmationTask)} submissionMode="upload" videoInfo={reparseConfirmationTask} segmentCount={videoTaskSegmentCount(reparseConfirmationTask)} busy={reparseTask.isPending} error={reparseTask.error} onCancel={() => { if (!reparseTask.isPending) setReparseConfirmationTask(undefined); }} onCreditsPurchased={() => reparseTask.reset()} onConfirm={() => reparseTask.mutate(reparseConfirmationTask.id)} />}</div>;
 }

@@ -21,10 +21,14 @@ test('fixed-duration mode is the first and default video understanding option', 
   assert.ok(options.indexOf('标准模式') < options.indexOf('逐秒分镜模式'));
 });
 
-test('link storyboard generation asks for a recommended fast URL mode or detailed upload mode', () => {
-  assert.match(app, /useState<VideoSubmissionMode>\("url"\)/);
-  assert.match(app, /<strong>极速模式<\/strong><em>推荐<\/em>/);
-  assert.match(app, /<strong>详细模式<\/strong>/);
+test('link storyboard generation prefers the recommended detailed upload mode', () => {
+  assert.match(app, /useState<VideoSubmissionMode>\("upload"\)/);
+  assert.match(app, /<strong>详细模式<\/strong><em>推荐<\/em>/);
+  assert.doesNotMatch(app, /<strong>极速模式<\/strong><em>推荐<\/em>/);
+  const submissionOptions = app.slice(app.indexOf('<div className="submission-mode-options">'), app.indexOf('</div>', app.indexOf('<div className="submission-mode-options">')));
+  assert.ok(submissionOptions.indexOf('详细模式') < submissionOptions.indexOf('极速模式'));
+  assert.match(app, /解析效果更好、稳定性更高/);
+  assert.match(app, /解析效果和稳定性不如详细模式/);
   assert.match(app, /等待超过 10 分钟时，会自动切换详细模式重试一次/);
   assert.match(app, /video_submission_mode: submissionMode/);
 });

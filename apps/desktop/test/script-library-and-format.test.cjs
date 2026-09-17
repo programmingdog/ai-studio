@@ -29,6 +29,12 @@ test("script library searches, confirms credits and creates a canonical local pr
   assert.match(page, /useScriptLibraryItem/);
   assert.match(page, /getCreditBalance/);
   assert.match(page, /createCanonicalProject/);
+  assert.match(page, /从剧本库导入的规范剧本/);
+  assert.match(page, /workflowErrorMessage/);
+  assert.match(page, /acceptedUsage\?\.key === key/);
+  assert.match(page, /acceptedUsage\?\.key !== confirmation\.key/);
+  assert.match(page, /重试创建项目（不会重复扣分）/);
+  assert.match(commands, /value\.trim\(\)\.chars\(\)\.count\(\) >= 10/);
   assert.match(page, /const PAGE_SIZE = 12/);
   assert.match(page, /script-library-category-tabs/);
   assert.match(page, /script-library-pagination/);
@@ -44,4 +50,11 @@ test("script library searches, confirms credits and creates a canonical local pr
   assert.doesNotMatch(page, /path-input|chooseProjectDirectory|onRootPathChange/);
   assert.doesNotMatch(app, /<label>项目根目录|<label>新项目根目录|t\("projectRoot"\)/);
   assert.ok(app.indexOf("项目中心<small>") < app.indexOf("剧本库<small>"));
+});
+
+test("short script-library titles still produce valid canonical import metadata", () => {
+  assert.ok(Array.from("剧本库：雨夜来信").length < 10);
+  assert.ok(Array.from("从剧本库导入的规范剧本：《雨夜来信》").length >= 10);
+  assert.match(commands, /filter\(\|value\| value\.trim\(\)\.chars\(\)\.count\(\) >= 10\)/);
+  assert.match(commands, /规范化剧本数据（由剧本库或标准模板导入）/);
 });

@@ -135,7 +135,9 @@ function assertVideoUnderstandingResponse(value: unknown): void {
     "videowasnotuploaded", "novideowasprovided", "cannotaccessthevideo",
     "can'taccessthevideo", "unabletoaccessthevideo",
   ];
-  if (text.length <= 1_200 && missingVideoMarkers.some((marker) => normalized.includes(marker))) {
+  const asksForMissingVideo = /未检测到.{0,16}视频/.test(normalized)
+    || /请(?:您)?上传视频/.test(normalized);
+  if (text.length <= 1_200 && (asksForMissingVideo || missingVideoMarkers.some((marker) => normalized.includes(marker)))) {
     throw new BadGatewayException("视频理解模型未收到或无法读取视频文件，请重新解析后重试");
   }
 }

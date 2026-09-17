@@ -15,6 +15,15 @@ from urllib.request import urlopen
 AUTH_COOKIE_NAMES = {"sessionid", "sessionid_ss"}
 FRESH_COOKIE_NAMES = {"s_v_web_id", "ttwid"}
 DOUYIN_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
+DOUYIN_DETAIL_ENDPOINTS = (
+    "/aweme/v1/web/aweme/detail/",
+    "/aweme/v2/web/aweme/detail/",
+    "/web/api/v2/aweme/iteminfo",
+)
+DOUYIN_DESKTOP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
 PLATFORM_BROWSER_HOSTS = {
     "DOUYIN": DOUYIN_HOST_SUFFIXES,
     "KUAISHOU": ("kuaishou.com", "gifshow.com", "kwai.com"),
@@ -179,6 +188,7 @@ def _start_managed_browser(
     browser_name: str,
     browser_executable: str,
     target_url: str,
+    headless: bool = False,
 ) -> Tuple[subprocess.Popen, str]:
     arguments = [
         browser_executable,
@@ -191,9 +201,18 @@ def _start_managed_browser(
         "--disable-sync",
         "--disable-background-mode",
         "--no-service-autorun",
-        "--new-window",
-        target_url,
     ]
+    if headless:
+        arguments.extend([
+            "--headless=new",
+            "--window-size=1440,900",
+            "--lang=zh-CN",
+            "--disable-blink-features=AutomationControlled",
+            "--user-agent={0}".format(DOUYIN_DESKTOP_USER_AGENT),
+        ])
+    else:
+        arguments.append("--new-window")
+    arguments.append(target_url)
     port = int(arguments[2].split("=", 1)[1])
     last_error: Optional[DouyinAuthError] = None
     for attempt in range(2):
@@ -310,7 +329,7 @@ def _login_douyin_once(
                     )
                 raise DouyinAuthError("DOUYIN_LOGIN_CANCELLED", "登录窗口已关闭，尚未检测到平台登录状态", retryable=True)
             expected_video_id = _video_id_from_url(target_url)
-            page_target = _find_douyin_page_target(port)
+            page_target = _find_douyin_page_target(port, expected_video_id)
             page_video_id = _video_id_from_url(str((page_target or {}).get("url") or ""))
             if expected_video_id and page_video_id and page_video_id != expected_video_id:
                 raise DouyinAuthError(
@@ -461,6 +480,141 @@ def resolve_video_in_browser(
         )
 
 
+def resolve_public_douyin(
+    browser_name: str,
+    browser_executable: str,
+    target_url: str,
+    timeout_seconds: int = 45,
+) -> Dict[str, Any]:
+    """Resolve one public Douyin item in an isolated, headless browser profile.
+
+    The resolver intentionally accepts only an aweme detail response whose id
+    matches the id in ``target_url``.  It never falls back to a DOM ``video``
+    element or an arbitrary media response because Douyin pages can preload
+    recommendation clips that do not belong to the requested item.
+    """
+    expected_video_id = _video_id_from_url(target_url)
+    if not expected_video_id:
+        raise DouyinAuthError(
+            "DOUYIN_VIDEO_ID_MISSING",
+            "分享链接没有解析出目标作品 ID，无法确认视频内容是否一致",
+            retryable=True,
+        )
+    try:
+        return _resolve_public_douyin_once(
+            browser_name,
+            browser_executable,
+            target_url,
+            expected_video_id,
+            timeout_seconds,
+        )
+    except DouyinAuthError as exc:
+        startup_errors = {
+            "DOUYIN_BROWSER_EXEC_FAILED",
+            "DOUYIN_BROWSER_START_FAILED",
+            "DOUYIN_BROWSER_DEBUG_TIMEOUT",
+        }
+        if browser_name != "chrome" or exc.code not in startup_errors:
+            raise
+        edge_executable = find_edge()
+        if not edge_executable:
+            raise
+        return _resolve_public_douyin_once(
+            "edge",
+            edge_executable,
+            target_url,
+            expected_video_id,
+            timeout_seconds,
+        )
+
+
+def _resolve_public_douyin_once(
+    browser_name: str,
+    browser_executable: str,
+    target_url: str,
+    expected_video_id: str,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
+    try:
+        from websocket import create_connection
+    except ImportError:
+        raise DouyinAuthError(
+            "VIDEO_CDP_DEPENDENCY_MISSING",
+            "缺少 websocket-client，无法通过浏览器读取视频",
+            retryable=True,
+        )
+    process: Optional[subprocess.Popen] = None
+    page_connection = None
+    with tempfile.TemporaryDirectory(prefix="aivs_douyin_public_") as profile_root:
+        try:
+            process, browser_websocket_url = _start_managed_browser(
+                profile_root,
+                browser_name,
+                browser_executable,
+                "https://www.douyin.com/",
+                headless=True,
+            )
+            port = int(urlparse(browser_websocket_url).port or 0)
+            warm_deadline = time.time() + min(8, timeout_seconds)
+            target = None
+            while time.time() < warm_deadline:
+                if process.poll() is not None:
+                    raise DouyinAuthError(
+                        "DOUYIN_BROWSER_START_FAILED",
+                        "无界面浏览器启动后意外退出",
+                        retryable=True,
+                    )
+                target = _find_page_target(port, DOUYIN_HOST_SUFFIXES)
+                if target:
+                    break
+                time.sleep(0.2)
+            if not target:
+                raise DouyinAuthError(
+                    "DOUYIN_BROWSER_DEBUG_TIMEOUT",
+                    "无界面浏览器未能打开抖音页面",
+                    retryable=True,
+                )
+            page_connection = create_connection(
+                str(target["webSocketDebuggerUrl"]),
+                timeout=3,
+                origin="http://127.0.0.1:{0}".format(port),
+            )
+            # Match the reference resolver: warm the origin first, then listen
+            # before navigating to the exact /video/{aweme_id} page.
+            time.sleep(2)
+            exact_url = "https://www.douyin.com/video/{0}".format(expected_video_id)
+            capture_timeout = max(3, (timeout_seconds - 2) / 2)
+            video = _capture_video_from_network(
+                page_connection,
+                expected_video_id,
+                timeout_seconds=capture_timeout,
+                webpage_url=exact_url,
+                platform="DOUYIN",
+                navigate_url=exact_url,
+            )
+            if not video:
+                video = _capture_video_from_network(
+                    page_connection,
+                    expected_video_id,
+                    timeout_seconds=capture_timeout,
+                    webpage_url=exact_url,
+                    platform="DOUYIN",
+                )
+            if not video or str(video.get("id") or "") != expected_video_id:
+                raise DouyinAuthError(
+                    "DOUYIN_DETAIL_NOT_FOUND",
+                    "没有捕获到目标作品的详情数据，可能需要登录或安全验证",
+                    retryable=True,
+                )
+            return video
+        finally:
+            if page_connection:
+                page_connection.close()
+            _terminate_browser_process(process)
+            _terminate_profile_browser_processes(profile_root)
+            _remove_stale_profile_locks(profile_root)
+
+
 def _resolve_video_in_browser_once(
     profile_root: str,
     browser_name: str,
@@ -486,11 +640,16 @@ def _resolve_video_in_browser_once(
             profile_root, browser_name, browser_executable, target_url
         )
         port = int(urlparse(browser_websocket_url).port or 0)
+        expected_video_id = _platform_video_id(target_url, platform)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             if process.poll() is not None:
                 raise DouyinAuthError("VIDEO_BROWSER_CANCELLED", "专用浏览器窗口已关闭，尚未读取到可播放视频", retryable=True)
-            target = _find_page_target(port, host_suffixes)
+            target = _find_page_target(
+                port,
+                host_suffixes,
+                expected_video_id if platform == "DOUYIN" else "",
+            )
             if not target:
                 time.sleep(0.5)
                 continue
@@ -501,15 +660,14 @@ def _resolve_video_in_browser_once(
                 timeout=3,
                 origin="http://127.0.0.1:{0}".format(port),
             )
-            video_id = _platform_video_id(str(target.get("url") or target_url), platform)
             video = _capture_video_from_network(
                 page_connection,
-                video_id,
+                expected_video_id,
                 timeout_seconds=min(18, max(3, deadline - time.time())),
-                webpage_url=str(target.get("url") or target_url),
+                webpage_url=target_url,
                 platform=platform,
             )
-            if video:
+            if video and (not expected_video_id or str(video.get("id") or "") == expected_video_id):
                 browser_connection = create_connection(
                     browser_websocket_url,
                     timeout=3,
@@ -613,7 +771,7 @@ def _wait_for_debugger(
     )
 
 
-def _cdp(connection: Any, command_id: int, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _cdp(connection: Any, command_id: int, method: str, params: Optional[Dict[str, Any]] = None, events: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"id": command_id, "method": method}
     if params:
         payload["params"] = params
@@ -621,6 +779,8 @@ def _cdp(connection: Any, command_id: int, method: str, params: Optional[Dict[st
     while True:
         payload = json.loads(connection.recv())
         if payload.get("id") != command_id:
+            if events is not None and payload.get("method"):
+                events.append(payload)
             continue
         if payload.get("error"):
             raise DouyinAuthError("DOUYIN_CDP_ERROR", str(payload["error"]), retryable=True)
@@ -700,7 +860,7 @@ def _read_video_page(
         while time.time() < deadline:
             if process.poll() is not None:
                 return None
-            target = _find_douyin_page_target(port)
+            target = _find_douyin_page_target(port, expected_video_id)
             if not target:
                 time.sleep(0.25)
                 continue
@@ -719,41 +879,12 @@ def _read_video_page(
                 )
                 if network_video:
                     return network_video
-            expression = _VIDEO_PAGE_EXPRESSION.replace("__EXPECTED_VIDEO_ID__", json.dumps(expected_video_id))
-            result = _cdp(page_connection, 1, "Runtime.evaluate", {
-                "expression": expression,
-                "returnByValue": True,
-                "awaitPromise": True,
-            })
-            value = ((result.get("result") or {}).get("value") or {})
-            download_url = str(value.get("download_url") or "")
-            actual_video_id = str(value.get("id") or "")
-            if expected_video_id and actual_video_id != expected_video_id:
-                time.sleep(0.5)
-                continue
-            if download_url.startswith(("http://", "https://")):
-                return {
-                    "id": str(value.get("id") or ""),
-                    "title": str(value.get("title") or "短视频"),
-                    "uploader": "",
-                    "duration": value.get("duration"),
-                    "thumbnail": value.get("thumbnail"),
-                    "webpage_url": str(value.get("webpage_url") or target.get("url") or ""),
-                    "download_url": download_url,
-                    "ext": "mp4",
-                    "width": value.get("width"),
-                    "height": value.get("height"),
-                    "format_id": "browser-page",
-                    "extractor": "DouyinBrowser",
-                    "platform": "DOUYIN",
-                    "platform_name": "抖音",
-                    "user_agent": str(value.get("user_agent") or ""),
-                }
-            time.sleep(0.5)
+            # Never attach the page ID to an unrelated DOM/preloaded video.
+            return None
         return None
+    except DouyinAuthError:
+        raise
     except Exception:
-        # Cookie authentication should still succeed if the page layout changes.
-        # The regular resolver will provide the user-facing extraction error.
         return None
     finally:
         if page_connection:
@@ -795,12 +926,27 @@ def _capture_video_from_network(
     timeout_seconds: float,
     webpage_url: str = "",
     platform: str = "DOUYIN",
+    navigate_url: str = "",
 ) -> Optional[Dict[str, Any]]:
     command_id = 100
-    _cdp(connection, command_id, "Network.enable")
+    events: List[Dict[str, Any]] = []
+    _cdp(connection, command_id, "Network.enable", events=events)
     command_id += 1
-    _cdp(connection, command_id, "Page.reload", {"ignoreCache": True})
+    if navigate_url:
+        _cdp(connection, command_id, "Page.navigate", {"url": navigate_url}, events=events)
+    else:
+        _cdp(connection, command_id, "Page.reload", {"ignoreCache": True}, events=events)
     command_id += 1
+    if platform == "DOUYIN":
+        if not expected_video_id:
+            return None
+        return _capture_douyin_detail_response(
+            connection,
+            command_id,
+            expected_video_id,
+            timeout_seconds,
+            events=events,
+        )
     initial = _cdp(connection, command_id, "Runtime.evaluate", {
         "expression": r"""(() => {
           const isHttpVideo = value => {
@@ -876,19 +1022,50 @@ def _capture_video_from_network(
                 webpage_url=webpage_url,
                 platform=platform,
             )
-        if platform != "DOUYIN" or not any(marker in response_url for marker in (
-            "/aweme/v1/web/aweme/detail/",
-            "/aweme/v2/web/aweme/detail/",
-            "/web/api/v2/aweme/iteminfo",
-            "/aweme/v1/web/feed/",
-        )):
-            continue
+    return None
+
+
+def _capture_douyin_detail_response(
+    connection: Any,
+    command_id: int,
+    expected_video_id: str,
+    timeout_seconds: float,
+    events: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Capture completed detail bodies; retain events interleaved with CDP replies."""
+    events = events if events is not None else []
+    pending: Dict[str, str] = {}
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            payload = events.pop(0) if events else json.loads(connection.recv())
+        except Exception as exc:
+            if exc.__class__.__name__ in {"WebSocketTimeoutException", "TimeoutError"}:
+                continue
+            return None
+        params = payload.get("params") or {}
         request_id = str(params.get("requestId") or "")
-        if not request_id:
+        method = payload.get("method")
+        if method == "Network.responseReceived":
+            response = params.get("response") or {}
+            url = str(response.get("url") or "")
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            if (any(host == suffix or host.endswith("." + suffix) for suffix in DOUYIN_HOST_SUFFIXES)
+                    and any(marker in parsed.path for marker in DOUYIN_DETAIL_ENDPOINTS)
+                    and request_id):
+                pending[request_id] = url
             continue
+        if method == "Network.loadingFailed":
+            pending.pop(request_id, None)
+            continue
+        if method != "Network.loadingFinished" or request_id not in pending:
+            continue
+        response_url = pending.pop(request_id)
         command_id += 1
         try:
-            body_result = _cdp(connection, command_id, "Network.getResponseBody", {"requestId": request_id})
+            body_result = _cdp(connection, command_id, "Network.getResponseBody",
+                               {"requestId": request_id}, events=events)
             body = str(body_result.get("body") or "")
             if body_result.get("base64Encoded"):
                 body = base64.b64decode(body).decode("utf-8", errors="replace")
@@ -896,11 +1073,15 @@ def _capture_video_from_network(
         except Exception:
             continue
         item = _find_aweme_item(data, expected_video_id)
-        if not item:
-            continue
-        video_info = _normalize_browser_aweme(item, expected_video_id)
-        if video_info:
-            return video_info
+        if item:
+            video_info = _normalize_browser_aweme(item, expected_video_id)
+            if video_info:
+                return video_info
+        if isinstance(data, dict) and data.get("filter_detail") and not item:
+            detail = data["filter_detail"]
+            filtered_id = str(detail.get("aweme_id") or "") if isinstance(detail, dict) else ""
+            if filtered_id == expected_video_id or (not filtered_id and _video_id_from_url(response_url) == expected_video_id):
+                raise DouyinAuthError("DOUYIN_VIDEO_UNAVAILABLE", "抖音返回目标作品不可用，可能已删除或设为私密")
     return None
 
 
@@ -987,26 +1168,27 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
     video = item.get("video") or {}
     candidates: List[Tuple[int, int, int, int, str]] = []
 
-    def add_address(node: Any, score: int) -> None:
+    def add_address(node: Any, priority: int) -> None:
         if not isinstance(node, dict):
             return
         urls = node.get("url_list") or node.get("urlList") or node.get("download_url_list") or []
         if not isinstance(urls, list):
             return
         try:
-            pixels = int(node.get("width") or 0) * int(node.get("height") or 0)
+            width = int(node.get("width") or 0)
+            height = int(node.get("height") or 0)
         except (TypeError, ValueError):
-            pixels = 0
+            width = 0
+            height = 0
         try:
             size = int(node.get("data_size") or node.get("dataSize") or 0)
         except (TypeError, ValueError):
             size = 0
-        for url_index, url in enumerate(urls):
-            if _is_http_video_url(url):
-                # Keep every CDN mirror.  The first address remains preferred,
-                # while later mirrors can recover a long transfer whose first
-                # node returns no data blocks.
-                candidates.append((score, pixels, size, -url_index, url))
+        # Each rendition can list several equivalent CDN mirrors. Match the
+        # reference resolver and keep only the first mirror for that rendition.
+        url = next((value for value in urls if _is_http_video_url(value)), None)
+        if url:
+            candidates.append((height, width, size, priority, url))
 
     # Prefer the structured play addresses exposed by Douyin's aweme detail API.
     # This mirrors the proven fallback in douyin_analysis and avoids unrelated
@@ -1033,7 +1215,7 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
                 score += 400
             elif "download_addr" in lowered_path or "downloadaddr" in lowered_path:
                 score += 200
-            candidates.append((score, 0, 0, 0, value))
+            candidates.append((0, 0, 0, score, value))
             return
         if isinstance(value, dict):
             for key, child in value.items():
@@ -1046,6 +1228,7 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
         collect(video, "video")
     if not candidates:
         return None
+    # Prefer the largest rendition; codec/address kind is only a tie breaker.
     candidates.sort(key=lambda candidate: candidate[:4], reverse=True)
     download_urls = []
     for candidate in candidates:
@@ -1055,8 +1238,13 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
     duration = video.get("duration")
     try:
         duration = float(duration) if duration is not None else None
-        if duration and duration > 10_000:
+        # The aweme detail schema stores this field in milliseconds even for
+        # clips shorter than ten seconds. Threshold conversion would turn a
+        # three-second value (3000) into a fictitious 3000-second video.
+        if duration and duration > 0:
             duration /= 1000
+        else:
+            duration = None
     except (TypeError, ValueError):
         duration = None
     cover = video.get("cover") or video.get("origin_cover") or video.get("originCover") or {}
@@ -1079,7 +1267,7 @@ def _normalize_browser_aweme(item: Dict[str, Any], video_id: str) -> Optional[Di
         "extractor": "DouyinBrowser",
         "platform": "DOUYIN",
         "platform_name": "抖音",
-        "user_agent": "",
+        "user_agent": DOUYIN_DESKTOP_USER_AGENT,
     }
 
 
@@ -1101,25 +1289,35 @@ def _first_http_url(value: Any, depth: int = 0) -> Optional[str]:
     return None
 
 
-def _find_douyin_page_target(port: int) -> Optional[Dict[str, Any]]:
-    return _find_page_target(port, DOUYIN_HOST_SUFFIXES)
+def _find_douyin_page_target(port: int, expected_video_id: str = "") -> Optional[Dict[str, Any]]:
+    return _find_page_target(port, DOUYIN_HOST_SUFFIXES, expected_video_id)
 
 
-def _find_page_target(port: int, host_suffixes: Tuple[str, ...]) -> Optional[Dict[str, Any]]:
+def _find_page_target(
+    port: int,
+    host_suffixes: Tuple[str, ...],
+    expected_video_id: str = "",
+) -> Optional[Dict[str, Any]]:
     endpoint = "http://127.0.0.1:{0}/json/list".format(port)
     try:
         with urlopen(endpoint, timeout=1) as response:
             targets = json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
+    matching_targets = []
     for target in targets:
         url = str(target.get("url") or "")
         host = (urlparse(url).hostname or "").lower()
         if target.get("type") == "page" and any(
             host == suffix or host.endswith("." + suffix) for suffix in host_suffixes
         ) and target.get("webSocketDebuggerUrl"):
-            return target
-    return None
+            matching_targets.append(target)
+    if expected_video_id:
+        for target in matching_targets:
+            if _platform_video_id(str(target.get("url") or ""), "DOUYIN") == expected_video_id:
+                return target
+        return None
+    return matching_targets[0] if matching_targets else None
 
 
 def _platform_video_id(url: str, platform: str) -> str:
@@ -1140,83 +1338,5 @@ def _platform_video_id(url: str, platform: str) -> str:
 
 
 def _video_id_from_url(url: str) -> str:
-    value = str(url or "")
-    match = re.search(r"/(?:share/)?video/(\d+)", value)
-    if match:
-        return match.group(1)
-    try:
-        return str(parse_qs(urlparse(value).query).get("modal_id", [""])[0])
-    except (TypeError, ValueError):
-        return ""
-
-
-_VIDEO_PAGE_EXPRESSION = r"""
-(() => {
-  const expectedVideoId = __EXPECTED_VIDEO_ID__;
-  const isHttpVideo = value => typeof value === 'string'
-    && /^https?:\/\//i.test(value)
-    && (/\.mp4(?:\?|$)/i.test(value) || /\/video\/tos\//i.test(value) || /mime_type=video/i.test(value));
-  const video = [...document.querySelectorAll('video')].find(item => item.currentSrc || item.src)
-    || document.querySelector('video');
-  const pathMatch = location.pathname.match(/\/video\/(\d+)/);
-  const modalId = new URLSearchParams(location.search).get('modal_id') || '';
-  const pageVideoId = pathMatch ? pathMatch[1] : modalId;
-  const directCandidates = video && (!expectedVideoId || pageVideoId === expectedVideoId) ? [
-    video.currentSrc,
-    video.src,
-    ...[...video.querySelectorAll('source')].map(item => item.src),
-  ] : [];
-  const resourceCandidates = (!expectedVideoId || pageVideoId === expectedVideoId) ? performance.getEntriesByType('resource')
-    .map(item => item.name)
-    .filter(isHttpVideo)
-    .reverse() : [];
-  let hydrationCandidates = [];
-  const visitUrls = (value, depth = 0) => {
-    if (depth > 12 || hydrationCandidates.length > 80 || value == null) return;
-    if (typeof value === 'string') {
-      if (isHttpVideo(value)) hydrationCandidates.push(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach(item => visitUrls(item, depth + 1));
-      return;
-    }
-    if (typeof value === 'object') Object.values(value).forEach(item => visitUrls(item, depth + 1));
-  };
-  const matchingItems = [];
-  const findMatchingItems = (value, depth = 0) => {
-    if (depth > 14 || value == null || matchingItems.length > 20) return;
-    if (Array.isArray(value)) {
-      value.forEach(item => findMatchingItems(item, depth + 1));
-      return;
-    }
-    if (typeof value !== 'object') return;
-    const objectId = String(value.aweme_id ?? value.awemeId ?? value.itemId ?? value.item_id ?? '');
-    if (expectedVideoId && objectId === expectedVideoId) matchingItems.push(value);
-    Object.values(value).forEach(item => findMatchingItems(item, depth + 1));
-  };
-  for (const script of document.querySelectorAll('script[type="application/json"], script#__UNIVERSAL_DATA_FOR_REHYDRATION__')) {
-    const text = script.textContent || '{}';
-    let data = null;
-    try { data = JSON.parse(text); } catch (_) {
-      try { data = JSON.parse(decodeURIComponent(text)); } catch (_) {}
-    }
-    if (!data) continue;
-    if (expectedVideoId) findMatchingItems(data);
-    else visitUrls(data);
-  }
-  matchingItems.forEach(item => visitUrls(item));
-  const downloadUrl = [...directCandidates, ...resourceCandidates, ...hydrationCandidates].find(isHttpVideo) || '';
-  return {
-    id: pageVideoId || expectedVideoId,
-    title: (document.title || '').replace(/\s*-\s*抖音.*$/, '').trim() || '短视频',
-    duration: video && Number.isFinite(video.duration) ? video.duration : null,
-    thumbnail: (video && video.poster) || document.querySelector('meta[property="og:image"]')?.content || null,
-    webpage_url: location.href,
-    download_url: downloadUrl,
-    width: (video && video.videoWidth) || null,
-    height: (video && video.videoHeight) || null,
-    user_agent: navigator.userAgent,
-  };
-})()
-"""
+    from inputs.douyin_input import _video_id
+    return _video_id(url, "DOUYIN")

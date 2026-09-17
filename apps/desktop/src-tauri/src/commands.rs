@@ -85,7 +85,13 @@ pub fn create_canonical_project(app: tauri::AppHandle, input: CreateCanonicalPro
     if duration > 0.0 { spec["target_duration"] = json!(duration); }
     let source_path = input.source_path.filter(|value| !value.trim().is_empty());
     let source_type = if source_path.is_some() { "SCRIPT_FILE" } else { "SCRIPT_TEXT" };
-    let source_text = input.source_text.or_else(|| Some("规范化剧本数据（由剧本库或标准模板导入）".to_owned()));
+    // Canonical imports do not rely on raw script text, but the shared project
+    // creator still requires SCRIPT_TEXT metadata to contain at least 10 chars.
+    // Fall back to a descriptive source instead of rejecting short library titles.
+    let source_text = input
+        .source_text
+        .filter(|value| value.trim().chars().count() >= 10)
+        .or_else(|| Some("规范化剧本数据（由剧本库或标准模板导入）".to_owned()));
     let bundle = crate::project::manager::create(crate::project::manager::CreateProjectInput {
         root_path: input.root_path,
         source_type: source_type.to_owned(),
@@ -125,6 +131,34 @@ pub fn import_asset_library_reference_image(
     source_path: String,
 ) -> Result<database::asset_library::AssetLibraryItem, String> {
     database::asset_library::import_free_creation_reference(&app, &PathBuf::from(source_path))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportAssetLibraryItemInput {
+    asset_type: String,
+    name: String,
+    prompt: String,
+    source_path: String,
+}
+
+#[tauri::command]
+pub fn import_asset_library_item(
+    app: tauri::AppHandle,
+    input: ImportAssetLibraryItemInput,
+) -> Result<database::asset_library::AssetLibraryItem, String> {
+    database::asset_library::import_custom(
+        &app,
+        &input.asset_type,
+        &input.name,
+        &input.prompt,
+        &PathBuf::from(input.source_path),
+    )
+}
+
+#[tauri::command]
+pub fn get_asset_library_workspace(app: tauri::AppHandle) -> Result<String, String> {
+    database::asset_library::library_root(&app)
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

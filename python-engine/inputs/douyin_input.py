@@ -6,8 +6,8 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
@@ -53,42 +53,71 @@ def detect_video_platform(url: str) -> Optional[str]:
     return None
 
 
+class _NoShareRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def probe_douyin_url(
     share_text: str,
-    opener: Callable[..., Any] = urlopen,
+    opener: Optional[Callable[..., Any]] = None,
 ) -> Dict[str, Any]:
     input_url = extract_douyin_url(share_text)
-    input_platform = detect_video_platform(input_url)
-    request = Request(input_url, method="GET", headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-    })
-    try:
-        with opener(request, timeout=15) as response:
-            canonical_url = str(response.geturl() or input_url)
-            status = int(getattr(response, "status", 200) or 200)
-    except HTTPError as exc:
+    platform = detect_video_platform(input_url)
+    open_url = opener or (build_opener(_NoShareRedirect()).open if platform == "DOUYIN" else urlopen)
+    current = input_url
+    status = None
+    for _ in range(8):
+        if detect_video_platform(current) != platform:
+            raise DouyinResolverError("DOUYIN_REDIRECT_NOT_ALLOWED", "视频分享链接跳转到了非官方地址，已停止解析")
+        video_id = _video_id(current, platform)
+        if platform == "DOUYIN" and video_id:
+            return {"input_url": input_url, "canonical_url": "https://www.douyin.com/video/" + video_id,
+                    "video_id": video_id, "status": status, "platform": platform}
+        request = Request(current, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        })
         try:
-            canonical_url = str(exc.geturl() or input_url)
-        except Exception:
-            canonical_url = input_url
-        status = int(exc.code)
-        if status not in (404, 410):
-            return {"input_url": input_url, "canonical_url": input_url, "video_id": _video_id(input_url, input_platform), "status": None, "platform": input_platform}
-    except (URLError, OSError, TimeoutError):
-        # A transient preflight failure must not block the existing resolver and
-        # browser fallback, which can still succeed through a different route.
-        return {"input_url": input_url, "canonical_url": input_url, "video_id": _video_id(input_url, input_platform), "status": None, "platform": input_platform}
-    canonical_platform = detect_video_platform(canonical_url)
-    if not canonical_platform or canonical_platform != input_platform:
+            with open_url(request, timeout=15) as response:
+                current = str(response.geturl() or current)
+                status = int(getattr(response, "status", 200) or 200)
+                if detect_video_platform(current) != platform:
+                    raise DouyinResolverError("DOUYIN_REDIRECT_NOT_ALLOWED", "视频分享链接跳转到了非官方地址，已停止解析")
+                if platform != "DOUYIN" or _video_id(current, platform):
+                    break
+                location = (getattr(response, "headers", {}) or {}).get("Location")
+                if location and 300 <= status < 400:
+                    current = urljoin(current, location)
+                    continue
+                html = response.read(1024 * 1024).decode("utf-8", errors="replace")
+                next_url = _douyin_url_from_html(html, current)
+                if next_url:
+                    current = next_url
+                    continue
+                # A random aweme_id in homepage/recommendation HTML is not proof
+                # of the short link's identity. Only explicit redirects are trusted.
+                break
+        except HTTPError as exc:
+            status = int(exc.code)
+            if status in (404, 410):
+                raise DouyinResolverError("DOUYIN_VIDEO_UNAVAILABLE", "该视频已删除、设为私密或分享链接已失效，无法解析。")
+            location = (exc.headers or {}).get("Location")
+            if location and 300 <= status < 400:
+                current = urljoin(current, location)
+                continue
+            break
+        except (URLError, OSError, TimeoutError):
+            break
+    if detect_video_platform(current) != platform:
         raise DouyinResolverError("DOUYIN_REDIRECT_NOT_ALLOWED", "视频分享链接跳转到了非官方地址，已停止解析")
-    video_id = _video_id(canonical_url, canonical_platform)
-    if status in (404, 410):
-        raise DouyinResolverError(
-            "DOUYIN_VIDEO_UNAVAILABLE",
-            "该视频已删除、设为私密或分享链接已失效，无法解析。请更换一个仍可正常播放的视频链接。",
-        )
-    return {"input_url": input_url, "canonical_url": canonical_url, "video_id": video_id, "status": status, "platform": canonical_platform}
+    video_id = _video_id(current, platform)
+    if platform == "DOUYIN":
+        if not video_id:
+            raise DouyinResolverError("DOUYIN_VIDEO_ID_MISSING", "分享链接未能确认目标作品 ID，请检查链接或网络后重试", retryable=True)
+        current = "https://www.douyin.com/video/" + video_id
+    return {"input_url": input_url, "canonical_url": current, "video_id": video_id, "status": status, "platform": platform}
 
 
 def _video_id(url: str, platform: Optional[str] = None) -> str:
@@ -98,8 +127,32 @@ def _video_id(url: str, platform: Optional[str] = None) -> str:
     elif platform == "KUAISHOU":
         match = re.search(r"/(?:short-video|photo|s)/([0-9A-Za-z_-]+)", value, re.IGNORECASE)
     else:
-        match = re.search(r"/(?:share/)?video/(\d+)", value)
+        match = re.search(r"/(?:share/)?(?:video|note|slides)/(\d+)", value)
+        if match:
+            return match.group(1)
+        try:
+            query = parse_qs(urlparse(value).query)
+        except (TypeError, ValueError):
+            return ""
+        for key in ("modal_id", "aweme_id", "item_ids", "item_id"):
+            candidate = str((query.get(key) or [""])[0])
+            if re.fullmatch(r"\d{6,}", candidate):
+                return candidate
+        return ""
     return match.group(1) if match else ""
+
+
+def _douyin_url_from_html(html: str, base_url: str) -> str:
+    patterns = (
+        r'''window\.location\.href\s*=\s*["']([^"']+)["']''',
+        r'''window\.location\.replace\(\s*["']([^"']+)["']''',
+        r'''<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^;]*;\s*url=([^"']+)["']''',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            return urljoin(base_url, match.group(1).replace("&amp;", "&"))
+    return ""
 
 
 def resolve_douyin(
@@ -203,7 +256,16 @@ def resolve_douyin(
         info = json.loads(completed.stdout)
     except (TypeError, json.JSONDecodeError) as exc:
         raise DouyinResolverError("DOUYIN_INVALID_RESPONSE", "解析器返回了无效 JSON：{0}".format(exc), retryable=True)
-    return _normalize_info(info, url, platform)
+    normalized = _normalize_info(info, url, platform)
+    expected_video_id = _video_id(url, platform)
+    actual_video_id = str(normalized.get("id") or "")
+    if expected_video_id and actual_video_id != expected_video_id:
+        raise DouyinResolverError(
+            "DOUYIN_VIDEO_ID_MISMATCH",
+            "解析结果与分享链接不是同一个作品，已停止使用该视频",
+            retryable=True,
+        )
+    return normalized
 
 
 def download_douyin(

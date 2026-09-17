@@ -4,7 +4,8 @@ import { AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, Clock
 import type { CreationSpec, ProjectBundle, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask } from "@aivs/schemas";
 import { createCanonicalProject, createVideoRemixProject, createVideoRemixTask, deleteVideoRemixTask, listVideoRemixTasks, retryVideoRemixTask } from "../services/backend";
 import { creditText } from "../services/creditCopy";
-import { getCreditBalance, getScriptLibraryDetail, getScriptLibraryQuote, listScriptLibrary, listScriptLibraryCategories, useScriptLibraryItem, type ScriptLibraryItem } from "../services/platform";
+import { getCreditBalance, getScriptLibraryDetail, getScriptLibraryQuote, listScriptLibrary, listScriptLibraryCategories, useScriptLibraryItem, type ScriptLibraryItem, type ScriptLibraryProjectPayload } from "../services/platform";
+import { workflowErrorMessage } from "../services/workflowState";
 import { ImmediateCreditPurchaseButton } from "./CreditPurchaseHost";
 import { ModelCreditNotice } from "./CreditConfirmationHost";
 
@@ -13,7 +14,7 @@ const HOT_CATEGORY_CODE = "hot-fans";
 const NEARBY_PAGE_COUNT = 5;
 type ScriptLibraryRemixSource = { item: ScriptLibraryItem; content: string };
 
-function message(error: unknown) { return error instanceof Error ? error.message : "操作失败，请稍后重试"; }
+const message = workflowErrorMessage;
 function durationText(seconds: number) {
   if (!seconds) return "时长待定";
   return seconds < 60 ? `${seconds} 秒` : `${Math.ceil(seconds / 60)} 分钟`;
@@ -34,6 +35,7 @@ export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { 
   const [selected, setSelected] = useState<ScriptLibraryItem>();
   const [remixSource, setRemixSource] = useState<ScriptLibraryRemixSource>();
   const [confirmation, setConfirmation] = useState<{ item: ScriptLibraryItem; key: string }>();
+  const [acceptedUsage, setAcceptedUsage] = useState<{ key: string; payload: ScriptLibraryProjectPayload }>();
   const categories = useQuery({ queryKey: ["script-library-categories"], queryFn: listScriptLibraryCategories, staleTime: 60_000 });
   const scripts = useQuery({ queryKey: ["script-library", query, category], queryFn: () => listScriptLibrary(query, category), staleTime: 15_000 });
   const detail = useQuery({ queryKey: ["script-library-detail", selected?.id], queryFn: () => getScriptLibraryDetail(selected!.id), enabled: Boolean(selected) });
@@ -48,21 +50,40 @@ export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { 
     mutationFn: async ({ item, key }: { item: ScriptLibraryItem; key: string }) => {
       if (!quote.data) throw new Error("暂时无法获取剧本库积分价格");
       if (!projectDirectory.trim()) throw new Error("请先在系统设置中配置项目保存目录");
-      const payload = await useScriptLibraryItem(item.id, quote.data.credits, key);
-      return createCanonicalProject({
-        root_path: projectDirectory,
-        source_text: `剧本库：${payload.title}`,
-        creation_spec: { ...defaultSpec, project_name: payload.title, input_type: "SCRIPT", target_duration: payload.duration_seconds || defaultSpec.target_duration },
-        canonical: payload.canonical,
-      });
+      const payload = acceptedUsage?.key === key
+        ? acceptedUsage.payload
+        : await useScriptLibraryItem(item.id, quote.data.credits, key);
+      if (acceptedUsage?.key !== key) setAcceptedUsage({ key, payload });
+      try {
+        return await createCanonicalProject({
+          root_path: projectDirectory,
+          source_text: `从剧本库导入的规范剧本：《${payload.title}》`,
+          creation_spec: { ...defaultSpec, project_name: payload.title, input_type: "SCRIPT", target_duration: payload.duration_seconds || defaultSpec.target_duration },
+          canonical: payload.canonical,
+        });
+      } catch (error) {
+        throw new Error(`积分扣除已确认，但本地项目创建失败：${message(error)}。请点击“重试创建项目”，本次重试不会重复扣分。`);
+      }
     },
     onSuccess: (bundle) => {
       setConfirmation(undefined);
+      setAcceptedUsage(undefined);
       void queryClient.invalidateQueries({ queryKey: ["script-library"] });
       void queryClient.invalidateQueries({ queryKey: ["credit-balance"] });
       onReady(bundle);
     },
   });
+  const openConfirmation = (item: ScriptLibraryItem) => {
+    create.reset();
+    setAcceptedUsage(undefined);
+    setConfirmation({ item, key: crypto.randomUUID() });
+  };
+  const closeConfirmation = () => {
+    if (create.isPending) return;
+    create.reset();
+    setAcceptedUsage(undefined);
+    setConfirmation(undefined);
+  };
   const selectCategory = (id: string) => { setCategory(id); setPage(1); };
   const goToPage = (target: number) => setPage(Math.max(1, Math.min(pageCount, target)));
   const submitPageJump = () => {
@@ -85,7 +106,7 @@ export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { 
         <div><span>{item.category_name}</span><em><Flame size={13} />{Number(item.heat_score).toLocaleString()}</em></div>
         <h3>{item.title}</h3>
         <p>{item.summary || "暂无简介"}</p>
-        <footer><span><Clock3 size={13} />{durationText(item.duration_seconds)}</span><span>{item.use_count} 次使用</span><button type="button" onClick={(event) => { event.stopPropagation(); setConfirmation({ item, key: crypto.randomUUID() }); }} disabled={!quote.data || !projectDirectory} title={!projectDirectory ? "请先在系统设置中配置项目保存目录" : undefined}>生成项目 <ChevronRight size={14} /></button></footer>
+        <footer><span><Clock3 size={13} />{durationText(item.duration_seconds)}</span><span>{item.use_count} 次使用</span><button type="button" onClick={(event) => { event.stopPropagation(); openConfirmation(item); }} disabled={!quote.data || !projectDirectory} title={!projectDirectory ? "请先在系统设置中配置项目保存目录" : undefined}>生成项目 <ChevronRight size={14} /></button></footer>
       </article>)}</div>
       <div className="script-library-pagination" aria-label="剧本列表分页">
         <button type="button" disabled={currentPage <= 1} onClick={() => goToPage(currentPage - 1)}><ChevronLeft size={15} />上一页</button>
@@ -95,9 +116,9 @@ export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { 
         <label className="script-library-page-jump">跳至<input type="number" min={1} max={pageCount} step={1} value={pageInput} placeholder={String(currentPage)} aria-label="跳转页码" onChange={(event) => setPageInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitPageJump(); } }} />页</label>
       </div>
     </> : <div className="script-library-empty"><BookOpen />没有找到匹配的剧本</div>}
-    {selected && <div className="modal-backdrop script-library-detail-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(undefined); }}><section className="script-library-detail"><header><div><span>{selected.category_name}</span><h2>{selected.title}</h2></div><button onClick={() => setSelected(undefined)}><X size={17} /></button></header><div><p>{selected.summary}</p>{detail.isLoading ? <div className="script-library-empty"><LoaderCircle className="spin" />正在读取内容…</div> : <pre>{detail.data?.content || "暂无内容预览"}</pre>}</div><footer><span>{quote.data ? `直接生成项目需要 ${creditText(quote.data.credits)} 积分` : "正在读取积分价格…"}</span><div className="script-library-detail-actions"><button className="secondary-button" type="button" onClick={() => { const content = detail.data?.content?.trim(); if (!content) return; setRemixSource({ item: selected, content }); setSelected(undefined); }} disabled={detail.isLoading || !detail.data?.content?.trim()}><WandSparkles size={16} />二次创作</button><button className="primary-button" type="button" onClick={() => { setConfirmation({ item: selected, key: crypto.randomUUID() }); setSelected(undefined); }} disabled={!quote.data || !projectDirectory}>一键生成项目</button></div></footer></section></div>}
+    {selected && <div className="modal-backdrop script-library-detail-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(undefined); }}><section className="script-library-detail"><header><div><span>{selected.category_name}</span><h2>{selected.title}</h2></div><button onClick={() => setSelected(undefined)}><X size={17} /></button></header><div><p>{selected.summary}</p>{detail.isLoading ? <div className="script-library-empty"><LoaderCircle className="spin" />正在读取内容…</div> : <pre>{detail.data?.content || "暂无内容预览"}</pre>}</div><footer><span>{quote.data ? `直接生成项目需要 ${creditText(quote.data.credits)} 积分` : "正在读取积分价格…"}</span><div className="script-library-detail-actions"><button className="secondary-button" type="button" onClick={() => { const content = detail.data?.content?.trim(); if (!content) return; setRemixSource({ item: selected, content }); setSelected(undefined); }} disabled={detail.isLoading || !detail.data?.content?.trim()}><WandSparkles size={16} />二次创作</button><button className="primary-button" type="button" onClick={() => { openConfirmation(selected); setSelected(undefined); }} disabled={!quote.data || !projectDirectory}>一键生成项目</button></div></footer></section></div>}
     {remixSource && <ScriptLibraryRemixModal source={remixSource} projectDirectory={projectDirectory} defaultSpec={defaultSpec} onClose={() => setRemixSource(undefined)} onProjectCreated={onReady} />}
-    {confirmation && quote.data && <div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal"><header><span><Coins size={23} /></span><div><small>SCRIPT LIBRARY</small><h2>确认使用剧本并扣除积分</h2><p>《{confirmation.item.title}》将直接转换为本地项目。</p></div><button onClick={() => !create.isPending && setConfirmation(undefined)}><X size={17} /></button></header><div className="script-analysis-confirm-body"><div><span>本次所需积分</span><strong>{creditText(quote.data.credits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div>{balance.data && balance.data.available < quote.data.credits ? <div className="insufficient-credit-callout"><div className="error-banner">积分不足，需要 {creditText(quote.data.credits)} 分，当前可用 {creditText(balance.data.available)} 分。</div><ImmediateCreditPurchaseButton onPurchased={() => void balance.refetch()} /></div> : null}{balance.error && <div className="error-banner">{message(balance.error)}</div>}{create.error && <div className="error-banner">{message(create.error)}</div>}</div><footer><button className="secondary-button" disabled={create.isPending} onClick={() => setConfirmation(undefined)}>取消</button><button className="primary-button" disabled={create.isPending || !projectDirectory.trim() || !balance.data || Boolean(balance.data.available < quote.data.credits)} onClick={() => create.mutate(confirmation)}>{create.isPending ? <><LoaderCircle className="spin" />正在生成…</> : <>确认扣除并生成</>}</button></footer></section></div>}
+    {confirmation && quote.data && <div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal"><header><span><Coins size={23} /></span><div><small>SCRIPT LIBRARY</small><h2>确认使用剧本并扣除积分</h2><p>《{confirmation.item.title}》将直接转换为本地项目。</p></div><button onClick={closeConfirmation}><X size={17} /></button></header><div className="script-analysis-confirm-body"><div><span>本次所需积分</span><strong>{creditText(quote.data.credits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div>{acceptedUsage?.key !== confirmation.key && balance.data && balance.data.available < quote.data.credits ? <div className="insufficient-credit-callout"><div className="error-banner">积分不足，需要 {creditText(quote.data.credits)} 分，当前可用 {creditText(balance.data.available)} 分。</div><ImmediateCreditPurchaseButton onPurchased={() => void balance.refetch()} /></div> : null}{balance.error && <div className="error-banner">{message(balance.error)}</div>}{create.error && <div className="error-banner">{message(create.error)}</div>}</div><footer><button className="secondary-button" disabled={create.isPending} onClick={closeConfirmation}>取消</button><button className="primary-button" disabled={create.isPending || !projectDirectory.trim() || (acceptedUsage?.key !== confirmation.key && (!balance.data || balance.data.available < quote.data.credits))} onClick={() => create.mutate(confirmation)}>{create.isPending ? <><LoaderCircle className="spin" />正在生成…</> : acceptedUsage?.key === confirmation.key ? <>重试创建项目（不会重复扣分）</> : <>确认扣除并生成</>}</button></footer></section></div>}
   </div>;
 }
 

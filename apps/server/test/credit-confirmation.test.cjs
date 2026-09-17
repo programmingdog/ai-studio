@@ -322,6 +322,22 @@ test('video understanding disclaimer is treated as a failed parse and releases t
   assert.equal(state.settled.length, 0);
 });
 
+test('video understanding upload request disclaimer is treated as a failed parse and releases the hold', async () => {
+  const state = taskHarness();
+  state.gateway.target = async () => target('VIDEO_UNDERSTANDING');
+  state.gateway.call = async () => ({
+    ok: true,
+    status: 200,
+    value: { candidates: [{ content: { parts: [{ text: '您好，当前未检测到您上传的视频文件或视频画面描述。请您上传视频后重试。' }] } }] },
+  });
+  await assert.rejects(
+    state.gateway.create('user', { idempotencyKey: 'video-upload-request', providerModelId: 'model-1', payload: { prompt: '分析视频' }, expectedCredits: 4 }),
+    /未收到或无法读取视频文件/,
+  );
+  assert.equal(state.released.length, 1);
+  assert.equal(state.settled.length, 0);
+});
+
 test('idempotent replay cannot create a second paid call', async () => {
   const gateway = service();
   gateway.existing = async () => ({ task: { id: 'existing' }, idempotent_replay: true });

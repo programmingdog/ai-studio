@@ -11,7 +11,8 @@ const tasks = fs.readFileSync(path.join(__dirname, '../src-tauri/src/douyin_task
 test('completed link-understanding tasks expose reparse beside their result action', () => {
   assert.match(app, /variant === "link" && task\.status === "COMPLETED" && onReparse/);
   assert.match(app, /查看结果[\s\S]*重新解析/);
-  assert.match(app, /重新解析会再次调用视频理解模型并消耗相应积分/);
+  assert.match(app, /确认重新解析并扣除积分/);
+  assert.match(app, /VideoLinkCreditModal reparse/);
   assert.match(app, /delete next\[taskId\]/);
 });
 
@@ -23,9 +24,15 @@ test('retry and reparse loading ids only remain active while their mutations are
 });
 
 test('reparse is a dedicated command restricted to completed link tasks', () => {
-  assert.match(backend, /invoke<DouyinUnderstandingTask>\("reparse_douyin_understanding_task", \{ taskId \}\)/);
+  assert.match(backend, /invoke<DouyinUnderstandingTask>\("reparse_douyin_understanding_task", \{/);
+  assert.match(backend, /providerModelId: quote\.provider_model_id/);
+  assert.match(backend, /expectedCredits: quote\.credits/);
   assert.match(commands, /douyin_tasks::reparse_douyin_understanding_task/);
   assert.match(tasks, /pub fn reparse_douyin_understanding_task/);
   assert.match(tasks, /source_kind = 'LINK' AND status = 'COMPLETED'/);
+  assert.match(tasks, /input\.video_info = json!\(\{\}\)/);
+  assert.match(tasks, /input\.video_submission_mode = "upload"\.to_owned\(\)/);
+  assert.match(tasks, /input\.provider_model_id = Some\(provider_model_id\.trim\(\)\.to_owned\(\)\)/);
+  assert.match(tasks, /input_json = \?3/);
   assert.match(tasks, /spawn_task\(app\.clone\(\), task_id\.clone\(\)\)/);
 });

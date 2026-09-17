@@ -206,6 +206,19 @@ pub struct GenerateProjectImageInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GenerateAssetLibraryItemInput {
+    request_id: String,
+    workflow_credit_id: String,
+    asset_type: String,
+    name: String,
+    prompt: String,
+    aspect_ratio: String,
+    platform_api_base_url: String,
+    provider_model_id: String,
+    resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateImageGenerationTasksInput {
     workflow_credit_id: Option<String>,
     project_path: String,
@@ -2579,6 +2592,77 @@ pub async fn generate_project_image(
             BASE64.encode(&image.bytes)
         ),
     })
+}
+
+#[tauri::command]
+pub async fn generate_asset_library_item(
+    app: tauri::AppHandle,
+    input: GenerateAssetLibraryItemInput,
+) -> Result<crate::database::asset_library::AssetLibraryItem, String> {
+    let prompt = input.prompt.trim();
+    if !(10..=20_000).contains(&prompt.chars().count()) {
+        return Err(error(
+            "AI_IMAGE_PROMPT_INVALID",
+            "AI 生图提示词长度必须在 10 到 20000 个字符之间",
+            false,
+        ));
+    }
+    if !matches!(input.asset_type.as_str(), "scene" | "character" | "prop") {
+        return Err(error("AI_IMAGE_TARGET_INVALID", "资产类型无效", false));
+    }
+    if !matches!(input.aspect_ratio.as_str(), "9:16" | "16:9") {
+        return Err(error(
+            "AI_IMAGE_ASPECT_RATIO_INVALID",
+            "画面比例必须是 9:16 或 16:9",
+            false,
+        ));
+    }
+    if input.request_id.trim().is_empty()
+        || !input
+            .request_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        || input.workflow_credit_id.trim().is_empty()
+        || input.provider_model_id.trim().is_empty()
+        || input.resolution.trim().is_empty()
+    {
+        return Err(error(
+            "PLATFORM_MEDIA_MODEL_REQUIRED",
+            "资产生图缺少已确认的模型或积分信息",
+            false,
+        ));
+    }
+    let workspace = crate::database::asset_library::library_root(&app)?;
+    let task_key = format!("image:asset:{}", input.request_id);
+    let value = crate::platform_media::generate(
+        &input.platform_api_base_url,
+        &input.provider_model_id,
+        &input.request_id,
+        json!({
+            "prompt": prompt,
+            "aspect_ratio": input.aspect_ratio,
+            "resolution": input.resolution,
+            "reference_images": [],
+            "params": {"aspect_ratio": input.aspect_ratio, "resolution": input.resolution}
+        }),
+        &format!("资产库{}图生成 · {}", match input.asset_type.as_str() { "scene" => "场景", "character" => "角色", _ => "道具" }, input.name.trim()),
+        Some((&workspace, &input.workflow_credit_id, task_key)),
+    )
+    .await?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5 * 60))
+        .build()
+        .map_err(|source| error("AI_CLIENT_ERROR", source.to_string(), false))?;
+    let image = platform_image_result(&client, &value).await?;
+    crate::database::asset_library::store_custom(
+        &app,
+        &input.asset_type,
+        &input.name,
+        prompt,
+        &image.bytes,
+        "manual_ai",
+        Some(&format!("manual_ai:{}", input.request_id)),
+    )
 }
 
 fn validate_image_task_item(item: &CreateImageGenerationTaskItem) -> Result<(), String> {
