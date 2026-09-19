@@ -251,7 +251,7 @@ export interface ModelCreditQuote {
   extraction_billing_mode?: "OVERALL" | "PER_SEGMENT";
   config_revision?: number;
 }
-export const getModelCreditQuote = (capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING") =>
+export const getModelCreditQuote = (capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING" | "VIDEO_REMIX") =>
   authenticatedRequest<ModelCreditQuote>("/tasks/quote", { method: "POST", body: JSON.stringify({ capability, payload: {} }) });
 export const getScriptAnalysisQuote = () =>
   authenticatedRequest<ModelCreditQuote>("/tasks/script-analysis/quote", { method: "POST", body: "{}" });

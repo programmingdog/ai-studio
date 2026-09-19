@@ -18,7 +18,8 @@ test("standard script example covers the canonical project format", () => {
 test("JSON scripts bypass AI analysis and are imported directly", () => {
   assert.match(app, /isStandardScript/);
   assert.match(app, /规范文件免费导入/);
-  assert.match(app, /saveTextAsJson/);
+  const fileInput = fs.readFileSync(path.join(__dirname, '../src/components/ScriptFileInput.tsx'), 'utf8');
+  assert.match(fileInput, /saveTextAsTxt\(standardScriptExample/);
   assert.match(commands, /import_standard_script_file/);
   assert.match(commands, /create_canonical_project/);
 });

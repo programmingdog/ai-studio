@@ -79,6 +79,17 @@ pub fn get_active(
         .map_err(|error| error.to_string())
 }
 
+pub fn get_latest(connection: &Connection, project_id: &str) -> Result<Option<AutomaticWorkflow>, String> {
+    connection.query_row(
+        "SELECT id, project_id, mode, resolution, status, stage, progress,
+                message, retry_message, snapshot_json, created_at, updated_at, finished_at
+         FROM automatic_workflows WHERE project_id = ?1
+         ORDER BY CASE WHEN status IN ('PENDING', 'RUNNING') THEN 0 ELSE 1 END,
+                  created_at DESC LIMIT 1",
+        [project_id], read_row,
+    ).optional().map_err(|error| error.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     connection: &Connection,
@@ -188,6 +199,7 @@ mod tests {
         )
         .unwrap();
         assert!(get_active(&connection, "P1").unwrap().is_none());
+        assert_eq!(get_latest(&connection, "P1").unwrap().unwrap().id, workflow.id);
     }
 
     #[test]
@@ -210,5 +222,16 @@ mod tests {
         assert_eq!(cancelled.status, "CANCELLED");
         assert!(cancelled.finished_at.is_some());
         assert!(get_active(&connection, "P1").unwrap().is_none());
+        assert_eq!(get_latest(&connection, "P1").unwrap().unwrap().status, "CANCELLED");
+    }
+
+    #[test]
+    fn latest_entry_prefers_running_workflow_over_newer_finished_history() {
+        let connection = connection();
+        let active = create(&connection, "P1", "fast", "720p").unwrap();
+        let later = create(&connection, "P1", "storyboard", "1080p").unwrap();
+        update(&connection, &later.id, "P1", "COMPLETED", "completed", 1.0,
+            "完成", None, &json!({"items": []})).unwrap();
+        assert_eq!(get_latest(&connection, "P1").unwrap().unwrap().id, active.id);
     }
 }

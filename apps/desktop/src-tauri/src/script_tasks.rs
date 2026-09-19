@@ -192,6 +192,7 @@ fn create_project_from_analysis(
     app: &AppHandle,
     task: &ScriptAnalysisTask,
     analysis: Value,
+    normalized_script: Option<String>,
 ) -> Result<(String, String, String), String> {
     let title = project_title(task, &analysis);
     let mut spec = task.creation_spec.clone();
@@ -212,7 +213,7 @@ fn create_project_from_analysis(
     let bundle = crate::project::manager::create(crate::project::manager::CreateProjectInput {
         root_path: task.root_path.clone(),
         source_type: "SCRIPT_FILE".to_owned(),
-        source_text: None,
+        source_text: normalized_script.clone(),
         source_path: Some(task.source_path.clone()),
         creation_spec: spec,
     })?;
@@ -227,11 +228,15 @@ fn create_project_from_analysis(
         .ok_or("创建后的项目缺少路径")?
         .to_owned();
     let mut connection = crate::database::open(&PathBuf::from(&project_path))?;
+    if let Some(script) = normalized_script.filter(|text| !text.trim().is_empty()) {
+        std::fs::write(Path::new(&project_path).join("source/normalized-script.txt"), script)
+            .map_err(|error| format!("保存规范化剧本 TXT 失败：{error}"))?;
+    }
     let job_id = crate::jobs::create(
         &connection,
         &project_id,
         "ANALYZE_SCRIPT",
-        &json!({"source": "SERVER_TEXT_MODEL", "strict_extraction": true}),
+        &json!({"source": "SERVER_TEXT_MODEL", "script_normalization": true}),
     )?;
     crate::jobs::update(
         &connection,
@@ -248,7 +253,7 @@ fn create_project_from_analysis(
         "COMPLETED",
         1.0,
         Some("completed"),
-        Some("剧本忠实提取完成"),
+        Some("剧本规范化完成"),
     )?;
     let completed = crate::database::repository::load_bundle(&connection)?;
     crate::project::registry::register(app, &completed, false)?;
@@ -304,7 +309,7 @@ fn spawn(app: AppHandle, id: String) {
                 result = &mut request => break result,
                 _ = interval.tick() => {
                     progress = (progress + (0.9 - progress) * 0.035).min(0.89);
-                    let _ = update(&app, &id, "RUNNING", progress, "model_analysis", "文本大模型正在忠实提取剧情、场景、角色和分镜");
+                    let _ = update(&app, &id, "RUNNING", progress, "model_analysis", "正在规范化剧情、角色和场景，按对白与动作编排分镜");
                 }
             }
         };
@@ -329,8 +334,9 @@ fn spawn(app: AppHandle, id: String) {
         );
         let app_for_project = app.clone();
         let task_for_project = task.clone();
+        let normalized_script = value.get("normalized_script").and_then(Value::as_str).map(str::to_owned);
         let project = tauri::async_runtime::spawn_blocking(move || {
-            create_project_from_analysis(&app_for_project, &task_for_project, analysis)
+            create_project_from_analysis(&app_for_project, &task_for_project, analysis, normalized_script)
         })
         .await;
         match project {

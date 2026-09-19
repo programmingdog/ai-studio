@@ -48,6 +48,17 @@ export class ModelGatewayController {
     });
   }
 
+  @Post("video-remix")
+  createVideoRemix(@Req() request: UserRequest, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.gateway.createVideoRemix(request.user.sub, {
+      localTaskId: optionalString(body, "local_task_id", 36),
+      idempotencyKey: requiredString(body, "idempotency_key", 191),
+      expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
+      payload: jsonValue(body, "payload"),
+    });
+  }
+
   @Post("workflow-quotes")
   approveWorkflowQuote(@Req() request: UserRequest, @Body() input: unknown) {
     const body = asRecord(input);
@@ -80,7 +91,11 @@ export class ModelGatewayController {
     @Req() request: UserRequest,
     @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string; size: number },
   ) {
-    const host = request.get("host") || "";
+    // Express resolves protocol/hostname from forwarded headers only when the
+    // reverse proxy is explicitly trusted in main.ts. This prevents a proxy's
+    // private Host header from leaking into URLs sent to external providers.
+    const directHost = request.get("host") || request.hostname;
+    const host = request.protocol === "https" ? request.hostname : directHost;
     return this.referenceImages.upload(request.user.sub, file, `${request.protocol}://${host}`);
   }
 

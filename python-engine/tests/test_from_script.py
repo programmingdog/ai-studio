@@ -94,6 +94,19 @@ STRUCTURED_STORYBOARD = """一、项目剧情
 
 
 class FromScriptWorkflowTests(unittest.TestCase):
+    def test_downloadable_txt_example_preserves_assets_and_variable_durations(self):
+        result = analyze_script({
+            "script_path": os.path.join(ENGINE_ROOT, "..", "apps", "desktop", "src", "data", "standard-script-example.txt"),
+            "creation_spec": {},
+        }, lambda *_: None)
+        self.assertEqual(result["metadata"]["script_type"], "STRUCTURED_VIDEO_STORYBOARD")
+        self.assertEqual(result["story"]["title"], "雨夜的一把伞")
+        self.assertEqual(len(result["characters"]), 2)
+        self.assertEqual(len(result["scenes"]), 1)
+        self.assertEqual([shot["duration"] for shot in result["shots"]], [7.0, 12.0, 9.0])
+        self.assertIn("那你怎么办", result["shots"][1]["dialogue"])
+        self.assertTrue(all(shot["scene_lock"] and shot["character_lock"] for shot in result["shots"]))
+
     def test_parses_legacy_segment_format_from_user_example(self):
         script = """第1段（0～10秒）
 【屏幕比例】，【机位+运镜】，【画风设定】。

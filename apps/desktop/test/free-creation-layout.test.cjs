@@ -20,6 +20,17 @@ test("homepage free creation stays inside the homepage workspace", () => {
   assert.match(app, /className=\{showFreeCreation \? "active" : ""\} onClick=\{onOpenFreeCreation\}/);
 });
 
+test("project sidebar starts with the project navigation and omits free creation", () => {
+  const projectShell = app.indexOf('<div className="studio-shell">');
+  const projectNavStart = app.indexOf('<nav className="workspace-nav">', projectShell);
+  const projectNavEnd = app.indexOf('</nav>', projectNavStart);
+  const projectNav = app.slice(projectNavStart, projectNavEnd);
+
+  assert.ok(projectShell >= 0 && projectNavStart > projectShell && projectNavEnd > projectNavStart);
+  assert.doesNotMatch(projectNav, /自由创作|setFreeCreationOpen\(true\)/);
+  assert.match(projectNav, /navItems\.map/);
+});
+
 test("asset picker occupies 80 percent of the main window and uses content-width tabs", () => {
   assert.match(styles, /\.free-mention-modal \{[^}]*width: 80vw;[^}]*height: 80vh;/s);
   assert.match(styles, /\.free-mention-modal > nav \{[^}]*display: flex;/s);

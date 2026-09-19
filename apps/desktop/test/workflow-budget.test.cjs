@@ -27,7 +27,9 @@ test('automatic execution carries its approval and never opens model selection',
  assert.ok(storyPage.indexOf('className="story-auto-header"')<storyPage.indexOf('className="title-input"'));
  assert.doesNotMatch(storyPage,/story-auto-footer/);
 });
-test('both credit dialogs are suppressed while automatic production runs',()=>{
- assert.match(read('components/CreditConfirmationHost.tsx'),/if \(!items.length \|\| workflowQuiet\) return null/);
+test('automatic production suppresses reminders but never hides an explicit paid request',()=>{
+ const confirmation=read('components/CreditConfirmationHost.tsx');
+ assert.match(confirmation,/if \(!items.length\) return null/);
+ assert.doesNotMatch(confirmation,/useWorkflowQuiet|items\.length \|\| workflowQuiet/);
  assert.match(read('components/LowCreditReminderHost.tsx'),/if \(!userId \|\| workflowQuiet\) return null/);
 });

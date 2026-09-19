@@ -72,6 +72,7 @@ function taskHarness(failure = false) {
       if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
       if (sql.includes('FROM ledger_entries')) return [[{ balance: 100 }]];
       if (sql.includes('FROM credit_holds')) return [[{ held: 0 }]];
+      if (sql.includes('FROM workflow_quote_approvals')) return [[{ reserved: 0 }]];
       if (sql.includes('FROM model_credit_pricing_config')) return [[{ cny_per_credit: 0.01 }]];
       throw Error(sql);
     },
@@ -176,14 +177,71 @@ test('workflow item uses its confirmed credits after the live model price change
       if (sql.includes('FROM workflow_quote_items')) return [[{
         approval_id: 'approval', item_key: 'video:shot:1', user_id: 'user', approval_status: 'ACTIVE',
         expires_at: new Date(Date.now() + 60_000), provider_model_id: 'model-1', capability: 'VIDEO_GENERATION',
-        resolution: '1080P', seconds: 5, credits: 12.5, current_task_id: null,
+        resolution: '1080P', seconds: 5, credits: 12.5, current_task_id: null, reserved_credits: 12.5,
       }]];
       throw new Error(sql);
     },
+    execute: async () => ({ affectedRows: 1 }),
   };
   const locked = await gateway.lockedWorkflowCredits(connection, 'user', 'approval', 'video:shot:1',
     target('VIDEO_GENERATION'), { resolution: '1080P', seconds: 5 }, 99);
   assert.equal(locked, 12.5);
+});
+
+test('video remix quote and task creation use the configured fixed feature price', async () => {
+  const gateway = service();
+  gateway.scriptAnalysisConfig = async () => ({ prompt: 'x'.repeat(100), credit_cost: 10, remix_credit_cost: 20, revision: 7 });
+  const quote = await gateway.quote({ capability: 'VIDEO_REMIX', payload: {} });
+  assert.equal(quote.credits, 20);
+  assert.equal(quote.capability, 'VIDEO_REMIX');
+  assert.equal(quote.includes_multiplier, false);
+  assert.equal(quote.config_revision, 7);
+
+  let submitted;
+  gateway.create = async (userId, input) => { submitted = { userId, input }; return { task: { id: 'remix-task' } }; };
+  await gateway.createVideoRemix('user', { localTaskId: '11111111-1111-4111-8111-111111111111', idempotencyKey: 'remix-1', expectedCredits: 20,
+    payload: { messages: [{ role: 'user', content: '二创' }] } });
+  assert.equal(submitted.userId, 'user');
+  assert.equal(submitted.input.creditOverride, 20);
+  assert.equal(submitted.input.taskType, 'VIDEO_REMIX');
+  assert.equal(submitted.input.providerModelId, 'model-1');
+});
+
+test('workflow approval atomically reserves the full displayed total', async () => {
+  const gateway = service();
+  const modelId = '11111111-1111-4111-8111-111111111111';
+  gateway.target = async () => target('IMAGE_GENERATION', { model_id: modelId });
+  const writes = [];
+  gateway.database.transaction = async operation => operation({
+    query: async sql => {
+      if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
+      if (sql.includes('FROM ledger_entries')) return [[{ balance: 30 }]];
+      if (sql.includes('FROM credit_holds')) return [[{ held: 2 }]];
+      if (sql.includes('FROM workflow_quote_approvals')) return [[{ reserved: 3 }]];
+      throw new Error(sql);
+    },
+    execute: async (sql, args) => writes.push({ sql, args }),
+  });
+  const result = await gateway.approveWorkflowQuote('user', [
+    { key: 'image:shot:1', provider_model_id: modelId, capability: 'IMAGE_GENERATION', resolution: '2K', credits: 12 },
+  ]);
+  assert.equal(result.items[0].credits, 12);
+  const approval = writes.find(write => write.sql.includes('INSERT INTO workflow_quote_approvals'));
+  assert.equal(approval.args[2], 12);
+
+  gateway.database.transaction = async operation => operation({
+    query: async sql => {
+      if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
+      if (sql.includes('FROM ledger_entries')) return [[{ balance: 16 }]];
+      if (sql.includes('FROM credit_holds')) return [[{ held: 2 }]];
+      if (sql.includes('FROM workflow_quote_approvals')) return [[{ reserved: 3 }]];
+      throw new Error(sql);
+    },
+    execute: async () => assert.fail('unaffordable approval must not be persisted'),
+  });
+  await assert.rejects(gateway.approveWorkflowQuote('user', [
+    { key: 'image:shot:1', provider_model_id: modelId, capability: 'IMAGE_GENERATION', resolution: '2K', credits: 12 },
+  ]), /可用积分不足/);
 });
 
 test('confirmed text calls reserve and settle the final quoted credits', async () => {
@@ -195,32 +253,68 @@ test('confirmed text calls reserve and settle the final quoted credits', async (
   assert.equal(state.released.length, 0);
 });
 
-test('acknowledged provider creation marks owned temporary reference URLs for cleanup', async () => {
+test('text generation selects a 12-minute provider deadline within the desktop budget', async () => {
   const state = taskHarness();
-  const consumed = [];
+  const call = state.gateway.call;
+  state.gateway.call = async (request, timeoutMs) => {
+    assert.equal(timeoutMs, 12 * 60_000);
+    return call(request);
+  };
+  await state.gateway.create('user', { idempotencyKey: 'text-deadline', providerModelId: 'model-1',
+    payload: { messages: [{ role: 'user', content: '二创' }] }, expectedCredits: 3 });
+  assert.equal(state.calls.length, 1);
+});
+
+test('headers timeout never rotates credentials or resubmits and releases the hold without settlement', async () => {
+  const state = taskHarness();
+  state.gateway.call = async request => {
+    state.calls.push(request);
+    throw new Error('供应商网络请求失败（UND_ERR_HEADERS_TIMEOUT）：Headers Timeout Error');
+  };
+  state.gateway.rotateProviderCredential = () => assert.fail('timeout is not proof of provider rejection');
+  await assert.rejects(state.gateway.create('user', { idempotencyKey: 'text-timeout', providerModelId: 'model-1',
+    payload: { prompt: '二创' }, expectedCredits: 3 }), /UND_ERR_HEADERS_TIMEOUT/);
+  assert.equal(state.calls.length, 1);
+  assert.equal(state.released.length, 1);
+  assert.equal(state.settled.length, 0);
+});
+
+test('reference images bind in the reservation transaction before the supplier is called', async () => {
+  const state = taskHarness();
+  const bindings = [];
   state.gateway.referenceImages = {
     ownedTokens: (payload, userId) => {
       assert.equal(userId, 'user');
       assert.equal(payload.reference_images[0].url, 'https://api.example/temp');
       return ['signed-token'];
     },
-    markConsumed: async tokens => consumed.push(tokens),
+    bindToTask: async (connection, tokens, taskId, userId) => {
+      assert.equal(state.calls.length, 0);
+      assert.equal(typeof connection.execute, 'function');
+      assert.equal(userId, 'user');
+      assert.equal(state.writes.find(item => item.sql.includes('INSERT INTO ai_tasks')).args[0], taskId);
+      bindings.push(tokens);
+    },
+    markConsumed: () => assert.fail('provider acceptance must not expire reference images'),
   };
   await state.gateway.create('user', { idempotencyKey: 'temporary-reference', providerModelId: 'model-1',
     payload: { prompt: 'test', reference_images: [{ url: 'https://api.example/temp' }] }, expectedCredits: 3 });
-  assert.deepEqual(consumed, [['signed-token']]);
+  assert.deepEqual(bindings, [['signed-token']]);
 });
 
-test('temporary reference cleanup failure cannot fail an acknowledged provider task', async () => {
+test('missing reference binding rolls back before any upstream submission', async () => {
   const state = taskHarness();
   state.gateway.referenceImages = {
     ownedTokens: () => ['signed-token'],
-    markConsumed: async () => { throw new Error('temporary disk unavailable'); },
+    bindToTask: async () => { throw new (require('@nestjs/common').BadRequestException)('参考图不存在'); },
   };
-  const result = await state.gateway.create('user', { idempotencyKey: 'cleanup-deferred', providerModelId: 'model-1',
-    payload: { prompt: 'test', reference_images: [{ url: 'https://api.example/temp' }] }, expectedCredits: 3 });
-  assert.equal(result.task.status, 'SUCCEEDED');
-  assert.equal(state.settled.length, 1);
+  await assert.rejects(state.gateway.create('user', { idempotencyKey: 'missing-reference', providerModelId: 'model-1',
+    payload: { prompt: 'test', reference_images: [{ url: 'https://api.example/temp' }] }, expectedCredits: 3 }), error => {
+    assert.equal(error.getResponse().code, 'TASK_NOT_SUBMITTED');
+    return true;
+  });
+  assert.equal(state.calls.length, 0);
+  assert.equal(state.settled.length, 0);
   assert.equal(state.released.length, 0);
 });
 
@@ -280,6 +374,26 @@ test('provider failure releases the hold and never settles', async () => {
   await assert.rejects(state.gateway.create('user', { idempotencyKey: 'text-failed', providerModelId: 'model-1', payload: { prompt: '二创' }, expectedCredits: 3 }), /HTTP 502/);
   assert.equal(state.released.length, 1);
   assert.equal(state.settled.length, 0);
+});
+
+test('failed workflow task returns its item to the approved reservation', async () => {
+  const writes = [];
+  const connection = {
+    query: async sql => {
+      if (sql.includes('FROM ai_tasks')) return [[{
+        id: 'task', workflow_quote_approval_id: 'approval', workflow_quote_item_key: 'video:shot:1',
+      }]];
+      if (sql.includes('FROM credit_holds')) return [[{ status: 'ACTIVE' }]];
+      throw new Error(sql);
+    },
+    execute: async (sql, args) => writes.push({ sql, args }),
+  };
+  const gateway = service();
+  gateway.database.transaction = async operation => operation(connection);
+  await gateway.release('task', 'FAILED', 'provider failed');
+  const restored = writes.find(write => write.sql.includes('reserved_credits = qa.reserved_credits + qi.credits'));
+  assert.deepEqual(restored.args, ['video:shot:1', 'approval', 'task']);
+  assert.ok(writes.some(write => write.sql.includes("UPDATE credit_holds SET status = 'RELEASED'")));
 });
 
 test('empty video understanding result releases the hold instead of charging a failed parse', async () => {

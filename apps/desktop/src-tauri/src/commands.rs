@@ -546,6 +546,17 @@ pub async fn get_active_automatic_workflow(
 }
 
 #[tauri::command]
+pub async fn get_latest_automatic_workflow(
+    project_path: String,
+    project_id: String,
+) -> Result<Option<crate::database::automatic_workflows::AutomaticWorkflow>, String> {
+    crate::background::run("读取最近自动制作工作流", move || {
+        let connection = crate::database::open(&std::path::PathBuf::from(project_path))?;
+        crate::database::automatic_workflows::get_latest(&connection, &project_id)
+    }).await
+}
+
+#[tauri::command]
 pub fn update_automatic_workflow(
     input: UpdateAutomaticWorkflowInput,
 ) -> Result<crate::database::automatic_workflows::AutomaticWorkflow, String> {

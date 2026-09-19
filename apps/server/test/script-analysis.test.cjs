@@ -35,6 +35,8 @@ test("reassembles an OpenAI event stream into the canonical response shape", () 
 });
 
 test("script extraction enables streaming for OpenAI-compatible text models", async () => {
+  const { fixture } = require('./fixtures/normalized-script.cjs');
+  const complete = fixture();
   const gateway = new ModelGatewayService({}, {});
   gateway.defaultTextTarget = async () => ({
     model_id: "model-1", model_code: "tt-5.6-sol", capability: "TEXT_GENERATION",
@@ -43,13 +45,17 @@ test("script extraction enables streaming for OpenAI-compatible text models", as
   gateway.scriptAnalysisConfig = async () => ({ prompt: "x".repeat(100), credit_cost: 10, revision: 1 });
   gateway.create = async (_userId, input) => {
     assert.equal(input.payload.stream, true);
-    return { provider_response: { choices: [{ message: { content: JSON.stringify(canonical) } }] } };
+    assert.match(input.payload.messages[0].content, /禁止全部默认10秒/);
+    const response = { choices: [{ message: { content: JSON.stringify(complete) } }] };
+    input.validateResponse(response);
+    return { provider_response: response };
   };
   const result = await gateway.createScriptAnalysisUpload("user-1", {
     idempotencyKey: "stream-script", expectedCredits: 10,
     file: { buffer: Buffer.from("第一场\n原文内容不能改写"), mimetype: "text/plain", originalname: "script.txt", size: 30 },
   });
-  assert.equal(result.analysis.story.title, "原文标题");
+  assert.equal(result.analysis.story.title, complete.story.title);
+  assert.match(result.normalized_script, /四、分镜列表/);
 });
 
 test("video URL and upload storyboard extraction use the configured feature price", async () => {

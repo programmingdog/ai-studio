@@ -409,6 +409,7 @@ export class AdminController {
     return this.admin.updateScriptAnalysisConfig(request.admin.sub, {
       prompt: requiredString(body, "prompt", 100_000),
       creditCost: Number(body.credit_cost),
+      remixCreditCost: Number(body.remix_credit_cost),
       extractionBillingMode: optionalString(body, "extraction_billing_mode", 32) || "OVERALL",
       revision: Number(body.revision),
     });

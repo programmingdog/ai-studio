@@ -50,6 +50,11 @@ const PLATFORM_VIDEO_REFERENCE_TARGET_BYTES: usize = 9_500_000;
 // decoded reference files must total at most 30 MB. Leave headroom and switch
 // to temporary signed HTTPS URLs instead of repeatedly degrading many images.
 const PLATFORM_VIDEO_INLINE_REFERENCE_TOTAL_BYTES: usize = 28_000_000;
+// Image generation uses the same gateway and supplier body limits as video
+// generation. Keep inline requests below the gateway ceiling; Waga/AllAIIn
+// can avoid base64 expansion entirely through temporary HTTPS references.
+const PLATFORM_IMAGE_REQUEST_TARGET_BYTES: usize = 45_000_000;
+const PLATFORM_IMAGE_REFERENCE_TARGET_BYTES: usize = 9_500_000;
 
 pub(crate) fn video_understanding_prompt(prompt: &str) -> String {
     format!("{}\n\n{}", prompt.trim(), VIDEO_DIALOGUE_VISUAL_RULE)
@@ -246,6 +251,17 @@ pub struct GenerationReferenceAssetInput {
     pub(crate) relative_path: String,
     pub(crate) label: String,
     pub(crate) kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrepareVideoReferenceAssetsInput {
+    pub(crate) project_path: String,
+    pub(crate) platform_api_base_url: String,
+    pub(crate) provider_code: Option<String>,
+    #[serde(default)]
+    pub(crate) reference_assets: Vec<GenerationReferenceAssetInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -301,6 +317,7 @@ struct ReferenceImage {
     bytes: Vec<u8>,
     mime_type: String,
     data_url: String,
+    public_url: Option<String>,
 }
 
 fn reference_log_detail(reference: &ReferenceImage) -> Value {
@@ -310,6 +327,7 @@ fn reference_log_detail(reference: &ReferenceImage) -> Value {
         "filename": reference.filename,
         "mime_type": reference.mime_type,
         "bytes": reference.bytes.len(),
+        "has_public_url": reference.public_url.is_some(),
         "value": format!("[BINARY/BASE64 REDACTED: {} bytes]", reference.bytes.len()),
     })
 }
@@ -770,23 +788,34 @@ async fn openai_json_completion(
         "idea_long_segment" => "长篇分段剧情生成",
         _ => "文本生成 / 创意开发（每次调用单独确认）",
     };
-    let response = crate::platform_media::text_completion(
-        operation,
-        json!({
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.35,
-            "stream": false
-        }),
-    )
-    .await?;
+    let payload = json!({
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.35,
+        "stream": false
+    });
+    let response = if stage == "video_remix" {
+        crate::platform_media::video_remix_completion(operation, payload).await?
+    } else {
+        crate::platform_media::text_completion(operation, payload).await?
+    };
     // A successful upstream request is charged even if its content fails local
     // validation. Any correction is a new, separately confirmed paid request.
-    let content = extract_openai_completion_content(&response.to_string())
-        .or_else(|_| generated_text(&response))?;
-    extract_json_object(&content)
+    parse_text_completion_json(&response)
+}
+
+fn parse_text_completion_json(response: &Value) -> Result<Value, String> {
+    // This classification is only applied AFTER a successful platform call.
+    // Network, quote, login and credit errors must never be correction prompts.
+    extract_openai_completion_content(&response.to_string())
+        .or_else(|_| generated_text(response))
+        .and_then(|content| extract_json_object(&content))
+        .map_err(|failure| {
+            let value = serde_json::from_str::<Value>(&failure).unwrap_or(Value::Null);
+            error("AI_TEXT_CONTENT_INVALID", value.get("message").and_then(Value::as_str).unwrap_or(&failure), true)
+        })
 }
 
 fn extract_openai_completion_content(body: &str) -> Result<String, String> {
@@ -974,6 +1003,10 @@ pub(crate) async fn generate_video_remix(
         "fixed" => (
             (target_duration / 10.0).ceil().max(1.0) as usize,
             "固定时长模式：从第1镜开始连续切分，除最后一个尾镜外，每个分镜时长必须严格等于10秒；当目标总时长不能被10整除时，只有最后一个尾镜使用精确剩余时长；不得用8秒、12秒、15秒等其他时长替代常规10秒分镜",
+        ),
+        "fixed_15" => (
+            (target_duration / 15.0).ceil().max(1.0) as usize,
+            "固定15秒模式：从第1镜开始连续切分，除最后一个尾镜外，每个分镜时长必须严格等于15秒；当目标总时长不能被15整除时，只有最后一个尾镜使用精确剩余时长；不得用8秒、10秒、12秒等其他时长替代常规15秒分镜",
         ),
         "adaptive" => {
             let minimum = (target_duration / 15.0).ceil().max(1.0);
@@ -2777,6 +2810,7 @@ fn load_reference_images(
             bytes,
             mime_type,
             data_url,
+            public_url: input.public_url.clone(),
         });
     }
     Ok(images)
@@ -2838,6 +2872,7 @@ fn compressed_reference_jpeg(
         bytes,
         mime_type: "image/jpeg".to_owned(),
         data_url,
+        public_url: original.public_url.clone(),
     })
 }
 
@@ -2875,6 +2910,150 @@ fn platform_video_payload(
             "version": version,
         }
     })
+}
+
+fn platform_image_payload(
+    prompt: &str,
+    aspect_ratio: &str,
+    resolution: &str,
+    references: &[ReferenceImage],
+) -> Value {
+    let reference_images = references
+        .iter()
+        .map(|reference| json!({
+            "data_url": reference.data_url,
+            "label": reference.label,
+            "type": reference.kind,
+        }))
+        .collect::<Vec<_>>();
+    json!({
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "reference_images": reference_images,
+        "params": {"aspect_ratio": aspect_ratio, "resolution": resolution}
+    })
+}
+
+fn platform_image_url_payload(
+    prompt: &str,
+    aspect_ratio: &str,
+    resolution: &str,
+    references: &[ReferenceImage],
+    urls: &[String],
+) -> Value {
+    let reference_images = references
+        .iter()
+        .zip(urls)
+        .map(|(reference, url)| json!({
+            "url": url,
+            "label": reference.label,
+            "type": reference.kind,
+        }))
+        .collect::<Vec<_>>();
+    json!({
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+        "reference_images": reference_images,
+        "params": {"aspect_ratio": aspect_ratio, "resolution": resolution}
+    })
+}
+
+fn fit_platform_image_request_to_limits(
+    prompt: &str,
+    aspect_ratio: &str,
+    resolution: &str,
+    references: &mut [ReferenceImage],
+    request_target_bytes: usize,
+    reference_target_bytes: usize,
+) -> Result<Value, String> {
+    let originals = references.to_vec();
+    for (reference, original) in references.iter_mut().zip(&originals) {
+        if reference.bytes.len() <= reference_target_bytes {
+            continue;
+        }
+        let mut fitted = None;
+        for (max_edge, quality) in [
+            (2048, 85), (1920, 82), (1600, 78), (1280, 72), (1024, 65), (768, 60), (512, 55),
+        ] {
+            let compressed = compressed_reference_jpeg(original, max_edge, quality)?;
+            if compressed.bytes.len() <= reference_target_bytes {
+                fitted = Some(compressed);
+                break;
+            }
+        }
+        *reference = fitted.ok_or_else(|| error(
+            "AI_IMAGE_REFERENCE_TOO_LARGE",
+            format!("参考图 {} 自动压缩后仍超过单张 {:.1}MB 安全线，请更换或手动压缩后重试", original.label, reference_target_bytes as f64 / 1_000_000.0),
+            false,
+        ))?;
+    }
+
+    let mut payload = platform_image_payload(prompt, aspect_ratio, resolution, references);
+    if serde_json::to_vec(&payload).map_or(false, |bytes| bytes.len() <= request_target_bytes) {
+        return Ok(payload);
+    }
+    for (max_edge, quality) in [
+        (2048, 85), (1920, 82), (1600, 78), (1280, 72), (1024, 65), (768, 60), (512, 55),
+    ] {
+        for (reference, original) in references.iter_mut().zip(&originals) {
+            let compressed = compressed_reference_jpeg(original, max_edge, quality)?;
+            *reference = if compressed.bytes.len() < original.bytes.len() { compressed } else { original.clone() };
+        }
+        payload = platform_image_payload(prompt, aspect_ratio, resolution, references);
+        if serde_json::to_vec(&payload).map_or(false, |bytes| bytes.len() <= request_target_bytes) {
+            return Ok(payload);
+        }
+    }
+    let request_bytes = serde_json::to_vec(&payload).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+    Err(error(
+        "AI_IMAGE_REFERENCE_TOO_LARGE",
+        format!("参考图自动压缩后请求体仍有约 {:.1}MB，无法低于 {:.1}MB 安全线，请减少参考图后重试", request_bytes as f64 / 1_000_000.0, request_target_bytes as f64 / 1_000_000.0),
+        false,
+    ))
+}
+
+async fn prepare_platform_image_request(
+    api_base: &str,
+    provider_code: Option<&str>,
+    prompt: &str,
+    aspect_ratio: &str,
+    resolution: &str,
+    references: &mut [ReferenceImage],
+) -> Result<Value, String> {
+    let supports_public_urls = matches!(provider_code, Some("wagaai" | "allaiin"));
+    let inline_payload = fit_platform_image_request_to_limits(
+        prompt,
+        aspect_ratio,
+        resolution,
+        references,
+        if supports_public_urls { usize::MAX } else { PLATFORM_IMAGE_REQUEST_TARGET_BYTES },
+        PLATFORM_IMAGE_REFERENCE_TARGET_BYTES,
+    )?;
+    if references.is_empty() || !supports_public_urls {
+        return Ok(inline_payload);
+    }
+    crate::logging::debug(
+        "ai.image.references_server_upload",
+        json!({
+            "provider_code": provider_code,
+            "reference_count": references.len(),
+            "decoded_bytes": references.iter().map(|reference| reference.bytes.len()).sum::<usize>(),
+            "inline_request_bytes": serde_json::to_vec(&inline_payload).map(|bytes| bytes.len()).unwrap_or(0),
+        }),
+    );
+    let mut urls = Vec::with_capacity(references.len());
+    for reference in references.iter() {
+        urls.push(crate::platform_media::upload_reference_image(
+            api_base,
+            reference.bytes.clone(),
+            &reference.mime_type,
+            &reference.filename,
+            provider_code == Some("allaiin"),
+        ).await?);
+    }
+    Ok(platform_image_url_payload(prompt, aspect_ratio, resolution, references, &urls))
 }
 
 fn platform_video_url_payload(
@@ -2962,16 +3141,33 @@ async fn prepare_platform_video_request(
         }),
     );
     let mut urls = Vec::with_capacity(references.len());
+    let readiness_client = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|source_error| error("AI_VIDEO_REFERENCE_CLIENT_ERROR", source_error.to_string(), true))?;
     for reference in references.iter() {
-        urls.push(
-            crate::platform_media::upload_reference_image(
+        if require_public_urls {
+            if let Some(url) = reference.public_url.as_deref() {
+                match crate::platform_media::wait_for_public_reference_image(&readiness_client, url).await {
+                    Ok(()) => {
+                        urls.push(url.to_owned());
+                        continue;
+                    }
+                    Err(_source_error) => crate::logging::error(
+                        "ai.video.reference_url_refresh",
+                        json!({"label": reference.label, "reason": "stored_url_unreachable"}),
+                    ),
+                }
+            }
+        }
+        urls.push(crate::platform_media::upload_reference_image(
                 api_base,
                 reference.bytes.clone(),
                 &reference.mime_type,
                 &reference.filename,
-            )
-            .await?,
-        );
+                require_public_urls,
+            ).await?);
     }
     Ok(platform_video_url_payload(
         prompt,
@@ -3240,7 +3436,7 @@ async fn execute_image_task(
     }
     crate::database::image_tasks::mark_running(&connection, task_id)?;
     drop(connection);
-    let references = load_reference_images(project_root, &reference_assets)?;
+    let mut references = load_reference_images(project_root, &reference_assets)?;
 
     if task.protocol != "platform" {
         return Err(error(
@@ -3282,21 +3478,14 @@ async fn execute_image_task(
                         false,
                     )
                 })?;
-            let mut reference_images = Vec::with_capacity(references.len());
-            for reference in &references {
-                let image = if metadata.get("provider_code").and_then(Value::as_str) == Some("allaiin") {
-                    let url = crate::platform_media::upload_reference_image(
-                        &task.base_url,
-                        reference.bytes.clone(),
-                        &reference.mime_type,
-                        &reference.filename,
-                    ).await?;
-                    json!({"url": url, "label": reference.label, "type": reference.kind})
-                } else {
-                    json!({"data_url": reference.data_url, "label": reference.label, "type": reference.kind})
-                };
-                reference_images.push(image);
-            }
+            let payload = prepare_platform_image_request(
+                &task.base_url,
+                metadata.get("provider_code").and_then(Value::as_str),
+                prompt,
+                &task.aspect_ratio,
+                resolution,
+                &mut references,
+            ).await?;
             let operation = format!(
                 "{} · {}",
                 match task.target_type.as_str() {
@@ -3311,11 +3500,7 @@ async fn execute_image_task(
                 &task.base_url,
                 provider_model_id,
                 task_id,
-                json!({
-                    "prompt": prompt, "aspect_ratio": task.aspect_ratio, "resolution": resolution,
-                    "reference_images": reference_images,
-                    "params": {"aspect_ratio": task.aspect_ratio, "resolution": resolution}
-                }),
+                payload,
                 &operation,
                 metadata
                     .get("workflow_credit_id")
@@ -4565,6 +4750,49 @@ async fn execute_video_task(
 }
 
 #[tauri::command]
+pub async fn prepare_video_reference_assets(
+    input: PrepareVideoReferenceAssetsInput,
+) -> Result<Vec<GenerationReferenceAssetInput>, String> {
+    if input.provider_code.as_deref() != Some("allaiin") || input.reference_assets.is_empty() {
+        return Ok(input.reference_assets);
+    }
+    let project_root = validate_project_root(&input.project_path)?;
+    let mut references = load_reference_images(&project_root, &input.reference_assets)?;
+    // The temporary upload endpoint has a 10 MB file limit. Use the same
+    // conservative compression policy as actual video submission.
+    fit_platform_video_request_to_limits(
+        "reference-readiness-check",
+        "9:16",
+        10.0,
+        "720p",
+        None,
+        &mut references,
+        usize::MAX,
+        PLATFORM_VIDEO_REFERENCE_TARGET_BYTES,
+    )?;
+    let mut prepared = Vec::with_capacity(input.reference_assets.len());
+    for (asset, reference) in input.reference_assets.into_iter().zip(references.into_iter()) {
+        let public_url = crate::platform_media::upload_reference_image(
+            &input.platform_api_base_url,
+            reference.bytes,
+            &reference.mime_type,
+            &reference.filename,
+            true,
+        )
+        .await
+        .map_err(|source_error| {
+            error(
+                "AI_VIDEO_REFERENCE_NOT_PUBLIC",
+                format!("参考图“{}”尚未公网可用：{}", asset.label, source_error),
+                true,
+            )
+        })?;
+        prepared.push(GenerationReferenceAssetInput { public_url: Some(public_url), ..asset });
+    }
+    Ok(prepared)
+}
+
+#[tauri::command]
 pub fn create_shot_video_generation(
     app: tauri::AppHandle,
     input: CreateShotVideoGenerationInput,
@@ -4587,6 +4815,7 @@ pub fn create_shot_video_generation(
             relative_path: first_frame.to_owned(),
             label: "分镜图（视频首帧）".into(),
             kind: "shot_first_frame".into(),
+            public_url: None,
         });
     }
     load_reference_images(&project_root, &reference_assets)?;
@@ -5734,6 +5963,7 @@ mod tests {
             bytes: vec![1, 2, 3],
             mime_type: "image/png".into(),
             data_url: "data:image/png;base64,unique-reference-data".into(),
+            public_url: None,
         }];
         let payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &references);
         assert_eq!(
@@ -5748,6 +5978,43 @@ mod tests {
     }
 
     #[test]
+    fn text_content_classification_only_wraps_received_response_parsing() {
+        for response in [json!({}), json!({"choices":[{"message":{"content":"这不是 JSON"}}]})] {
+            let failure = parse_text_completion_json(&response).unwrap_err();
+            let value: Value = serde_json::from_str(&failure).unwrap();
+            assert_eq!(value["code"], "AI_TEXT_CONTENT_INVALID");
+            assert_eq!(value["retryable"], true);
+        }
+        assert_eq!(parse_text_completion_json(&json!({"choices":[{"message":{"content":"{\"title\":\"新剧情\"}"}}]})).unwrap()["title"], "新剧情");
+    }
+
+    #[test]
+    fn platform_image_url_payload_removes_base64_references() {
+        let references = vec![ReferenceImage {
+            label: "场景图".into(),
+            kind: "scene".into(),
+            filename: "scene.png".into(),
+            bytes: vec![1, 2, 3],
+            mime_type: "image/png".into(),
+            data_url: "data:image/png;base64,large-inline-reference".into(),
+            public_url: None,
+        }];
+        let payload = platform_image_url_payload(
+            "测试提示",
+            "16:9",
+            "2K",
+            &references,
+            &["https://api.example/reference".into()],
+        );
+        assert_eq!(
+            payload.pointer("/reference_images/0/url"),
+            Some(&json!("https://api.example/reference"))
+        );
+        assert!(payload.pointer("/reference_images/0/data_url").is_none());
+        assert!(!payload.to_string().contains("large-inline-reference"));
+    }
+
+    #[test]
     fn many_references_switch_to_server_urls_before_the_provider_base64_total_limit() {
         let reference = |size| ReferenceImage {
             label: "参考图".into(),
@@ -5756,6 +6023,7 @@ mod tests {
             bytes: vec![1; size],
             mime_type: "image/png".into(),
             data_url: "data:image/png;base64,eA==".into(),
+            public_url: None,
         };
         let small = vec![reference(1024), reference(2048)];
         let small_payload = platform_video_payload("测试提示", "16:9", 10.0, "720p", None, &small);
@@ -5806,6 +6074,7 @@ mod tests {
             data_url: format!("data:image/png;base64,{}", BASE64.encode(&bytes)),
             mime_type: "image/png".into(),
             bytes,
+            public_url: None,
         }];
         let original_size = serde_json::to_vec(&platform_video_payload(
             "测试提示",
@@ -5857,6 +6126,7 @@ mod tests {
             data_url: format!("data:image/png;base64,{}", BASE64.encode(&bytes)),
             mime_type: "image/png".into(),
             bytes,
+            public_url: None,
         }];
         let request_limit = serde_json::to_vec(&platform_video_payload(
             "测试提示",
@@ -5895,6 +6165,7 @@ mod tests {
                 bytes: vec![7, 8, 9],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,shot".into(),
+                public_url: None,
             },
             ReferenceImage {
                 label: "角色图一".into(),
@@ -5903,6 +6174,7 @@ mod tests {
                 bytes: vec![1, 2, 3],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,character-one".into(),
+                public_url: None,
             },
             ReferenceImage {
                 label: "场景图".into(),
@@ -5911,6 +6183,7 @@ mod tests {
                 bytes: vec![4, 5, 6],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,scene".into(),
+                public_url: None,
             },
             ReferenceImage {
                 label: "角色图二".into(),
@@ -5919,6 +6192,7 @@ mod tests {
                 bytes: vec![10, 11, 12],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,character-two".into(),
+                public_url: None,
             },
         ];
         let payload = video_media_payload(
@@ -5978,6 +6252,7 @@ mod tests {
                 bytes: vec![1, 2, 3],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,scene".into(),
+                public_url: None,
             },
             ReferenceImage {
                 label: "当前分镜图（视频整体参考图）".into(),
@@ -5986,6 +6261,7 @@ mod tests {
                 bytes: vec![4, 5, 6],
                 mime_type: "image/png".into(),
                 data_url: "data:image/png;base64,shot-reference".into(),
+                public_url: None,
             },
         ];
         let payload = video_media_payload(

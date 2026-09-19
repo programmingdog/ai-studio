@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "prepare:media": "node scripts/prepare-media-binaries.mjs",
+    "prepare:media:dev": "node scripts/prepare-media-binaries.mjs --dev",
     "prepare:worker": "node scripts/prepare-worker-sidecar.mjs",
     "dev": "vite --port 1420",
     "build": "tsc -p tsconfig.json --noEmit && vite build",

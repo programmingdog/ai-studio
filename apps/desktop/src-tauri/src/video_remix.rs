@@ -13,6 +13,31 @@ use crate::project::{manager, registry};
 
 const MAX_GENERATION_ATTEMPTS: usize = 3;
 
+#[derive(Debug, PartialEq)]
+enum RemixAttemptFailure {
+    Request(String),
+    Content(String),
+}
+
+fn evaluate_remix_attempt(
+    generated: Result<Value, String>,
+    validate: impl FnOnce(Value) -> Result<Value, String>,
+) -> Result<Value, RemixAttemptFailure> {
+    match generated {
+        Ok(value) => validate(value).map_err(RemixAttemptFailure::Content),
+        Err(failure) => {
+            let error = serde_json::from_str::<Value>(&failure).unwrap_or(Value::Null);
+            if error["code"] == "AI_TEXT_CONTENT_INVALID" {
+                Err(RemixAttemptFailure::Content(error["message"].as_str().unwrap_or(&failure).to_owned()))
+            } else {
+                // Unknown errors fail closed: retryable transport errors are
+                // handled by their own layer, never by the paid content loop.
+                Err(RemixAttemptFailure::Request(failure))
+            }
+        }
+    }
+}
+
 fn default_storyboard_duration_mode() -> String {
     "legacy".to_owned()
 }
@@ -589,6 +614,28 @@ fn validate_storyboard_durations(
                 if (*duration - expected).abs() > 0.01 {
                     return Err(format!(
                         "固定时长模式下第{}个分镜必须为{expected}秒，实际为{duration}秒",
+                        index + 1
+                    ));
+                }
+            }
+        }
+        "fixed_15" => {
+            let expected_count = (target_duration / 15.0).ceil().max(1.0) as usize;
+            if durations.len() != expected_count {
+                return Err(format!(
+                    "固定15秒模式要求生成{expected_count}个分镜，实际生成{}个；除尾镜外每镜必须为15秒",
+                    durations.len()
+                ));
+            }
+            for (index, duration) in durations.iter().enumerate() {
+                let expected = if index + 1 == expected_count {
+                    target_duration - 15.0 * (expected_count.saturating_sub(1) as f64)
+                } else {
+                    15.0
+                };
+                if (*duration - expected).abs() > 0.01 {
+                    return Err(format!(
+                        "固定15秒模式下第{}个分镜必须为{expected}秒，实际为{duration}秒",
                         index + 1
                     ));
                 }
@@ -1183,7 +1230,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 &app,
                 &task_id,
                 0.12 + (attempt as f64 - 1.0) * 0.22,
-                &format!("AI正在提炼冲突与反转并创作新剧情（第{attempt}次）"),
+                &format!("正在准备二创第{attempt}次生成；查询并确认积分后开始创作"),
             );
             let generated = crate::ai::generate_video_remix(
                 &app,
@@ -1198,7 +1245,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 revision_note.as_deref(),
             )
             .await;
-            match generated.and_then(|value| validate_result(value, &input)) {
+            match evaluate_remix_attempt(generated, |value| validate_result(value, &input)) {
                 Ok(result) => {
                     if let (Ok(connection), Ok(result_json)) =
                         (open(&app), serde_json::to_string(&result))
@@ -1213,11 +1260,11 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                     }
                     return;
                 }
-                Err(error) => {
-                    if error.contains("CREDIT_CONFIRMATION_CANCELLED") {
-                        finish_failed(&app, &task_id, error);
-                        return;
-                    }
+                Err(RemixAttemptFailure::Request(error)) => {
+                    finish_failed(&app, &task_id, error);
+                    return;
+                }
+                Err(RemixAttemptFailure::Content(error)) => {
                     revision_note = Some(error);
                 }
             }
@@ -1225,10 +1272,12 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
         finish_failed(
             &app,
             &task_id,
-            format!(
-                "模型自动重试{MAX_GENERATION_ATTEMPTS}次后仍未生成合格结果：{}",
-                revision_note.unwrap_or_else(|| "未知错误".to_owned())
-            ),
+            json!({
+                "code": "VIDEO_REMIX_CONTENT_INVALID",
+                "message": format!("模型结果共尝试{MAX_GENERATION_ATTEMPTS}次（含首次生成）后仍未通过内容校验：{}", revision_note.unwrap_or_else(|| "未知错误".to_owned())),
+                "retryable": true,
+                "stage": "content_validation",
+            }).to_string(),
         );
     });
 }
@@ -1262,7 +1311,7 @@ fn validate_input(input: &CreateVideoRemixTaskInput) -> Result<(), String> {
     }
     if !matches!(
         input.storyboard_duration_mode.as_str(),
-        "fixed" | "adaptive"
+        "fixed" | "fixed_15" | "adaptive"
     ) {
         return Err("二创分镜时长模式无效".to_owned());
     }
@@ -1494,6 +1543,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn request_failures_never_enter_content_validation_or_correction() {
+        for failure in [
+            json!({"code":"PLATFORM_QUOTE_CONNECTION_FAILED","message":"查询所需积分失败","retryable":true}).to_string(),
+            json!({"code":"PLATFORM_LOGIN_REQUIRED","message":"请登录","retryable":false}).to_string(),
+            json!({"code":"CREDIT_CONFIRMATION_CANCELLED","message":"已取消或超时"}).to_string(),
+            json!({"code":"PLATFORM_MEDIA_API_ERROR","message":"积分不足"}).to_string(),
+            json!({"code":"TASK_NOT_SUBMITTED","message":"暂时繁忙","retryable":true}).to_string(),
+            "无法连接服务端生成接口".to_owned(),
+            "暂时查不到所需积分，请稍后再试。本次没有开始，不扣分。".to_owned(),
+        ] {
+            let result = evaluate_remix_attempt(Err(failure.clone()), |_| panic!("no model result to validate"));
+            assert_eq!(result, Err(RemixAttemptFailure::Request(failure)));
+        }
+    }
+
+    #[test]
+    fn only_received_invalid_content_becomes_a_revision_note() {
+        let failure = json!({"code":"AI_TEXT_CONTENT_INVALID","message":"模型未返回 JSON 对象"}).to_string();
+        assert_eq!(evaluate_remix_attempt(Err(failure), |_| panic!("JSON parsing failed")),
+            Err(RemixAttemptFailure::Content("模型未返回 JSON 对象".to_owned())));
+        assert_eq!(evaluate_remix_attempt(Ok(json!({})), |_| Err("分镜总时长不正确".to_owned())),
+            Err(RemixAttemptFailure::Content("分镜总时长不正确".to_owned())));
+        let valid = json!({"title":"完成"});
+        assert_eq!(evaluate_remix_attempt(Ok(valid.clone()), Ok), Ok(valid));
+    }
+
+    #[test]
+    fn content_correction_followed_by_cancel_or_quote_error_preserves_that_error() {
+        let invalid = evaluate_remix_attempt(Ok(json!({})), |_| Err("缺少分镜".to_owned()));
+        assert!(matches!(invalid, Err(RemixAttemptFailure::Content(_))));
+        let failure = json!({"code":"CREDIT_CONFIRMATION_CANCELLED","message":"已取消","retryable":false}).to_string();
+        assert_eq!(evaluate_remix_attempt(Err(failure.clone()), Ok), Err(RemixAttemptFailure::Request(failure)));
+    }
+
+    #[test]
     fn rejects_invalid_remix_configuration() {
         let input = CreateVideoRemixTaskInput {
             source_task_id: "TASK_1".to_owned(),
@@ -1602,6 +1686,8 @@ mod tests {
     fn validates_fixed_and_adaptive_storyboard_durations() {
         assert!(validate_storyboard_durations(&[10.0, 10.0, 5.0], 25.0, "fixed").is_ok());
         assert!(validate_storyboard_durations(&[10.0, 8.0, 7.0], 25.0, "fixed").is_err());
+        assert!(validate_storyboard_durations(&[15.0, 15.0, 7.0], 37.0, "fixed_15").is_ok());
+        assert!(validate_storyboard_durations(&[15.0, 12.0, 10.0], 37.0, "fixed_15").is_err());
         assert!(validate_storyboard_durations(&[8.0, 9.0, 8.0], 25.0, "adaptive").is_ok());
         assert!(validate_storyboard_durations(&[15.0, 10.0, 6.0], 31.0, "adaptive").is_err());
     }

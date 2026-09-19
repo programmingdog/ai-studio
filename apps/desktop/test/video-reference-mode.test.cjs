@@ -43,3 +43,15 @@ test("pure text prompt removes image instructions and mention tokens", () => {
   assert.equal(result.includes("分镜图参考要求："), false);
   assert.match(result, /角色与场景在视频中保持一致/);
 });
+
+test("automatic AllAIIn workflow waits for the whole reference batch before creating any video task", () => {
+  const app = fs.readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8");
+  const barrier = app.indexOf("const prepareAllVideoReferences");
+  const submit = app.indexOf("const submitVideoInputs", barrier);
+  const waitForBatch = app.indexOf("await prepareAllVideoReferences(inputs)", submit);
+  const createTask = app.indexOf("createShotVideoGeneration(input)", waitForBatch);
+  assert.ok(barrier >= 0, "missing automatic-workflow reference readiness barrier");
+  assert.ok(submit > barrier && waitForBatch > submit && createTask > waitForBatch,
+    "video tasks must be created only after the complete reference batch is ready");
+  assert.match(app.slice(barrier, submit), /provider_code !== "allaiin"/);
+});

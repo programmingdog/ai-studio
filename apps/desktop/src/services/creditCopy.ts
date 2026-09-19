@@ -12,7 +12,7 @@ export function creditAction(operation: string, capability: string): string {
   if (operation.includes("分集") || operation.includes("分段")) return "分集剧情生成";
   if (operation.includes("设定")) return "角色和场景设定";
   if (operation.includes("分镜") && capability === "TEXT_GENERATION") return "分镜创作";
-  return ({ TEXT_GENERATION: "内容生成", VIDEO_UNDERSTANDING: "视频解析", IMAGE_GENERATION: "图片生成", VIDEO_GENERATION: "视频生成" } as Record<string, string>)[capability] || "生成";
+  return ({ TEXT_GENERATION: "内容生成", VIDEO_REMIX: "二创", VIDEO_UNDERSTANDING: "视频解析", IMAGE_GENERATION: "图片生成", VIDEO_GENERATION: "视频生成" } as Record<string, string>)[capability] || "生成";
 }
 
 export function creditNotice(action: string, credits: number): string {

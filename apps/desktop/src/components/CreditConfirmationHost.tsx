@@ -4,12 +4,11 @@ import { createPortal } from "react-dom";
 import { Coins, LoaderCircle } from "lucide-react";
 import { getCreditBalance, getModelCreditQuote, type ModelCreditQuote } from "../services/platform";
 import { creditAction, creditNotice, creditRefundCopy, creditRetryCopy, creditText } from "../services/creditCopy";
-import { useWorkflowQuiet } from "../services/workflowQuiet";
 import { ImmediateCreditPurchaseButton, isInsufficientCreditError } from "./CreditPurchaseHost";
 export { creditText } from "../services/creditCopy";
 
 export type PendingCredit = { id: string; operation: string; quote: ModelCreditQuote };
-export function ModelCreditNotice({ capability, action = capability === "VIDEO_UNDERSTANDING" ? "视频解析" : "内容生成" }: { capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING"; action?: string }) {
+export function ModelCreditNotice({ capability, action = capability === "VIDEO_UNDERSTANDING" ? "视频解析" : capability === "VIDEO_REMIX" ? "二创" : "内容生成" }: { capability: "TEXT_GENERATION" | "VIDEO_UNDERSTANDING" | "VIDEO_REMIX"; action?: string }) {
   const quote = useQuery({ queryKey: ["model-credit-quote", capability], queryFn: () => getModelCreditQuote(capability), staleTime: 30_000, retry: false });
   return <p className="credit-operation-notice"><Coins size={16} /><span>{quote.data
     ? `${creditNotice(action, quote.data.credits)}${capability === "VIDEO_UNDERSTANDING" ? quote.data.extraction_billing_mode === "PER_SEGMENT" ? " 长视频按分段次数分别扣费。" : " 长视频默认整体只扣 1 次。" : ""}`
@@ -17,7 +16,6 @@ export function ModelCreditNotice({ capability, action = capability === "VIDEO_U
 }
 
 export function CreditConfirmationHost() {
-  const workflowQuiet = useWorkflowQuiet();
   const queryClient = useQueryClient();
   const pending = useQuery({ queryKey: ["pending-credit-confirmations"], queryFn: () => invoke<PendingCredit[]>("list_credit_confirmations"), enabled: "__TAURI_INTERNALS__" in window, refetchInterval: 750, refetchIntervalInBackground: true, retry: false });
   const items = pending.data ?? [];
@@ -29,7 +27,10 @@ export function CreditConfirmationHost() {
     },
     onSettled: async () => { await pending.refetch(); void queryClient.invalidateQueries({ queryKey: ["credit-balance"] }); void queryClient.invalidateQueries({ queryKey: ["platform-user"] }); },
   });
-  if (!items.length || workflowQuiet) return null;
+  // A confirmation can belong to an independent action (for example video
+  // remix) while an automatic workflow is running. Hiding the global host in
+  // that state leaves the native request waiting until its timeout expires.
+  if (!items.length) return null;
   return createPortal(<CreditConfirmationDialog items={items} available={balance.data?.available} balanceError={Boolean(balance.error)} busy={submit.isPending} submitError={submit.error ? String(submit.error) : undefined} onPurchased={() => void balance.refetch()} onDecision={approved => submit.mutate({ requests: [...items], approved })} />, document.body);
 }
 

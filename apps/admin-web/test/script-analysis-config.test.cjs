@@ -8,6 +8,7 @@ test('script analysis configuration belongs to its AI capability page instead of
   const app = readFileSync(join(__dirname, '../components/AdminApp.tsx'), 'utf8');
   const providers = readFileSync(join(__dirname, '../components/ProvidersPanel.tsx'), 'utf8');
   const controller = readFileSync(join(__dirname, '../../server/src/admin/admin.controller.ts'), 'utf8');
+  const migration = readFileSync(join(__dirname, '../../server/src/database/migrations/057_video_remix_feature_pricing.sql'), 'utf8');
 
   assert.match(panel, /\/admin\/configs\/script-analysis/);
   assert.match(app, /view === "script-analysis".*<ScriptAnalysisConfigPanel/s);
@@ -20,4 +21,8 @@ test('script analysis configuration belongs to its AI capability page instead of
   assert.match(panel, /整体扣费模式（默认）/);
   assert.match(panel, /分段单独扣费模式/);
   assert.match(panel, /extraction_billing_mode/);
+  assert.match(panel, /每次二次创作所需积分/);
+  assert.match(panel, /remix_credit_cost/);
+  assert.match(panel, /剧本库二次创作和视频链接解析结果二次创作/);
+  assert.match(migration, /remix_credit_cost DECIMAL\(20,6\) NOT NULL DEFAULT 20/);
 });

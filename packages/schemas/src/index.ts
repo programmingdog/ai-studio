@@ -493,6 +493,15 @@ export interface GenerationReferenceAssetInput {
   relative_path: string;
   label: string;
   kind: "scene" | "character" | "prop" | "shot_first_frame" | "shot_reference";
+  /** Temporary signed URL prepared by the automatic-workflow readiness barrier. */
+  public_url?: string;
+}
+
+export interface PrepareVideoReferenceAssetsInput {
+  project_path: string;
+  platform_api_base_url: string;
+  provider_code?: string;
+  reference_assets: GenerationReferenceAssetInput[];
 }
 
 export type GenerationMediaType = "image" | "video";
@@ -775,7 +784,7 @@ export interface CreateLocalVideoUnderstandingTaskInput {
 }
 
 export type VideoRemixOriginality = "balanced" | "high" | "radical";
-export type VideoRemixStoryboardDurationMode = "fixed" | "adaptive";
+export type VideoRemixStoryboardDurationMode = "fixed" | "fixed_15" | "adaptive";
 export type VideoRemixTaskStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
 
 export interface VideoRemixResult {

@@ -203,6 +203,7 @@ pub fn create_free_creation_video(
             relative_path: relative,
             label: asset.name.clone(),
             kind: asset.asset_type.clone(),
+            public_url: None,
         });
         reference_names.push(asset.name.clone());
     }

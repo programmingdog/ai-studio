@@ -1,5 +1,6 @@
 use reqwest::{Client, StatusCode, Url};
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::platform_session::read_platform_session;
@@ -254,6 +255,7 @@ pub async fn upload_reference_image(
     bytes: Vec<u8>,
     mime_type: &str,
     filename: &str,
+    require_external_access: bool,
 ) -> Result<String, String> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -261,6 +263,11 @@ pub async fn upload_reference_image(
         .build()
         .map_err(|error| format!("无法创建参考图上传客户端：{error}"))?;
     let base = api_base_url(api_base)?;
+    if require_external_access {
+        assert_public_reference_url(&base).map_err(|_| {
+            "慧心AI需要通过公网下载参考图，但当前平台 API 地址仅限本机或内网访问。请把客户端连接到公网 HTTPS 服务（调试时可使用 HTTPS 反向代理/隧道）后重试；本次尚未提交视频任务。".to_owned()
+        })?;
+    }
     let mut token = crate::platform_session::valid_access_token(&base).await?;
     let send = |access_token: &str| {
         let part = reqwest::multipart::Part::bytes(bytes.clone())
@@ -290,13 +297,69 @@ pub async fn upload_reference_image(
         .as_str()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "平台未返回参考图公网地址".to_owned())?;
-    let parsed = Url::parse(url).map_err(|_| "平台返回的参考图地址无效".to_owned())?;
-    let local_http = parsed.scheme() == "http"
-        && matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
-    if parsed.scheme() != "https" && !local_http {
-        return Err("参考图公网地址必须使用 HTTPS".to_owned());
+    if require_external_access {
+        wait_for_public_reference_image(&client, url).await?;
+    } else {
+        let parsed = Url::parse(url).map_err(|_| "平台返回的参考图地址无效".to_owned())?;
+        let local_http = parsed.scheme() == "http"
+            && matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1"));
+        if parsed.scheme() != "https" && !local_http {
+            return Err("参考图公网地址必须使用 HTTPS".to_owned());
+        }
     }
     Ok(url.to_owned())
+}
+
+fn private_host(host: &str) -> bool {
+    let normalized = host.trim_matches(['[', ']']).trim_end_matches('.').to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") || normalized.ends_with(".local") {
+        return true;
+    }
+    normalized.parse::<IpAddr>().is_ok_and(|address| match address {
+        IpAddr::V4(value) => value.is_private() || value.is_loopback() || value.is_link_local() || value.is_unspecified(),
+        IpAddr::V6(value) => value.is_loopback() || value.is_unspecified() || value.is_unique_local() || value.is_unicast_link_local(),
+    })
+}
+
+pub(crate) fn assert_public_reference_url(value: &str) -> Result<Url, String> {
+    let parsed = Url::parse(value).map_err(|_| "参考图公网地址无效".to_owned())?;
+    let host = parsed.host_str().ok_or_else(|| "参考图公网地址缺少主机名".to_owned())?;
+    if parsed.scheme() != "https" || private_host(host) || parsed.username() != "" || parsed.password().is_some() {
+        return Err("参考图必须使用公网可访问的 HTTPS 地址".to_owned());
+    }
+    Ok(parsed)
+}
+
+pub(crate) async fn wait_for_public_reference_image(client: &Client, value: &str) -> Result<(), String> {
+    assert_public_reference_url(value)?;
+    let mut last_error = "尚未返回图片内容".to_owned();
+    for attempt in 1..=6 {
+        match client.get(value).timeout(Duration::from_secs(15)).send().await {
+            Ok(response) => {
+                if let Err(error) = assert_public_reference_url(response.url().as_str()) {
+                    return Err(error);
+                }
+                let status = response.status();
+                let image_content = response.headers().get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.to_ascii_lowercase().starts_with("image/"));
+                if status.is_success() && image_content {
+                    match response.bytes().await {
+                        Ok(body) if !body.is_empty() => return Ok(()),
+                        Ok(_) => last_error = "公网地址返回了空图片".to_owned(),
+                        Err(error) => last_error = format!("读取公网图片失败：{error}"),
+                    }
+                } else {
+                    last_error = format!("公网探测返回 HTTP {}，且未返回图片内容", status.as_u16());
+                }
+            }
+            Err(_error) => last_error = "公网探测连接失败或超时".to_owned(),
+        }
+        if attempt < 6 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+    Err(format!("参考图上传后仍无法通过公网访问：{last_error}。本次尚未向慧心AI提交视频任务，请检查公网域名、反向代理和临时图片存储后重试。"))
 }
 
 async fn authenticated_json_request(
@@ -415,7 +478,7 @@ async fn request_quote(
                 let result = response_value(response).await;
                 let retryable = status.is_success() || retryable_quote_status(status);
                 if result.is_ok() || !retryable || attempt == QUOTE_MAX_ATTEMPTS {
-                    return result;
+                    return result.map_err(quote_response_failure);
                 }
                 crate::logging::error(
                     "ai.media.quote_retry",
@@ -430,10 +493,10 @@ async fn request_quote(
             Err(error) => {
                 crate::logging::error(
                     "ai.media.quote_retry",
-                    json!({"attempt": attempt, "reason": "transport", "error": error.to_string()}),
+                    json!({"attempt": attempt, "reason": "transport", "error": format!("{error:?}")}),
                 );
                 if attempt == QUOTE_MAX_ATTEMPTS {
-                    return Err("暂时查不到所需积分，请稍后再试。本次没有开始，不扣分。".to_owned());
+                    return Err(quote_transport_failure(base, error.is_timeout(), error.is_connect()));
                 }
             }
         }
@@ -441,6 +504,66 @@ async fn request_quote(
     }
 
     unreachable!("quote retry loop always returns on its final attempt")
+}
+
+pub async fn video_remix_completion(operation: &str, payload: Value) -> Result<Value, String> {
+    generate_request(
+        "",
+        None,
+        Some("VIDEO_REMIX"),
+        &uuid::Uuid::new_v4().to_string(),
+        payload,
+        operation,
+        None,
+    )
+    .await
+}
+
+fn quote_response_failure(failure: String) -> String {
+    let mut value = serde_json::from_str::<Value>(&failure).ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({"code": "PLATFORM_QUOTE_FAILED", "message": failure, "retryable": true}));
+    let message = value["message"].as_str().unwrap_or("平台未返回有效报价");
+    value["message"] = json!(format!("查询所需积分失败：{message}。本次没有开始生成，不扣积分。"));
+    value["stage"] = json!("quote");
+    value["submitted"] = json!(false);
+    value.to_string()
+}
+
+fn quote_transport_failure(base: &str, timeout: bool, connect: bool) -> String {
+    let local = Url::parse(base).ok().is_some_and(|url| matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1")));
+    let (code, reason) = if timeout {
+        ("PLATFORM_QUOTE_TIMEOUT", "查询所需积分超时，请稍后重试")
+    } else if connect && local {
+        ("PLATFORM_QUOTE_CONNECTION_FAILED", "无法连接本地平台服务，请确认调试 API 已启动且地址、端口正确")
+    } else if connect {
+        ("PLATFORM_QUOTE_CONNECTION_FAILED", "无法连接平台查价接口，请检查网络后重试")
+    } else {
+        ("PLATFORM_QUOTE_FAILED", "查询所需积分时连接中断，请稍后重试")
+    };
+    json!({"code": code, "stage": "quote", "submitted": false, "retryable": true,
+        "message": format!("{reason}。本次没有开始生成，不扣积分。")}).to_string()
+}
+
+#[cfg(test)]
+mod public_reference_tests {
+    use super::assert_public_reference_url;
+
+    #[test]
+    fn public_reference_urls_reject_local_and_private_hosts() {
+        for value in [
+            "http://example.com/image.png",
+            "https://localhost/image.png",
+            "https://127.0.0.1/image.png",
+            "https://10.0.0.8/image.png",
+            "https://172.16.1.2/image.png",
+            "https://192.168.1.2/image.png",
+            "https://[::1]/image.png",
+        ] {
+            assert!(assert_public_reference_url(value).is_err(), "{value}");
+        }
+        assert!(assert_public_reference_url("https://ai-studio.yuntianxing.net/api/v1/temporary-reference-images/token").is_ok());
+    }
 }
 
 async fn generate_request(
@@ -584,8 +707,13 @@ async fn generate_request(
         "workflow_quote_item_key": workflow_lock.as_ref().map(|lock| lock.item_key.as_str()),
         "payload": payload,
     });
+    let create_path = if capability == Some("VIDEO_REMIX") {
+        "/tasks/video-remix"
+    } else {
+        "/tasks"
+    };
     let sent = client
-        .post(format!("{base}/tasks"))
+        .post(format!("{base}{create_path}"))
         .bearer_auth(&token)
         .json(&request_body)
         .send()
@@ -601,7 +729,7 @@ async fn generate_request(
     {
         token = crate::platform_session::refresh_after_unauthorized(&base, &token).await?;
         response = match client
-            .post(format!("{base}/tasks"))
+            .post(format!("{base}{create_path}"))
             .bearer_auth(&token)
             .json(&request_body)
             .send()
@@ -946,7 +1074,44 @@ mod tests {
         let value: Value = serde_json::from_str(&error).unwrap();
         assert_eq!(value["code"], "PLATFORM_MEDIA_API_ERROR");
         assert_eq!(value["retryable"], false);
+        assert_eq!(value["stage"], "quote");
+        assert_eq!(value["submitted"], false);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn quote_stops_after_three_transient_failures_with_quote_classification() {
+        let (base, server) = fixture(vec![("POST /tasks/quote ", 503, json!({"message":"temporary"})); QUOTE_MAX_ATTEMPTS]);
+        let failure = tauri::async_runtime::block_on(request_quote(&Client::new(), &base, "test", None, Some("TEXT_GENERATION"), &json!({}))).unwrap_err();
+        let value: Value = serde_json::from_str(&failure).unwrap();
+        assert_eq!(value["stage"], "quote");
+        assert_eq!(value["submitted"], false);
+        assert!(value["message"].as_str().unwrap().contains("没有开始生成"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn quote_login_error_keeps_its_code_for_token_refresh() {
+        let (base, server) = fixture(vec![("POST /tasks/quote ", 401, json!({"message":"token expired"}))]);
+        let failure = tauri::async_runtime::block_on(request_quote(&Client::new(), &base, "test", None, Some("TEXT_GENERATION"), &json!({}))).unwrap_err();
+        assert!(login_required(&failure));
+        assert_eq!(serde_json::from_str::<Value>(&failure).unwrap()["stage"], "quote");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn quote_connection_and_timeout_errors_do_not_claim_model_output_failure() {
+        for (base, timeout, connect, code, expected) in [
+            ("http://localhost:3101/api/v1", false, true, "PLATFORM_QUOTE_CONNECTION_FAILED", "本地平台服务"),
+            ("https://example.com/api/v1", false, true, "PLATFORM_QUOTE_CONNECTION_FAILED", "网络"),
+            ("https://example.com/api/v1", true, false, "PLATFORM_QUOTE_TIMEOUT", "超时"),
+            ("https://example.com/api/v1", false, false, "PLATFORM_QUOTE_FAILED", "连接中断"),
+        ] {
+            let value: Value = serde_json::from_str(&quote_transport_failure(base, timeout, connect)).unwrap();
+            assert_eq!(value["code"], code);
+            assert_eq!(value["submitted"], false);
+            assert!(value["message"].as_str().unwrap().contains(expected));
+        }
     }
 
     #[test]

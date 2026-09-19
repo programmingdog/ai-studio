@@ -66,6 +66,7 @@ test("new image task stores its cost and exchange rate with the charged credits"
       if (sql.includes("FROM ai_tasks")) return [[]];
       if (sql.includes("FROM ledger_entries")) return [[{ balance: 100 }]];
       if (sql.includes("FROM credit_holds")) return [[{ held: 0 }]];
+      if (sql.includes("FROM workflow_quote_approvals")) return [[{ reserved: 0 }]];
       if (sql.includes("FROM model_credit_pricing_config")) return [[{ cny_per_credit: "0.100000" }]];
       throw Error(sql);
     },
@@ -152,6 +153,7 @@ test("insufficient balance for the model-multiplied cost blocks submission", asy
     if (sql.includes("FROM ledger_accounts")) return [[{ id: "account" }]];
     if (sql.includes("FROM ledger_entries")) return [[{ balance: 15 }]];
     if (sql.includes("FROM credit_holds")) return [[{ held: 0 }]];
+    if (sql.includes("FROM workflow_quote_approvals")) return [[{ reserved: 0 }]];
     throw new Error("Unexpected query");
   }, execute: () => { throw new Error("Must not write an unaffordable task"); } };
   const service = new ModelGatewayService({ transaction: async (fn) => fn(connection) }, { decrypt: () => "fake-test-key" });

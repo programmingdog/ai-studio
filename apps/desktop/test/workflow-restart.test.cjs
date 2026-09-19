@@ -15,6 +15,18 @@ function section(source, start, end) {
   return source.slice(startIndex, endIndex);
 }
 
+test('existing workflow has a separate entry that restores its window without starting a new task', () => {
+  const reopen = section(app, 'const openExistingWorkflow =', '  useEffect(() => {');
+  assert.match(reopen, /setShowAutoMode\(false\)/);
+  assert.match(reopen, /restoredWorkflowMedia\(savedWorkflow\.snapshot\)/);
+  assert.match(reopen, /visible: true/);
+  assert.doesNotMatch(reopen, /createAutomaticWorkflow|approve_workflow_credit|startAutoWorkflow/);
+  assert.match(app, /activeWorkflowQuery\.data \?\? latestWorkflowQuery\.data/);
+  const header = section(app, '<header className="story-auto-header">', '</header>');
+  assert.ok(header.indexOf('onClick={openExistingWorkflow}') < header.indexOf('一键自动创作'));
+  assert.match(header, /查看进行中的工作流/);
+});
+
 test('a stopped automatic workflow exposes a restart action in the modal footer', () => {
   const modal = section(app, 'function AutoProjectWorkflowModal(', 'function StoryPage(');
   assert.match(modal, /state\.cancelled && <button className="primary-button"[^>]*onClick=\{onRestart\}/);

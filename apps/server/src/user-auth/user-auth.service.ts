@@ -191,8 +191,9 @@ export class UserAuthService {
       [userId],
     );
     const holdRows = await this.database.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) AS held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+    const workflowRows = await this.database.query<RowDataPacket[]>("SELECT COALESCE(SUM(reserved_credits), 0) AS reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)", [userId]);
     const balance = Number(balanceRows[0]?.balance || 0);
-    const held = Number(holdRows[0]?.held || 0);
+    const held = Number(holdRows[0]?.held || 0) + Number(workflowRows[0]?.reserved || 0);
     const inviteCode = user.invite_code || await this.referrals.ensureInviteCode(userId);
     return { ...user, invite_code: inviteCode, balance_fen: Number(user.balance_fen || 0), credit_balance: balance, held_credits: held, available_credits: balance - held };
   }

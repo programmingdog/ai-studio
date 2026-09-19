@@ -746,25 +746,26 @@ export class AdminService {
 
   async getScriptAnalysisConfig(): Promise<Record<string, unknown>> {
     const rows = await this.database.query<RowDataPacket[]>(
-      "SELECT prompt, credit_cost, extraction_billing_mode, revision, updated_at FROM script_analysis_config WHERE id = 1 LIMIT 1",
+      "SELECT prompt, credit_cost, remix_credit_cost, extraction_billing_mode, revision, updated_at FROM script_analysis_config WHERE id = 1 LIMIT 1",
     );
     if (!rows.length) throw new NotFoundException("剧本提取配置不存在");
-    return { ...rows[0], credit_cost: Number(rows[0]!.credit_cost), revision: Number(rows[0]!.revision) };
+    return { ...rows[0], credit_cost: Number(rows[0]!.credit_cost), remix_credit_cost: Number(rows[0]!.remix_credit_cost), revision: Number(rows[0]!.revision) };
   }
 
-  async updateScriptAnalysisConfig(adminUserId: string, input: { prompt: string; creditCost: number; extractionBillingMode: string; revision: number }): Promise<Record<string, unknown>> {
+  async updateScriptAnalysisConfig(adminUserId: string, input: { prompt: string; creditCost: number; remixCreditCost: number; extractionBillingMode: string; revision: number }): Promise<Record<string, unknown>> {
     const prompt = input.prompt.trim();
     if (prompt.length < 100 || prompt.length > 100_000) throw new BadRequestException("剧本提取提示词必须为 100～100000 个字符");
     if (!Number.isFinite(input.creditCost) || input.creditCost < 0 || input.creditCost > 1_000_000) throw new BadRequestException("剧本提取积分必须为 0～1000000");
+    if (!Number.isFinite(input.remixCreditCost) || input.remixCreditCost < 0 || input.remixCreditCost > 1_000_000) throw new BadRequestException("二次创作积分必须为 0～1000000");
     const extractionBillingMode = input.extractionBillingMode.toUpperCase();
     if (!["OVERALL", "PER_SEGMENT"].includes(extractionBillingMode)) throw new BadRequestException("提取剧本扣费模式不正确");
     const result = await this.database.execute(
-      `UPDATE script_analysis_config SET prompt = ?, credit_cost = ?, extraction_billing_mode = ?, revision = revision + 1, updated_by = ?
+      `UPDATE script_analysis_config SET prompt = ?, credit_cost = ?, remix_credit_cost = ?, extraction_billing_mode = ?, revision = revision + 1, updated_by = ?
        WHERE id = 1 AND revision = ?`,
-      [prompt, input.creditCost, extractionBillingMode, adminUserId, input.revision],
+      [prompt, input.creditCost, input.remixCreditCost, extractionBillingMode, adminUserId, input.revision],
     );
     if (!result.affectedRows) throw new ConflictException("剧本提取配置已被其他管理员修改，请刷新后重试");
-    await this.audit.record({ adminUserId, action: "script_analysis_config.update", entityType: "script_analysis_config", entityId: "1", details: { creditCost: input.creditCost, extractionBillingMode } });
+    await this.audit.record({ adminUserId, action: "script_analysis_config.update", entityType: "script_analysis_config", entityId: "1", details: { creditCost: input.creditCost, remixCreditCost: input.remixCreditCost, extractionBillingMode } });
     return this.getScriptAnalysisConfig();
   }
 
@@ -1056,7 +1057,10 @@ export class AdminService {
                         WHERE la.owner_type = 'USER' AND la.owner_id = u.id
                           AND la.account_type = 'AVAILABLE' AND la.currency = 'CREDIT'), 0) AS credit_balance,
               COALESCE((SELECT SUM(ch.amount) FROM credit_holds ch
-                        WHERE ch.user_id = u.id AND ch.status = 'ACTIVE'), 0) AS held_credits
+                        WHERE ch.user_id = u.id AND ch.status = 'ACTIVE'), 0)
+              + COALESCE((SELECT SUM(wqa.reserved_credits) FROM workflow_quote_approvals wqa
+                          WHERE wqa.user_id = u.id AND wqa.status = 'ACTIVE'
+                            AND wqa.expires_at > CURRENT_TIMESTAMP(3)), 0) AS held_credits
        FROM users u LEFT JOIN users p ON p.id = u.pid LEFT JOIN commission_wallets w ON w.user_id = u.id
        ORDER BY u.created_at DESC, u.id DESC LIMIT ${pageSize(limit)}`,
     );
@@ -1169,8 +1173,9 @@ export class AdminService {
       const accountId = String(accountRows[0]!.id);
       const [balanceRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) AS balance FROM ledger_entries WHERE account_id = ?", [accountId]);
       const [holdRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) AS held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+      const [workflowRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(reserved_credits), 0) AS reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)", [userId]);
       const currentBalance = Number(balanceRows[0]?.balance || 0);
-      const held = Number(holdRows[0]?.held || 0);
+      const held = Number(holdRows[0]?.held || 0) + Number(workflowRows[0]?.reserved || 0);
       const nextBalance = currentBalance + input.amount;
       if (nextBalance < held) throw new ConflictException(`调整后积分不能低于当前占用积分 ${held}`);
       const transactionId = randomUUID();

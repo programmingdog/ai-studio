@@ -23,6 +23,8 @@ import type {
   GeneratedProjectImage,
   ImageGenerationTask,
   GenerationRecord,
+  GenerationReferenceAssetInput,
+  PrepareVideoReferenceAssetsInput,
   CreateShotVideoGenerationInput,
   ComposeProjectVideoInput,
   ProjectBundle,
@@ -364,7 +366,15 @@ export async function chooseVideoSavePath(defaultName: string): Promise<string |
 }
 
 export async function saveTextAsTxt(content: string, defaultName: string): Promise<string | undefined> {
-  if (!isTauri()) throw new Error("另存为 TXT 仅支持桌面应用");
+  if (!isTauri()) {
+    const url = URL.createObjectURL(new Blob(["\uFEFF", content], { type: "text/plain;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = defaultName.endsWith(".txt") ? defaultName : `${defaultName}.txt`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return anchor.download;
+  }
   const selected = await saveDialog({
     title: "另存为 TXT",
     defaultPath: defaultName,
@@ -742,6 +752,11 @@ export async function exportAllGenerationAssets(projectPath: string): Promise<Ex
 export async function createShotVideoGeneration(input: CreateShotVideoGenerationInput): Promise<GenerationRecord> {
   if (!isTauri()) throw new Error("分镜视频生成仅支持桌面应用");
   return invoke<GenerationRecord>("create_shot_video_generation", { input });
+}
+
+export async function prepareVideoReferenceAssets(input: PrepareVideoReferenceAssetsInput): Promise<GenerationReferenceAssetInput[]> {
+  if (!isTauri()) throw new Error("参考图公网就绪检查仅支持桌面应用");
+  return invoke<GenerationReferenceAssetInput[]>("prepare_video_reference_assets", { input });
 }
 
 export async function composeProjectVideo(input: ComposeProjectVideoInput): Promise<GenerationRecord> {

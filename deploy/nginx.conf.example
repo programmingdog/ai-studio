@@ -19,8 +19,10 @@ location ^~ /api/v1/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header Connection "";
     proxy_connect_timeout 10s;
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
+    # Text generation can wait up to 12 minutes before returning its JSON result.
+    # Keep the API connection open beyond that budget (desktop limit: 15 minutes).
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
     proxy_buffering off;
 }
 

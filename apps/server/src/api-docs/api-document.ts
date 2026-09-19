@@ -480,7 +480,8 @@ const schemas: Record<string, JsonSchema> = {
     required: ["url", "expires_at", "size", "mime_type"],
     properties: {
       url: { type: "string", format: "uri", description: "供应商可临时读取的签名公网 URL" },
-      expires_at: { type: "string", format: "date-time" },
+      expires_at: { type: "string", format: "date-time", description: "未使用上传及绑定新任务的截止时间；已绑定任务的下载有效期随任务生命周期延续" },
+      lifetime: { type: "string", enum: ["task"], description: "所有关联任务结束后再保留一小时；任务未结束不会因上传时间过期" },
       size: { type: "integer", minimum: 1, maximum: 10485760 },
       mime_type: { type: "string", enum: ["image/png", "image/jpeg", "image/webp"] },
     },
@@ -868,9 +869,16 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/tasks/quote": {
       post: operation({ id: "quoteModelTask", tag: "模型任务", summary: "读取模型调用的最终积分报价（不扣分）", security: true,
-        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本或视频理解模型。视频理解使用后台剧本与视频提取功能固定价；其他模型报价已含所选模型的独立系数。媒体 payload 必须包含分辨率，视频生成还需秒数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
-        body: { type: "object", required: ["payload"], properties: { provider_model_id: { type: "string" }, capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING"] }, payload: { type: "object", additionalProperties: true } } },
+        description: "优先使用 provider_model_id；未提供时按 capability 获取默认文本、视频理解或二次创作功能报价。视频理解与二次创作使用后台功能固定价；其他模型报价已含所选模型的独立系数。媒体 payload 必须包含分辨率，视频生成还需秒数。提交任务时传回模型ID及 expected_credits，价格变化须重新确认。",
+        body: { type: "object", required: ["payload"], properties: { provider_model_id: { type: "string" }, capability: { type: "string", enum: ["TEXT_GENERATION", "VIDEO_UNDERSTANDING", "VIDEO_REMIX"] }, payload: { type: "object", additionalProperties: true } } },
         success: { type: "object", properties: { provider_model_id: { type: "string" }, model_alias: { type: "string" }, capability: { type: "string" }, credits: { type: "number" }, resolution: { type: "string", nullable: true }, seconds: { type: "number", nullable: true }, includes_multiplier: { type: "boolean" } } },
+      }),
+    },
+    "/tasks/video-remix": {
+      post: operation({ id: "createVideoRemix", tag: "模型任务", summary: "按二次创作功能固定价创建文本生成任务", security: true,
+        description: "服务端固定使用默认文本模型，并以后台配置的二次创作积分定价进行报价校验、预占和结算；同时用于剧本库和视频解析结果二创。",
+        body: { type: "object", required: ["idempotency_key", "payload", "expected_credits"], properties: { local_task_id: { type: "string", format: "uuid" }, idempotency_key: { type: "string" }, expected_credits: { type: "number", minimum: 0 }, payload: { type: "object", additionalProperties: true } } },
+        success: ref("TaskRelayResult"),
       }),
     },
     "/tasks/workflow-quotes": {
@@ -883,7 +891,7 @@ export function createApiDocument(): OpenAPIObject {
       post: operation({ id: "stopWorkflowQuote", tag: "模型任务", summary: "停止自动工作流锁价", security: true, parameters: [pathId("approvalId", "自动工作流锁价编号")] }),
     },
     "/tasks/reference-images": {
-      post: operation({ id: "uploadTemporaryReferenceImage", tag: "模型任务", summary: "上传视频生成临时参考图", description: "当 Base64 参考图合计接近供应商限制时使用。返回短期签名 URL；供应商确认创建任务后自动清理文件，未使用上传一小时后清理。", security: true, body: ref("TemporaryReferenceImageUploadRequest"), bodyContentType: "multipart/form-data", success: ref("TemporaryReferenceImageUploadResult") }),
+      post: operation({ id: "uploadTemporaryReferenceImage", tag: "模型任务", summary: "上传生成任务临时参考图", description: "返回签名公网 URL。提交任务时绑定图片；排队、生成及待恢复期间保留文件与下载权限，所有关联任务结束一小时后清理。未使用上传一小时后清理。适用于图片、视频生成以及首尾帧。", security: true, body: ref("TemporaryReferenceImageUploadRequest"), bodyContentType: "multipart/form-data", success: ref("TemporaryReferenceImageUploadResult") }),
     },
     "/tasks/video-understanding/url": {
       post: operation({ id: "understandVideoUrl", tag: "模型任务", summary: "通过公网 URL 理解视频", description: "自动使用后台配置的默认视频理解模型；不会下载或保存视频。", security: true, body: ref("VideoUnderstandingUrlRequest"), success: ref("TaskRelayResult") }),
@@ -990,8 +998,8 @@ export function createApiDocument(): OpenAPIObject {
         } } }),
     },
     "/admin/configs/script-analysis": {
-      get: operation({ id: "getScriptAnalysisConfig", tag: "管理配置", summary: "读取剧本提取提示词与剧本/视频提取积分配置", security: true }),
-      patch: operation({ id: "updateScriptAnalysisConfig", tag: "管理配置", summary: "保存剧本提取提示词与剧本/视频提取积分配置", description: "固定积分同时用于剧本文件分析和视频理解生成分镜脚本。需要 configs.manage 权限；revision 必须为当前版本，避免并发覆盖。", security: true }),
+      get: operation({ id: "getScriptAnalysisConfig", tag: "管理配置", summary: "读取剧本提取提示词与功能积分配置", security: true }),
+      patch: operation({ id: "updateScriptAnalysisConfig", tag: "管理配置", summary: "保存剧本提取提示词与功能积分配置", description: "提取固定积分同时用于剧本文件分析和视频理解生成分镜脚本；二次创作固定积分同时用于剧本库与视频解析结果二创。需要 configs.manage 权限；revision 必须为当前版本，避免并发覆盖。", security: true }),
     },
     "/admin/configs/credit-pricing/sync": {
       post: operation({ id: "syncAllModelCredits", tag: "管理配置", summary: "按已保存比例刷新实时价并更新模型积分", security: true,

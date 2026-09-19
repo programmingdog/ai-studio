@@ -23,6 +23,7 @@ test('free operations and fractional prices stay explicit', () => {
 test('native operation names turn into familiar activities', () => {
   const cases = [
     ['二创剧情与分镜生成', 'TEXT_GENERATION', '二创'],
+    ['二创剧情与分镜生成', 'VIDEO_REMIX', '二创'],
     ['Agent 文本规划（每轮调用分别计费）', 'TEXT_GENERATION', '助手处理'],
     ['角色图生成 · CHAR_001', 'IMAGE_GENERATION', '角色图生成'],
     ['场景图生成 · SCENE_001', 'IMAGE_GENERATION', '场景图生成'],

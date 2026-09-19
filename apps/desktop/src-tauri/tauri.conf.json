@@ -5,7 +5,7 @@
   "version": "1.0.3",
   "identifier": "studio.aivideo.desktop",
   "build": {
-    "beforeDevCommand": "npm run prepare:media && npm run prepare:worker && npm run dev",
+    "beforeDevCommand": "npm run prepare:media:dev && npm run prepare:worker && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run prepare:media && npm run prepare:worker && npm run build",
     "frontendDist": "../dist"

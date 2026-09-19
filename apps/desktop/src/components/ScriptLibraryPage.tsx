@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Coins, Flame, LoaderCircle, Rocket, RotateCcw, Search, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
-import type { CreationSpec, ProjectBundle, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask } from "@aivs/schemas";
+import type { CreationSpec, ProjectBundle, VideoRemixOriginality, VideoRemixStoryboardDurationMode, VideoRemixTask, VisualStylePreset } from "@aivs/schemas";
 import { createCanonicalProject, createVideoRemixProject, createVideoRemixTask, deleteVideoRemixTask, listVideoRemixTasks, retryVideoRemixTask } from "../services/backend";
 import { creditText } from "../services/creditCopy";
 import { getCreditBalance, getScriptLibraryDetail, getScriptLibraryQuote, listScriptLibrary, listScriptLibraryCategories, useScriptLibraryItem, type ScriptLibraryItem, type ScriptLibraryProjectPayload } from "../services/platform";
 import { workflowErrorMessage } from "../services/workflowState";
 import { ImmediateCreditPurchaseButton } from "./CreditPurchaseHost";
 import { ModelCreditNotice } from "./CreditConfirmationHost";
+import { GroupedVisualStyleSelect } from "./GroupedVisualStyleSelect";
 
 const PAGE_SIZE = 12;
 const HOT_CATEGORY_CODE = "hot-fans";
@@ -26,7 +27,7 @@ function nearbyPages(currentPage: number, pageCount: number): number[] {
   return Array.from({ length: count }, (_, index) => start + index);
 }
 
-export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { projectDirectory: string; defaultSpec: CreationSpec; onReady: (bundle: ProjectBundle) => void }) {
+export function ScriptLibraryPage({ projectDirectory, defaultSpec, visualStyles, onReady }: { projectDirectory: string; defaultSpec: CreationSpec; visualStyles: VisualStylePreset[]; onReady: (bundle: ProjectBundle) => void }) {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
@@ -117,12 +118,12 @@ export function ScriptLibraryPage({ projectDirectory, defaultSpec, onReady }: { 
       </div>
     </> : <div className="script-library-empty"><BookOpen />没有找到匹配的剧本</div>}
     {selected && <div className="modal-backdrop script-library-detail-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(undefined); }}><section className="script-library-detail"><header><div><span>{selected.category_name}</span><h2>{selected.title}</h2></div><button onClick={() => setSelected(undefined)}><X size={17} /></button></header><div><p>{selected.summary}</p>{detail.isLoading ? <div className="script-library-empty"><LoaderCircle className="spin" />正在读取内容…</div> : <pre>{detail.data?.content || "暂无内容预览"}</pre>}</div><footer><span>{quote.data ? `直接生成项目需要 ${creditText(quote.data.credits)} 积分` : "正在读取积分价格…"}</span><div className="script-library-detail-actions"><button className="secondary-button" type="button" onClick={() => { const content = detail.data?.content?.trim(); if (!content) return; setRemixSource({ item: selected, content }); setSelected(undefined); }} disabled={detail.isLoading || !detail.data?.content?.trim()}><WandSparkles size={16} />二次创作</button><button className="primary-button" type="button" onClick={() => { openConfirmation(selected); setSelected(undefined); }} disabled={!quote.data || !projectDirectory}>一键生成项目</button></div></footer></section></div>}
-    {remixSource && <ScriptLibraryRemixModal source={remixSource} projectDirectory={projectDirectory} defaultSpec={defaultSpec} onClose={() => setRemixSource(undefined)} onProjectCreated={onReady} />}
+    {remixSource && <ScriptLibraryRemixModal source={remixSource} projectDirectory={projectDirectory} defaultSpec={defaultSpec} visualStyles={visualStyles} onClose={() => setRemixSource(undefined)} onProjectCreated={onReady} />}
     {confirmation && quote.data && <div className="modal-backdrop script-analysis-confirm-backdrop"><section className="script-analysis-confirm-modal"><header><span><Coins size={23} /></span><div><small>SCRIPT LIBRARY</small><h2>确认使用剧本并扣除积分</h2><p>《{confirmation.item.title}》将直接转换为本地项目。</p></div><button onClick={closeConfirmation}><X size={17} /></button></header><div className="script-analysis-confirm-body"><div><span>本次所需积分</span><strong>{creditText(quote.data.credits)} 积分</strong></div><div><span>当前可用积分</span><strong>{balance.data ? `${creditText(balance.data.available)} 积分` : "正在查询…"}</strong></div>{acceptedUsage?.key !== confirmation.key && balance.data && balance.data.available < quote.data.credits ? <div className="insufficient-credit-callout"><div className="error-banner">积分不足，需要 {creditText(quote.data.credits)} 分，当前可用 {creditText(balance.data.available)} 分。</div><ImmediateCreditPurchaseButton onPurchased={() => void balance.refetch()} /></div> : null}{balance.error && <div className="error-banner">{message(balance.error)}</div>}{create.error && <div className="error-banner">{message(create.error)}</div>}</div><footer><button className="secondary-button" disabled={create.isPending} onClick={closeConfirmation}>取消</button><button className="primary-button" disabled={create.isPending || !projectDirectory.trim() || (acceptedUsage?.key !== confirmation.key && (!balance.data || balance.data.available < quote.data.credits))} onClick={() => create.mutate(confirmation)}>{create.isPending ? <><LoaderCircle className="spin" />正在生成…</> : acceptedUsage?.key === confirmation.key ? <>重试创建项目（不会重复扣分）</> : <>确认扣除并生成</>}</button></footer></section></div>}
   </div>;
 }
 
-function ScriptLibraryRemixModal({ source, projectDirectory, defaultSpec, onClose, onProjectCreated }: { source: ScriptLibraryRemixSource; projectDirectory: string; defaultSpec: CreationSpec; onClose: () => void; onProjectCreated: (bundle: ProjectBundle) => void }) {
+function ScriptLibraryRemixModal({ source, projectDirectory, defaultSpec, visualStyles, onClose, onProjectCreated }: { source: ScriptLibraryRemixSource; projectDirectory: string; defaultSpec: CreationSpec; visualStyles: VisualStylePreset[]; onClose: () => void; onProjectCreated: (bundle: ProjectBundle) => void }) {
   const sourceKey = `script-library:${source.item.id}`;
   const [projectName, setProjectName] = useState(`${source.item.title.trim().slice(0, 48)}·二创`);
   const [creativeDirection, setCreativeDirection] = useState("保留原剧本的核心主题、价值立场、关注群体和情绪诉求，在同一主题范围内重新设计人物身份、场景、事件与台词；保留有效的冲突升级和反转功能，但不复用原剧情表达。");
@@ -160,16 +161,16 @@ function ScriptLibraryRemixModal({ source, projectDirectory, defaultSpec, onClos
     <section className="script-library-remix-modal">
       <header><div><span className="section-label">SCRIPT REMIX</span><h2>《{source.item.title}》二次创作</h2><p>继承核心主题与叙事功能，生成全新剧情、人物关系和分镜。</p></div><button type="button" onClick={onClose}><X size={18} /></button></header>
       <div className="script-library-remix-content">
-        <ModelCreditNotice capability="TEXT_GENERATION" action="二创" />
+        <ModelCreditNotice capability="VIDEO_REMIX" action="二创" />
         <div className="video-remix-form">
           <label>新项目名称<input value={projectName} maxLength={80} onChange={(event) => setProjectName(event.target.value)} /></label>
           <label className="video-remix-direction">二创方向<textarea rows={4} value={creativeDirection} onChange={(event) => setCreativeDirection(event.target.value)} placeholder="描述希望保留的主题，以及人物、冲突、场景或结局的改编方向" /><small>默认保留原剧本主题和情绪诉求，重构人物、场景、事件与台词，避免改名式复刻。</small></label>
           <div className="field-grid script-library-remix-fields">
             <label>原创强度<select value={originality} onChange={(event) => setOriginality(event.target.value as VideoRemixOriginality)}><option value="balanced">平衡改编</option><option value="high">高度原创（推荐）</option><option value="radical">激进原创（强冲突多反转）</option></select></label>
-            <label>分镜时长<select value={storyboardDurationMode} onChange={(event) => setStoryboardDurationMode(event.target.value as VideoRemixStoryboardDurationMode)}><option value="fixed">固定时长（每镜10秒）</option><option value="adaptive">非固定时长（每镜8～15秒）</option></select></label>
+            <label>分镜时长<select value={storyboardDurationMode} onChange={(event) => setStoryboardDurationMode(event.target.value as VideoRemixStoryboardDurationMode)}><option value="fixed">固定时长（每镜10秒）</option><option value="fixed_15">固定时长（每镜15秒）</option><option value="adaptive">非固定时长（每镜8～15秒）</option></select></label>
             <label>目标时长<div className="unit-input"><input type="number" min={15} max={600} step={1} value={targetDuration} onChange={(event) => setTargetDuration(Number(event.target.value))} /><span>秒</span></div></label>
             <label>画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as "9:16" | "16:9")}><option value="9:16">9:16</option><option value="16:9">16:9</option></select></label>
-            <label>画风设定<input value={visualStyle} onChange={(event) => setVisualStyle(event.target.value)} placeholder="留空由 AI 根据剧本生成" /></label>
+            <GroupedVisualStyleSelect value={visualStyle} onChange={setVisualStyle} presets={visualStyles} automaticLabel="由 AI 根据剧本生成画风" />
           </div>
           <div className="video-remix-submit-row"><span>沿用视频解析二创的生成、质量检查、积分确认和失败重试流程。</span><button className="primary-button" type="button" disabled={!canCreate} onClick={() => { createRemix.reset(); createRemix.mutate(); }}>{createRemix.isPending ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}{createRemix.isPending ? "正在创建任务…" : "生成全新剧情与分镜（需积分）"}</button></div>
           {createRemix.error && <div className="error-banner">{message(createRemix.error)}</div>}
@@ -190,7 +191,7 @@ function ScriptLibraryRemixTaskCard({ task, projectDirectory, retrying, deleting
   const active = task.status === "PENDING" || task.status === "RUNNING";
   const shots = task.result?.canonical.shots ?? [];
   return <article className={`video-remix-task ${task.status.toLowerCase()}`}>
-    <header><div><span>{active ? <LoaderCircle className="spin" size={16} /> : task.status === "COMPLETED" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}</span><div><strong>{task.result?.title || task.project_name}</strong><small>{task.message} · {task.input.storyboard_duration_mode === "adaptive" ? "非固定8～15秒" : "固定10秒"} · {new Date(task.created_at).toLocaleString("zh-CN")}</small></div></div><div className="video-remix-task-header-actions"><em>{Math.round(task.progress * 100)}%</em>{task.status === "COMPLETED" && task.result && <button className="secondary-button" type="button" disabled={deleting} onClick={() => setExpanded((value) => !value)}>{expanded ? "收起" : "展开"}<ChevronRight className={expanded ? "expanded" : ""} size={15} /></button>}<button className="secondary-button danger-button" type="button" disabled={deleting} onClick={onDelete}>{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deleting ? "删除中…" : "删除"}</button></div></header>
+    <header><div><span>{active ? <LoaderCircle className="spin" size={16} /> : task.status === "COMPLETED" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}</span><div><strong>{task.result?.title || task.project_name}</strong><small>{task.message} · {task.input.storyboard_duration_mode === "adaptive" ? "非固定8～15秒" : task.input.storyboard_duration_mode === "fixed_15" ? "固定15秒" : task.input.storyboard_duration_mode === "fixed" ? "固定10秒" : "旧版时长规则"} · {new Date(task.created_at).toLocaleString("zh-CN")}</small></div></div><div className="video-remix-task-header-actions"><em>{Math.round(task.progress * 100)}%</em>{task.status === "COMPLETED" && task.result && <button className="secondary-button" type="button" disabled={deleting} onClick={() => setExpanded((value) => !value)}>{expanded ? "收起" : "展开"}<ChevronRight className={expanded ? "expanded" : ""} size={15} /></button>}<button className="secondary-button danger-button" type="button" disabled={deleting} onClick={onDelete}>{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deleting ? "删除中…" : "删除"}</button></div></header>
     {active && <div className="video-remix-progress"><i style={{ width: `${Math.round(task.progress * 100)}%` }} /></div>}
     {task.status === "FAILED" && <div className="video-remix-failed"><span>{task.error?.message || "二次创作失败"}</span><button className="secondary-button" type="button" disabled={retrying || deleting} onClick={onRetry}>{retrying ? <LoaderCircle className="spin" size={15} /> : <RotateCcw size={15} />}{retrying ? "重新加入队列…" : "重试"}</button></div>}
     {expanded && task.status === "COMPLETED" && task.result && <div className="video-remix-result">

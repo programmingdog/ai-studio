@@ -14,6 +14,8 @@ import { TemporaryReferenceImageService } from "../common/temporary-reference-im
 import { ReferralsService } from "../referrals/referrals.service";
 import { modelBillingUnit, validVideoSeconds } from "../common/video-billing";
 import JSON5 from "json5";
+import { normalizedScriptText, scriptNormalizationInstruction, validateNormalizedScript } from "./script-normalization";
+import { createProviderDispatcher, defaultProviderTimeoutMs, textProviderTimeoutMs } from "./provider-http";
 
 interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
@@ -24,6 +26,7 @@ interface TargetRow extends RowDataPacket {
 interface TaskRow extends RowDataPacket {
   id: string; user_id: string; local_task_id: string; idempotency_key: string; request_hash: string;
   task_type: string; logical_model_code: string; provider_id: string; provider_model_id: string; provider_credential_id: string | null;
+  workflow_quote_approval_id: string | null; workflow_quote_item_key: string | null;
   remote_task_id: string | null; status: string; progress: number | string; revision: number;
   estimated_credits: number | string; settled_credits: number | string; error_code: string | null;
   commission_cost_credits: number | string | null; commission_cny_per_credit: number | string | null;
@@ -33,7 +36,7 @@ interface TaskRow extends RowDataPacket {
 interface ResolutionPriceRow extends RowDataPacket { credit_cost: number | string; }
 type ExtractionBillingMode = "OVERALL" | "PER_SEGMENT";
 interface ScriptAnalysisConfigRow extends RowDataPacket {
-  prompt: string; credit_cost: number | string; extraction_billing_mode?: string; revision: number;
+  prompt: string; credit_cost: number | string; remix_credit_cost: number | string; extraction_billing_mode?: string; revision: number;
 }
 interface ExtractionBillingInput {
   groupId: string; segmentIndex: number; segmentCount: number; expectedMode: string; billingMode: ExtractionBillingMode;
@@ -47,7 +50,7 @@ interface CredentialRow extends RowDataPacket {
 interface WorkflowQuoteItemRow extends RowDataPacket {
   approval_id: string; item_key: string; user_id: string; approval_status: string; expires_at: Date;
   provider_model_id: string; capability: string; resolution: string; seconds: number | string | null;
-  credits: number | string; current_task_id: string | null;
+  credits: number | string; current_task_id: string | null; reserved_credits: number | string;
 }
 
 // Synchronous image models return base64 image bytes in their JSON response.
@@ -477,13 +480,44 @@ export class ModelGatewayService {
 
   private async scriptAnalysisConfig(): Promise<ScriptAnalysisConfigRow> {
     const rows = await this.database.query<ScriptAnalysisConfigRow[]>(
-      "SELECT prompt, credit_cost, extraction_billing_mode, revision FROM script_analysis_config WHERE id = 1 LIMIT 1",
+      "SELECT prompt, credit_cost, remix_credit_cost, extraction_billing_mode, revision FROM script_analysis_config WHERE id = 1 LIMIT 1",
     );
     const config = rows[0];
     if (!config || !config.prompt?.trim()) throw new ServiceUnavailableException("尚未配置剧本提取提示词");
     const creditCost = Number(config.credit_cost);
     if (!Number.isFinite(creditCost) || creditCost < 0) throw new ServiceUnavailableException("剧本提取积分配置无效");
+    const remixCreditCost = Number(config.remix_credit_cost);
+    if (!Number.isFinite(remixCreditCost) || remixCreditCost < 0) throw new ServiceUnavailableException("二次创作积分配置无效");
     return config;
+  }
+
+  async videoRemixQuote(): Promise<Record<string, unknown>> {
+    const [target, config] = await Promise.all([this.defaultTextTarget(), this.scriptAnalysisConfig()]);
+    return {
+      provider_model_id: target.model_id,
+      model_alias: target.model_alias || target.model_code,
+      model_code: target.model_code,
+      capability: "VIDEO_REMIX",
+      credits: Number(config.remix_credit_cost),
+      config_revision: Number(config.revision),
+      billing_unit: "PER_REMIX",
+      includes_multiplier: false,
+    };
+  }
+
+  async createVideoRemix(userId: string, input: {
+    localTaskId?: string; idempotencyKey: string; expectedCredits?: number; payload: unknown;
+  }): Promise<Record<string, unknown>> {
+    const [target, config] = await Promise.all([this.defaultTextTarget(), this.scriptAnalysisConfig()]);
+    return this.create(userId, {
+      localTaskId: input.localTaskId,
+      idempotencyKey: input.idempotencyKey,
+      providerModelId: target.model_id,
+      payload: input.payload,
+      expectedCredits: input.expectedCredits,
+      creditOverride: Number(config.remix_credit_cost),
+      taskType: "VIDEO_REMIX",
+    });
   }
 
   async scriptAnalysisQuote(): Promise<Record<string, unknown>> {
@@ -512,8 +546,8 @@ export class ModelGatewayService {
     const [target, config, extracted] = await Promise.all([
       this.defaultTextTarget(), this.scriptAnalysisConfig(), extractScriptText(file),
     ]);
-    const prompt = `${config.prompt.trim()}${scriptProjectFormatInstruction}`;
-    const instructions = `${prompt}\n\n下面是需要忠实提取的完整剧本。文件名：${originalName}\n--- 剧本原文开始 ---\n${extracted.text}\n--- 剧本原文结束 ---`;
+    const prompt = `${config.prompt.trim()}${scriptProjectFormatInstruction}${scriptNormalizationInstruction}`;
+    const instructions = `${prompt}\n\n下面是需要规范化的完整剧本。文件名：${originalName}\n--- 剧本原文开始 ---\n${extracted.text}\n--- 剧本原文结束 ---`;
     const payload = target.api_protocol.toLowerCase() === "gemini"
       ? {
           contents: [{ role: "user", parts: [
@@ -550,15 +584,16 @@ export class ModelGatewayService {
       creditOverride: Number(config.credit_cost),
       taskType: "SCRIPT_ANALYSIS",
       payload,
-      validateResponse: parseScriptAnalysis,
+      validateResponse: value => validateNormalizedScript(parseScriptAnalysis(value)),
     });
-    return { ...result, analysis: parseScriptAnalysis(result.provider_response) };
+    const analysis = validateNormalizedScript(parseScriptAnalysis(result.provider_response));
+    return { ...result, analysis, normalized_script: normalizedScriptText(analysis) };
   }
 
   /** Read-only price preview. Uses exactly the same calculator as task reservation. */
   async quote(input: { providerModelId?: string; capability?: string; payload: unknown }): Promise<Record<string, unknown>> {
     const target = input.providerModelId ? await this.target(input.providerModelId)
-      : input.capability === "TEXT_GENERATION" ? await this.defaultTextTarget()
+      : input.capability === "TEXT_GENERATION" || input.capability === "VIDEO_REMIX" ? await this.defaultTextTarget()
       : input.capability === "VIDEO_UNDERSTANDING" ? await this.defaultVideoUnderstandingTarget()
       : undefined;
     if (!target) throw new BadRequestException("请选择大模型或指定文本/视频理解类型");
@@ -566,15 +601,16 @@ export class ModelGatewayService {
     // Video understanding is the video-to-storyboard extraction feature. Its
     // customer-facing price is configured together with script extraction,
     // instead of exposing the selected provider model's internal base cost.
-    const scriptConfig = target.capability === "VIDEO_UNDERSTANDING" ? await this.scriptAnalysisConfig() : undefined;
-    const credits = scriptConfig ? Number(scriptConfig.credit_cost) : await this.estimatedCredits(target, payload);
+    const scriptConfig = target.capability === "VIDEO_UNDERSTANDING" || input.capability === "VIDEO_REMIX" ? await this.scriptAnalysisConfig() : undefined;
+    const credits = input.capability === "VIDEO_REMIX" ? Number(scriptConfig!.remix_credit_cost)
+      : scriptConfig ? Number(scriptConfig.credit_cost) : await this.estimatedCredits(target, payload);
     return {
       provider_model_id: target.model_id, model_alias: target.model_alias || target.model_code,
-      model_code: target.model_code, capability: target.capability, credits,
+      model_code: target.model_code, capability: input.capability === "VIDEO_REMIX" ? "VIDEO_REMIX" : target.capability, credits,
       resolution: payload.resolution ?? asObject(payload.params).resolution ?? null,
       seconds: target.capability === "VIDEO_GENERATION" ? Number(payload.seconds ?? payload.duration ?? asObject(payload.params).seconds ?? asObject(payload.params).duration) : null,
       billing_unit: target.capability === "VIDEO_GENERATION" ? modelBillingUnit(target.capability, target.billing_unit) : "PER_REQUEST",
-      includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING",
+      includes_multiplier: target.capability !== "VIDEO_UNDERSTANDING" && input.capability !== "VIDEO_REMIX",
       extraction_billing_mode: scriptConfig ? extractionBillingMode(scriptConfig.extraction_billing_mode) : undefined,
       config_revision: scriptConfig ? Number(scriptConfig.revision) : undefined,
     };
@@ -612,10 +648,24 @@ export class ModelGatewayService {
     }
     const approvalId = randomUUID();
     await this.database.transaction(async connection => {
+      const [accounts] = await connection.query<RowDataPacket[]>(
+        "SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' LIMIT 1 FOR UPDATE",
+        [userId],
+      );
+      if (!accounts.length) throw new NotFoundException("用户积分账户不存在");
+      const [balances] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) balance FROM ledger_entries WHERE account_id = ?", [accounts[0]!.id]);
+      const [holds] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+      const [workflowReservations] = await connection.query<RowDataPacket[]>(
+        "SELECT COALESCE(SUM(reserved_credits), 0) reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)",
+        [userId],
+      );
+      const total = Math.round(items.reduce((sum, item) => sum + Math.round(item.credits * 1_000_000), 0)) / 1_000_000;
+      const available = Number(balances[0]?.balance || 0) - Number(holds[0]?.held || 0) - Number(workflowReservations[0]?.reserved || 0);
+      if (available < total) throw new ConflictException(`可用积分不足，本次自动制作需要 ${total} 积分，当前可用 ${available} 积分`);
       await connection.execute(
-        `INSERT INTO workflow_quote_approvals (id, user_id, status, expires_at)
-         VALUES (?, ?, 'ACTIVE', DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY))`,
-        [approvalId, userId, workflowQuoteLifetimeDays],
+        `INSERT INTO workflow_quote_approvals (id, user_id, status, reserved_credits, expires_at)
+         VALUES (?, ?, 'ACTIVE', ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY))`,
+        [approvalId, userId, total, workflowQuoteLifetimeDays],
       );
       for (const item of items) {
         await connection.execute(
@@ -633,7 +683,7 @@ export class ModelGatewayService {
 
   async stopWorkflowQuote(userId: string, approvalId: string): Promise<{ stopped: boolean }> {
     const result = await this.database.execute(
-      "UPDATE workflow_quote_approvals SET status = 'STOPPED' WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
+      "UPDATE workflow_quote_approvals SET status = 'STOPPED', reserved_credits = 0 WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
       [approvalId, userId],
     );
     return { stopped: result.affectedRows > 0 };
@@ -642,7 +692,7 @@ export class ModelGatewayService {
   private async lockedWorkflowCredits(connection: PoolConnection, userId: string, approvalId: string, itemKey: string,
     target: TargetRow, payload: Record<string, unknown>, currentCredits: number): Promise<number> {
     const [rows] = await connection.query<WorkflowQuoteItemRow[]>(
-      `SELECT qi.*, qa.user_id, qa.status AS approval_status, qa.expires_at
+      `SELECT qi.*, qa.user_id, qa.status AS approval_status, qa.expires_at, qa.reserved_credits
        FROM workflow_quote_items qi INNER JOIN workflow_quote_approvals qa ON qa.id = qi.approval_id
        WHERE qi.approval_id = ? AND qi.item_key = ? LIMIT 1 FOR UPDATE`,
       [approvalId, itemKey],
@@ -679,6 +729,13 @@ export class ModelGatewayService {
         original: { credits: Number(item.credits), providerModelId: item.provider_model_id, capability: item.capability, resolution: item.resolution, seconds: expectedSeconds },
         current: { credits: currentCredits, providerModelId: target.model_id, capability: target.capability, resolution, seconds } });
     }
+    if (Number(item.reserved_credits) < Number(item.credits)) {
+      throw new ConflictException("本次自动制作的预留积分已用完，请重新确认");
+    }
+    await connection.execute(
+      "UPDATE workflow_quote_approvals SET reserved_credits = reserved_credits - ? WHERE id = ? AND status = 'ACTIVE'",
+      [Number(item.credits), approvalId],
+    );
     return Number(item.credits);
   }
 
@@ -967,11 +1024,17 @@ export class ModelGatewayService {
     return { url, method, headers: { "Content-Type": "application/json", [authHeader]: scheme ? `${scheme} ${apiKey}` : apiKey }, body };
   }
 
-  private async call(request: { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> | FormData }, timeoutMs = 30 * 60_000): Promise<{ ok: boolean; status: number; value: unknown }> {
+  private async call(request: { url: string; method: string; headers: Record<string, string>; body?: Record<string, unknown> | FormData }, timeoutMs = defaultProviderTimeoutMs): Promise<{ ok: boolean; status: number; value: unknown }> {
+    const dispatcher = createProviderDispatcher(timeoutMs);
     const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const body = request.body instanceof FormData ? request.body : JSON.stringify(request.body || {});
-      const response = await fetch(request.url, { method: request.method, headers: request.headers, body: request.method === "GET" || request.method === "HEAD" ? undefined : body, signal: controller.signal });
+      const options: RequestInit & { dispatcher: typeof dispatcher } = {
+        method: request.method, headers: request.headers,
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : body,
+        signal: controller.signal, dispatcher,
+      };
+      const response = await fetch(request.url, options);
       const text = await response.text();
       const contentType = response.headers.get("content-type");
       const expectsStream = !(request.body instanceof FormData) && request.body?.stream === true;
@@ -983,7 +1046,12 @@ export class ModelGatewayService {
       if (error instanceof HttpException) throw error;
       throw new BadGatewayException(providerFetchError(error));
     }
-    finally { clearTimeout(timeout); }
+    finally {
+      clearTimeout(timeout);
+      // Also close sockets on aborted/partial responses; do not retain one pool
+      // per generation, and never retry a potentially accepted paid request.
+      await dispatcher.destroy();
+    }
   }
 
   private taskView(row: TaskRow): Record<string, unknown> {
@@ -999,6 +1067,19 @@ export class ModelGatewayService {
 
   private async release(taskId: string, status: "FAILED" | "CANCELED", errorCode: string): Promise<void> {
     await this.database.transaction(async (connection) => {
+      const [tasks] = await connection.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? LIMIT 1 FOR UPDATE", [taskId]);
+      const task = tasks[0];
+      const [holds] = await connection.query<RowDataPacket[]>("SELECT status FROM credit_holds WHERE task_id = ? LIMIT 1 FOR UPDATE", [taskId]);
+      if (task?.workflow_quote_approval_id && task.workflow_quote_item_key && holds[0]?.status === "ACTIVE") {
+        await connection.execute(
+          `UPDATE workflow_quote_approvals qa
+           INNER JOIN workflow_quote_items qi ON qi.approval_id = qa.id AND qi.item_key = ?
+           SET qa.reserved_credits = qa.reserved_credits + qi.credits
+           WHERE qa.id = ? AND qa.status = 'ACTIVE' AND qa.expires_at > CURRENT_TIMESTAMP(3)
+             AND qi.current_task_id = ?`,
+          [task.workflow_quote_item_key, task.workflow_quote_approval_id, taskId],
+        );
+      }
       await connection.execute("UPDATE credit_holds SET status = 'RELEASED' WHERE task_id = ? AND status = 'ACTIVE'", [taskId]);
       await connection.execute("UPDATE ai_tasks SET status = ?, error_code = ?, revision = revision + 1, finished_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [status, errorCode.slice(0, 100), taskId]);
       await connection.execute("UPDATE task_attempts SET status = ?, error_code = ?, finished_at = CURRENT_TIMESTAMP(3) WHERE task_id = ? AND finished_at IS NULL", [status, errorCode.slice(0, 100), taskId]);
@@ -1129,6 +1210,17 @@ export class ModelGatewayService {
       }
       throw error;
     }
+    if (target.provider_code === "allaiin" && target.capability === "VIDEO_GENERATION" && temporaryReferenceTokens.length) {
+      try {
+        await this.referenceImages.assertPubliclyReachable(payload, userId);
+      } catch (error) {
+        const message = error instanceof HttpException
+          ? (typeof error.getResponse() === "string" ? String(error.getResponse()) : String((error.getResponse() as { message?: unknown }).message || error.message))
+          : error instanceof Error ? error.message : "参考图公网就绪检查失败";
+        throw new ServiceUnavailableException({ code: "TASK_NOT_SUBMITTED", retryable: true,
+          message: `${message}。本次尚未向慧心AI提交任务，也没有扣分。` });
+      }
+    }
     const taskId = randomUUID();
     let attemptId: string = randomUUID();
     let selectedCredential!: CredentialRow;
@@ -1184,7 +1276,11 @@ export class ModelGatewayService {
           }
           credits = videoUnderstandingSegmentCredits(lockedMode, billing.segmentIndex, lockedUnitCredits);
         }
-        if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) < credits) throw new ConflictException("可用积分不足");
+        const [workflowReservationRows] = await connection.query<RowDataPacket[]>(
+          "SELECT COALESCE(SUM(reserved_credits), 0) reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)",
+          [userId],
+        );
+        if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) - Number(workflowReservationRows[0]?.reserved || 0) < credits) throw new ConflictException("可用积分不足");
         selectedCredential = await this.selectProviderCredential(connection, target.provider_id);
         let cnyPerCredit: number | null = null;
         if (commissionCostCredits !== null) {
@@ -1206,6 +1302,9 @@ export class ModelGatewayService {
             credits, commissionCostCredits, cnyPerCredit],
         );
         await connection.execute("INSERT INTO credit_holds (id, user_id, task_id, amount, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 MINUTE))", [randomUUID(), userId, taskId, credits]);
+        // Bind in the reservation transaction, BEFORE any upstream submission.
+        // Rollback releases both the credit hold and image bindings on failure.
+        if (temporaryReferenceTokens.length) await this.referenceImages.bindToTask(connection, temporaryReferenceTokens, taskId, userId);
         await connection.execute(
           `INSERT INTO task_attempts (id, task_id, attempt_number, provider_id, provider_model_id, provider_credential_id, status)
            VALUES (?, ?, 1, ?, ?, ?, 'SUBMITTING')`,
@@ -1252,7 +1351,8 @@ export class ModelGatewayService {
       let result: Awaited<ReturnType<ModelGatewayService["call"]>>;
       while (true) {
         const providerRequest = this.request(target, payload, this.secretCrypto.decrypt(selectedCredential.api_key_ciphertext));
-        result = await this.call(providerRequest, input.providerTimeoutMs);
+        result = await this.call(providerRequest, input.providerTimeoutMs
+          ?? (target.capability === "TEXT_GENERATION" ? textProviderTimeoutMs : defaultProviderTimeoutMs));
         const upstreamError = applicationError(result.value);
         const returnedRemoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
         const retryReason = credentialRetryableRejection(result.status, result.value);
@@ -1295,19 +1395,8 @@ export class ModelGatewayService {
       });
       if (status === "SUCCEEDED") await this.settle(taskId, asObject(result.value).usage);
       else if (status === "FAILED") await this.release(taskId, "FAILED", findString(result.value, ["error", "message", "msg"]) || "PROVIDER_TASK_FAILED");
-      // The supplier has acknowledged the create request. Keep URLs readable
-      // for a short grace period in case media ingestion finishes just after
-      // the response, then remove the files automatically.
-      if (temporaryReferenceTokens.length) {
-        try { await this.referenceImages?.markConsumed(temporaryReferenceTokens); }
-        catch (cleanupError) {
-          // A cleanup failure must never turn an acknowledged remote task into
-          // a failed local create (which could cause an unsafe duplicate retry).
-          this.logger.warn({ event: "task.temporary_references_cleanup_deferred", taskId, localTaskId,
-            referenceCount: temporaryReferenceTokens.length,
-            error: cleanupError instanceof Error ? cleanupError.message : "临时参考图清理失败" });
-        }
-      }
+      // Reference retention follows persisted ai_tasks status/finished_at,
+      // including asynchronous recovery, independently of client polling.
       const rows = await this.database.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? LIMIT 1", [taskId]);
       return { task: this.taskView(rows[0]!), provider_response: result.value };
     } catch (error) { await this.release(taskId, "FAILED", error instanceof Error ? error.message : "PROVIDER_CREATE_FAILED"); throw error; }
