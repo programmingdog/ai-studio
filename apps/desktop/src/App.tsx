@@ -2129,6 +2129,24 @@ function automaticWorkflowProgress(items: AutomaticWorkflowTaskSnapshot[]): numb
   return items.length ? items.reduce((sum, item) => sum + item.progress, 0) / items.length : 1;
 }
 
+function automaticWorkflowHasPendingBillableMedia(canonical: CanonicalProject, mode: AutoProjectMode, imageTasks: ImageGenerationTask[], records: GenerationRecord[]): boolean {
+  const scenePending = canonical.scenes.some((scene) => !preferredProjectAsset(scene.reference_assets, latestTargetImage(imageTasks, "scene", scene.id)));
+  const characterPending = canonical.characters.some((character) => characterStates(character).some((state) => !characterStateImage(character, state, imageTasks)));
+  const shotImagePending = mode === "storyboard" && canonical.shots.some((shot) => !(latestTargetImage(imageTasks, "shot", shot.id) ?? firstProjectAsset(shot.reference_assets)));
+  const shotVideoPending = canonical.shots.some((shot) => {
+    const latest = records.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id);
+    return latest ? latest.status !== "COMPLETED" || !latest.result_relative_path : !firstProjectAsset(shot.video_assets);
+  });
+  return scenePending || characterPending || shotImagePending || shotVideoPending;
+}
+
+function automaticWorkflowShotVideosReadyOrActive(canonical: CanonicalProject, records: GenerationRecord[]): boolean {
+  return canonical.shots.length > 0 && canonical.shots.every((shot) => {
+    const latest = records.find((record) => record.media_type === "video" && record.target_type === "shot" && record.target_id === shot.id);
+    return latest ? activeGeneration(latest) || (latest.status === "COMPLETED" && Boolean(latest.result_relative_path)) : Boolean(firstProjectAsset(shot.video_assets));
+  });
+}
+
 function AutoProjectWorkflowModal({ canonical, projectPath, state, stopping, retryingRegion, shotVideoAction, retryRegionMessage, onStop, onRestart, onRetryFailedRegion, onRetryShotVideo, onRegenerateShotVideo, onClose }: { canonical: CanonicalProject; projectPath: string; state: AutoProjectWorkflowState; stopping: boolean; retryingRegion?: AutoWorkflowRetryRegion; shotVideoAction?: { shotId: string; kind: "retry" | "regenerate" }; retryRegionMessage?: { kind: "success" | "error"; text: string }; onStop: () => void; onRestart: () => void; onRetryFailedRegion: (region: AutoWorkflowRetryRegion) => void; onRetryShotVideo: (record: GenerationRecord) => void; onRegenerateShotVideo: (shotId: string, replaceRecordId?: string) => void; onClose: () => void }) {
   const [showComposedVideo, setShowComposedVideo] = useState(false);
   const purchaseRequired = state.cancelled && isInsufficientBalanceError(state.message);
@@ -2197,6 +2215,7 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
   const agentWorkflowHandled = useRef(false);
   const workflowPersistenceQueue = useRef<Promise<unknown>>(Promise.resolve());
   const workflowMediaSelections = useRef<WorkflowMediaSelections | undefined>(undefined);
+  const autoCompositionResumeIds = useRef(new Set<string>());
   const story = canonical.story;
   const projectEpisodes = canonical.episodes ?? [];
   const setStory = (patch: Partial<typeof story>) => update((model) => ({ ...model, story: { ...model.story, ...patch } }));
@@ -2222,7 +2241,9 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     const chargeStopped = (error: unknown) => chargeCancelled(error) || isInsufficientBalanceError(error) || errorTextFragments(error).some(value=>value.includes("WORKFLOW_CREDIT_STOPPED"));
     const ai = settings.data;
     if (!ai) return;
-    if (!workflowMediaSelections.current?.image.workflowCreditId || !workflowMediaSelections.current?.video.workflowCreditId) {
+    const mediaSelections = workflowMediaSelections.current;
+    const pendingBillableMedia = automaticWorkflowHasPendingBillableMedia(canonical, mode, imageTasksQuery.data ?? [], generationRecordsQuery.data ?? []);
+    if (!mediaSelections || (pendingBillableMedia && (!mediaSelections.image.workflowCreditId || !mediaSelections.video.workflowCreditId))) {
       const message = "上次制作没有完整的积分确认，请重新点击一键自动创作。";
       await updateAutomaticWorkflow({project_path:projectPath,project_id:projectId,workflow_id:workflowId,status:"CANCELLED",stage:"assets",progress:0,message,snapshot:{items:[]}});
       setWorkflow(current=>({...current,running:false,cancelled:true,message}));
@@ -2233,7 +2254,6 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     runningWorkflows.add(workflowId);
     workflowRunnerId.current = workflowId;
     setWorkflowQuiet(queryClient,workflowId,true);
-    const mediaSelections = workflowMediaSelections.current;
     let videoRetryCounts = { ...workflowVideoRetryCounts.current };
     const workflowSnapshot = (items: AutomaticWorkflowTaskSnapshot[]): AutomaticWorkflowSnapshot => ({ items, ...workflowMediaSnapshot(mediaSelections), video_retry_counts: { ...videoRetryCounts } });
     const workflowStoppedError = new Error("AUTOMATIC_WORKFLOW_STOPPED");
@@ -2565,9 +2585,46 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       runningWorkflows.delete(workflowId);
       if (workflowRunnerId.current === workflowId) workflowRunnerId.current = undefined;
       setWorkflowQuiet(queryClient,workflowId,false);
-      await invoke("stop_workflow_credit",{projectPath, id:mediaSelections.image.workflowCreditId}).catch(()=>undefined);
+      const workflowCreditIds = [...new Set([mediaSelections.image.workflowCreditId, mediaSelections.video.workflowCreditId].filter((id): id is string => Boolean(id)))];
+      await Promise.all(workflowCreditIds.map((id) => invoke("stop_workflow_credit", { projectPath, id }).catch(() => undefined)));
     }
   };
+  const resumeAutomaticWorkflowAfterShotRepairs = async (currentRecords: GenerationRecord[], currentImageTasks: ImageGenerationTask[]): Promise<boolean> => {
+    if (!workflow.id || workflow.running || !workflow.cancelled || workflow.stage !== "video" || !workflowMediaSelections.current) return false;
+    if (!automaticWorkflowShotVideosReadyOrActive(canonical, currentRecords)) return false;
+    const workflowId = workflow.id;
+    const message = "失败分镜已全部重新提交，工作流已恢复；视频完成后将自动合成完整视频";
+    const items = automaticWorkflowSnapshot(canonical, workflow.mode, currentImageTasks, currentRecords);
+    stoppedWorkflowIds.current.delete(workflowId);
+    await updateAutomaticWorkflow({
+      project_path: projectPath,
+      project_id: projectId,
+      workflow_id: workflowId,
+      status: "RUNNING",
+      stage: "video",
+      progress: automaticWorkflowProgress(items),
+      message,
+      snapshot: { items, ...workflowMediaSnapshot(workflowMediaSelections.current), video_retry_counts: { ...workflowVideoRetryCounts.current } },
+    });
+    resumedWorkflowId.current = workflowId;
+    setWorkflow((current) => ({ ...current, id: workflowId, visible: true, running: true, cancelled: false, stage: "video", message, retryMessage: "", imageTasks: currentImageTasks, records: currentRecords }));
+    void runAutomaticWorkflow(workflow.mode, workflow.resolution, workflowId);
+    void activeWorkflowQuery.refetch();
+    return true;
+  };
+  useEffect(() => {
+    const workflowId = workflow.id;
+    const repairStopped = workflow.cancelled && workflow.stage === "video" && workflow.retryMessage.includes("单独重启");
+    if (!workflowId || workflow.running || !repairStopped || !workflowMediaSelections.current || autoCompositionResumeIds.current.has(workflowId)) return;
+    if (!automaticWorkflowShotVideosReadyOrActive(canonical, records)) return;
+    autoCompositionResumeIds.current.add(workflowId);
+    void resumeAutomaticWorkflowAfterShotRepairs(records, imageTasks).then((resumed) => {
+      if (!resumed) autoCompositionResumeIds.current.delete(workflowId);
+    }).catch((error) => {
+      autoCompositionResumeIds.current.delete(workflowId);
+      setWorkflowRegionMessage({ kind: "error", text: `分镜视频已完成，但自动继续合成失败：${readableError(error)}` });
+    });
+  }, [workflow.id, workflow.running, workflow.cancelled, workflow.stage, workflow.retryMessage, records, imageTasks]);
   const stopAutomaticWorkflow = async () => {
     if (!workflow.id || !workflow.running || stoppingWorkflow) return;
     if (!window.confirm("确定停止当前工作流吗？已完成的结果会保留，停止后不会继续创建或重试后续任务。")) return;
@@ -2691,12 +2748,15 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
         if (!createdCount) throw new Error("任务状态已经变化，没有创建重复任务。");
       }
       const [nextImages, nextRecords] = await Promise.all([imageTasksQuery.refetch(), generationRecordsQuery.refetch()]);
+      const mergedImages = mergeTaskSnapshots(currentImageTasks, nextImages.data ?? []);
+      const mergedRecords = mergeTaskSnapshots(currentRecords, nextRecords.data ?? []);
       setWorkflow((current) => ({
         ...current,
-        imageTasks: mergeTaskSnapshots(current.imageTasks, nextImages.data ?? []),
-        records: mergeTaskSnapshots(current.records, nextRecords.data ?? []),
+        imageTasks: mergeTaskSnapshots(current.imageTasks, mergedImages),
+        records: mergeTaskSnapshots(current.records, mergedRecords),
       }));
-      setWorkflowRegionMessage({ kind: "success", text: `已重新启动本区域 ${createdCount} 个失败任务。` });
+      const resumed = region === "shot-videos" && await resumeAutomaticWorkflowAfterShotRepairs(mergedRecords, mergedImages);
+      setWorkflowRegionMessage({ kind: "success", text: resumed ? `已重新启动 ${createdCount} 个失败任务，并恢复自动制作工作流。` : `已重新启动本区域 ${createdCount} 个失败任务。` });
     } catch (error) {
       const message = readableError(error);
       setWorkflowRegionMessage({ kind: "error", text: message.includes("已取消选择生成模型和积分确认") ? "已取消重启，没有创建任务或扣除积分。" : message });
@@ -2733,8 +2793,10 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
         ...mediaVideoFields(selection),
       });
       const refreshed = await generationRecordsQuery.refetch();
-      setWorkflow((current) => ({ ...current, records: mergeTaskSnapshots(current.records, refreshed.data ?? []) }));
-      setWorkflowRegionMessage({ kind: "success", text: `分镜 ${record.target_id} 已沿用原模型重新提交。` });
+      const mergedRecords = mergeTaskSnapshots(currentRecords, refreshed.data ?? []);
+      setWorkflow((current) => ({ ...current, records: mergeTaskSnapshots(current.records, mergedRecords) }));
+      const resumed = await resumeAutomaticWorkflowAfterShotRepairs(mergedRecords, workflow.imageTasks);
+      setWorkflowRegionMessage({ kind: "success", text: resumed ? `分镜 ${record.target_id} 已重新提交，全部失败分镜均已恢复，自动制作将继续执行。` : `分镜 ${record.target_id} 已沿用原模型重新提交。` });
     } catch (error) {
       if (selection?.workflowCreditId) await invoke("stop_workflow_credit", { projectPath, id: selection.workflowCreditId }).catch(() => undefined);
       const message = readableError(error);
@@ -2765,8 +2827,10 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
       });
       await createShotVideoGeneration({ ...input, replace_record_id: replaceRecordId });
       const nextRecords = await generationRecordsQuery.refetch();
-      setWorkflow((current) => ({ ...current, records: mergeTaskSnapshots(current.records, nextRecords.data ?? []) }));
-      setWorkflowRegionMessage({ kind: "success", text: replaceRecordId ? `分镜 ${shotId} 的旧任务已停止，新任务已创建；完成后将成为该分镜的默认视频。` : `分镜 ${shotId} 已使用新选择的视频模型重新生成。` });
+      const mergedRecords = mergeTaskSnapshots(currentRecords, nextRecords.data ?? []);
+      setWorkflow((current) => ({ ...current, records: mergeTaskSnapshots(current.records, mergedRecords) }));
+      const resumed = await resumeAutomaticWorkflowAfterShotRepairs(mergedRecords, currentImageTasks);
+      setWorkflowRegionMessage({ kind: "success", text: resumed ? `分镜 ${shotId} 的新任务已创建，自动制作工作流已恢复。` : replaceRecordId ? `分镜 ${shotId} 的旧任务已停止，新任务已创建；完成后将成为该分镜的默认视频。` : `分镜 ${shotId} 已使用新选择的视频模型重新生成。` });
     } catch (error) {
       if (selection?.workflowCreditId) await invoke("stop_workflow_credit", { projectPath, id: selection.workflowCreditId }).catch(() => undefined);
       const message = readableError(error);
@@ -2790,13 +2854,17 @@ function StoryPage({ canonical, projectPath, projectId }: { canonical: Canonical
     let creditId: string | undefined;
     try {
       if (!restarting && (imageTasks.some(activeImageTask) || records.some(activeGeneration))) throw new Error("还有内容正在生成，请等待完成后再开始自动创作。");
-      const currentBalance = await getCreditBalance();
       const total = choice.items.reduce((sum,item)=>sum+Math.round(item.credits*1e6),0)/1e6;
-      if(currentBalance.available < total) throw new Error(`积分不够，本次需要 ${total} 分。`);
-      creditId = await invoke<string>("approve_workflow_credit",{projectPath,apiBase:platformApiBaseUrl,items:choice.items});
-      const image = {...choice.image,workflowCreditId:creditId};
-      const video = {...choice.video,workflowCreditId:creditId};
-      workflowMediaSelections.current = { image, video, videoReferenceMode };
+      const requiresCreditApproval = choice.items.length > 0;
+      if (requiresCreditApproval) {
+        const currentBalance = await getCreditBalance();
+        if(currentBalance.available < total) throw new Error(`积分不够，本次需要 ${total} 分。`);
+        creditId = await invoke<string>("approve_workflow_credit",{projectPath,apiBase:platformApiBaseUrl,items:choice.items});
+      }
+      const previousSelections = workflowMediaSelections.current;
+      const image = {...choice.image,workflowCreditId:creditId ?? (restarting ? previousSelections?.image.workflowCreditId : undefined)};
+      const video = {...choice.video,workflowCreditId:creditId ?? (restarting ? previousSelections?.video.workflowCreditId : undefined)};
+      workflowMediaSelections.current = { image, video, videoReferenceMode: requiresCreditApproval ? videoReferenceMode : previousSelections?.videoReferenceMode ?? videoReferenceMode };
       workflowVideoRetryCounts.current = {};
       const selectedResolution = video.resolution;
       setAutoResolution(selectedResolution);

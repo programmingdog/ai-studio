@@ -57,6 +57,29 @@ test('restart quote covers all unfinished media, including tasks that may fail w
   assert.match(planned, /record\.status==="COMPLETED"&&record\.result_relative_path/);
 });
 
+test('a zero-cost restart skips quote approval and continues the free composition step', () => {
+  const start = section(app, 'const startAutoWorkflow =', '  const confirmAndStartAutoWorkflow =');
+  assert.match(start, /const requiresCreditApproval = choice\.items\.length > 0/);
+  assert.match(start, /if \(requiresCreditApproval\)[^]*approve_workflow_credit/);
+  assert.match(start, /creditId \?\? \(restarting \? previousSelections\?\.image\.workflowCreditId/);
+  const runner = section(app, 'const runAutomaticWorkflow =', '  const stopAutomaticWorkflow =');
+  assert.match(runner, /automaticWorkflowHasPendingBillableMedia/);
+  assert.match(runner, /pendingBillableMedia && \(!mediaSelections\.image\.workflowCreditId/);
+});
+
+test('repairing the last failed shot video resumes the workflow and reaches composition', () => {
+  const resume = section(app, 'const resumeAutomaticWorkflowAfterShotRepairs =', '  const stopAutomaticWorkflow =');
+  assert.match(resume, /automaticWorkflowShotVideosReadyOrActive/);
+  assert.match(resume, /status: "RUNNING"/);
+  assert.match(resume, /stage: "video"/);
+  assert.match(resume, /runAutomaticWorkflow\(workflow\.mode, workflow\.resolution, workflowId\)/);
+  assert.match(resume, /workflow\.retryMessage\.includes\("单独重启"\)/);
+  assert.match(resume, /分镜视频已完成，但自动继续合成失败/);
+
+  const retry = section(app, 'const retryShotVideo =', '  const closeWorkflowStart =');
+  assert.ok((retry.match(/resumeAutomaticWorkflowAfterShotRepairs/g) || []).length >= 2);
+});
+
 test('every automatic workflow media region exposes a failed-task restart action', () => {
   const modal = section(app, 'function AutoProjectWorkflowModal(', 'function StoryPage(');
   for (const region of ['scenes', 'characters', 'shot-images', 'shot-videos', 'composition']) {
