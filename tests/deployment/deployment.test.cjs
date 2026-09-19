@@ -17,7 +17,7 @@ test('production runtime includes compiled migrations and seed assets, not local
   assert.match(dockerfile, /\.next\/standalone/);
   assert.match(dockerfile, /\.next\/static/);
   assert.match(dockerfile, /NEXT_PUBLIC_API_BASE_URL=\/api\/v1/);
-  assert.match(read('.dockerignore'), /\*\*\/\.env\n\*\*\/\.env\.\*/);
+  assert.match(read('.dockerignore'), /\*\*\/\.env\r?\n\*\*\/\.env\.\*/);
   assert.equal((dockerfile.match(/USER node/g) || []).length, 2);
 });
 

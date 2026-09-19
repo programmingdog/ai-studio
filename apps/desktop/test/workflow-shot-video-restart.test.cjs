@@ -31,7 +31,9 @@ test('automatic workflow retries each failed shot three times and persists the c
   assert.match(app, /const AUTO_SHOT_VIDEO_RETRY_LIMIT = 3/);
   assert.match(runner, /videoRetryCounts\[record\.target_id\].*AUTO_SHOT_VIDEO_RETRY_LIMIT/);
   assert.match(runner, /videoRetryCounts\[record\.target_id\] = \(videoRetryCounts\[record\.target_id\] \?\? 0\) \+ 1/);
-  assert.match(runner, /Promise\.allSettled\(failedRecords\.map/);
+  assert.match(runner, /const submitVideoInputs = async[\s\S]*Promise\.allSettled\(prepared\.map/);
+  assert.match(runner, /const retryInputs = failedRecords\.map/);
+  assert.match(runner, /submitVideoInputs\(createVideoInputs\(retryInputs\)\)/);
   assert.match(runner, /stopForExhaustedVideoRetries/);
   assert.match(runner, /status: "CANCELLED"/);
   assert.match(runner, /video_retry_counts/);

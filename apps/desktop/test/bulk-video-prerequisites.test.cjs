@@ -15,11 +15,12 @@ function section(start, end) {
 
 test('shot video generation refreshes assets and carries the selected reference mode', () => {
   const singleGeneration = section('const generateVideo = useMutation({', 'const bulkVideoGeneration = useMutation({');
-  assert.match(singleGeneration, /mutationFn: async \(referenceMode: VideoReferenceMode\)/);
+  assert.match(singleGeneration, /mutationFn: async \(\{ shotId, referenceMode \}: \{ shotId: string; referenceMode: VideoReferenceMode \}\)/);
   assert.match(singleGeneration, /await imageTasks\.refetch\(\)/);
   assert.ok(singleGeneration.indexOf('await imageTasks.refetch()') < singleGeneration.indexOf('requestMediaModel("VIDEO_GENERATION"'));
   assert.match(singleGeneration, /buildShotVideoGenerationInput\([\s\S]*referenceMode, mediaSelection: selection/);
-  assert.match(singleGeneration, /referenceMode === "pure_text" \? pureTextVideoPrompt\(videoPrompt\) : videoPrompt/);
+  assert.match(singleGeneration, /referenceMode === "pure_text" \? pureTextVideoPrompt\(prompt\) : prompt/);
+  assert.match(singleGeneration, /generateVideo\.mutate\(\{ shotId, referenceMode \}\)/);
 });
 
 test('bulk generation and full regeneration always use a fresh model and credit confirmation', () => {

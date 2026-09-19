@@ -16,7 +16,8 @@ test('all story workflow actions live in the top-right header', () => {
   assert.notEqual(actionsStart, -1);
   assert.ok(actionsStart < firstField, 'workflow actions should render above story fields');
   assert.doesNotMatch(storyPage, /story-auto-footer/);
-  assert.match(storyPage, /story-auto-header[^]*播放合成视频[^]*打开正在进行的工作流[^]*一键自动创作/);
+  assert.match(storyPage, /story-auto-header[^]*播放合成视频[^]*active-workflow-button[^]*一键自动创作/);
+  assert.match(storyPage, /active-workflow-button[^]*onClick=\{openExistingWorkflow\}[^]*(?:查看进行中的工作流|查看最近工作流)/);
   assert.match(css, /\.story-auto-header\s*\{[^}]*justify-content:\s*flex-end[^}]*margin-bottom:\s*14px/);
   assert.match(css, /\.story-auto-actions\s*\{[^}]*margin-left:\s*auto/);
 });
