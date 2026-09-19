@@ -11,6 +11,7 @@ interface MigrationRow extends RowDataPacket {
 }
 
 async function main(): Promise<void> {
+  const checkOnly = process.argv.includes("--check");
   const config = loadDatabaseConfig();
   const connection = await createConnection({
     host: config.host,
@@ -48,6 +49,11 @@ async function main(): Promise<void> {
         continue;
       }
 
+      if (checkOnly) {
+        process.stdout.write(`pending ${filename}\n`);
+        continue;
+      }
+
       await connection.beginTransaction();
       try {
         await connection.query(sql);
@@ -59,6 +65,7 @@ async function main(): Promise<void> {
         throw error;
       }
     }
+    if (checkOnly) process.stdout.write("migration history verified\n");
   } finally {
     await connection.end();
   }

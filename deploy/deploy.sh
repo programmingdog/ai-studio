@@ -84,6 +84,9 @@ compose "$release" config --quiet
 log "Pulling immutable API and admin images; the running release is still untouched."
 pull_images "$release"
 log "Images downloaded and verified."
+log "Verifying applied migration checksums before the maintenance window."
+compose "$release" run --rm --no-deps -T api node dist/database/migrate.js --check
+log "Migration history verified; pending migrations may now be applied safely."
 phase=prepared
 recover() {
   local status=$?

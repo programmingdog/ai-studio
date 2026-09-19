@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '../..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
@@ -19,6 +20,11 @@ test('production runtime includes compiled migrations and seed assets, not local
   assert.match(dockerfile, /NEXT_PUBLIC_API_BASE_URL=\/api\/v1/);
   assert.match(read('.dockerignore'), /\*\*\/\.env\r?\n\*\*\/\.env\.\*/);
   assert.equal((dockerfile.match(/USER node/g) || []).length, 2);
+});
+
+test('the production-applied remix pricing migration remains byte-for-byte immutable', () => {
+  const migration = fs.readFileSync(path.join(root, 'apps/server/src/database/migrations/057_video_remix_feature_pricing.sql'));
+  assert.equal(createHash('sha256').update(migration).digest('hex'), 'c3737603849a3b82755e75f44deabcd14d0b93a0c26c177677446e9bfd7029e0');
 });
 
 test('host-network apps are pinned to loopback and raw secrets remain server-side', () => {
@@ -80,6 +86,7 @@ case "$*" in
     fi
     exit "\${FAIL_PULL:-0}"
     ;;
+  *dist/database/migrate.js*--check*) echo 'migration preflight test log'; exit "\${FAIL_PREFLIGHT:-0}";;
   *dist/database/migrate.js*) echo 'migration test log'; exit "\${FAIL_MIGRATE:-0}";;
   *" up "*) exit "\${FAIL_UP:-0}";;
 esac
@@ -115,9 +122,14 @@ test('successful release stops, backs up, migrates, checks health and switches c
   const f = fixture(t), old = f.previous(), result = f.run();
   assert.equal(result.status, 0, result.stderr);
   const log = f.log();
+  const preflight = log.indexOf('dist/database/migrate.js --check');
+  const stop = log.indexOf(' stop ');
+  const migrate = log.indexOf('dist/database/migrate.js', preflight + 1);
+  assert.ok(log.indexOf(' pull admin') < preflight);
+  assert.ok(preflight < stop);
   assert.ok(log.indexOf(' stop ') < log.indexOf('BACKUP'));
-  assert.ok(log.indexOf('BACKUP') < log.indexOf('dist/database/migrate.js'));
-  assert.ok(log.indexOf('dist/database/migrate.js') < log.indexOf(' up '));
+  assert.ok(log.indexOf('BACKUP') < migrate);
+  assert.ok(migrate < log.indexOf(' up '));
   assert.equal(fs.readlinkSync(path.join(f.sandbox, 'current')), path.join(f.sandbox, 'releases/new'));
   assert.equal(fs.readlinkSync(path.join(f.sandbox, 'previous')), old);
   assert.ok(fs.existsSync(path.join(f.sandbox, 'releases/new/healthy')));
@@ -137,11 +149,17 @@ test('a transient image pull failure is retried before the maintenance window', 
   assert.equal((log.match(/ pull admin/g) || []).length, 1);
   assert.ok(log.indexOf(' pull admin') < log.indexOf(' stop '));
 });
+test('migration checksum preflight failure never stops the old version', linux, t => {
+  const f = fixture(t); f.previous();
+  assert.notEqual(f.run({ FAIL_PREFLIGHT: '1' }).status, 0);
+  assert.match(f.log(), /dist\/database\/migrate\.js --check/);
+  assert.doesNotMatch(f.log(), / stop |BACKUP/);
+});
 test('backup failure restarts old code without migrating', linux, t => {
   const f = fixture(t), old = f.previous();
   assert.notEqual(f.run({ FAIL_BACKUP: '1' }).status, 0);
   assert.match(f.log(), / up /);
-  assert.doesNotMatch(f.log(), /dist\/database\/migrate/);
+  assert.doesNotMatch(f.log(), /dist\/database\/migrate\.js(?! --check)/);
   assert.equal(fs.readlinkSync(path.join(f.sandbox, 'current')), old);
 });
 for (const failure of ['FAIL_MIGRATE', 'FAIL_UP']) test(`${failure} does not silently roll back a possibly changed schema`, linux, t => {
