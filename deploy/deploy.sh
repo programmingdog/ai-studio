@@ -8,6 +8,23 @@ log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 valid_release() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$ ]]; }
 valid_image() { [[ "$1" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]; }
 compose() { docker compose --project-name aivs --env-file "$1/release.env" -f "$1/compose.yml" "${@:2}"; }
+pull_images() {
+  local release_dir=$1 service attempt delay
+  for service in api admin; do
+    for (( attempt=1; attempt<=3; attempt++ )); do
+      log "Pulling immutable $service image (attempt $attempt/3)."
+      if compose "$release_dir" pull "$service"; then
+        break
+      fi
+      if (( attempt == 3 )); then
+        fail "Failed to pull $service image after 3 attempts; the running release is still untouched."
+      fi
+      delay=$((attempt * 15))
+      log "The $service image pull was interrupted; completed layers are retained. Retrying in ${delay}s."
+      sleep "$delay"
+    done
+  done
+}
 point_to() {
   local name=$1 target=$2
   [[ ! -e "$root/$name" || -L "$root/$name" ]] || fail "$name must be a symlink"
@@ -39,7 +56,7 @@ if [[ "$1" == --rollback ]]; then
   [[ -f "$target/healthy" && -s "$target/release.env" ]] || fail 'Target was never healthy'
   # Never re-run migrations or restore an old DB here: this is code-only rollback.
   compose "$target" config --quiet
-  compose "$target" pull api admin
+  pull_images "$target"
   if ! compose "$target" up -d --wait --wait-timeout 180 api admin; then
     compose "$target" stop api admin || true
     fail 'Rollback health check failed; services stopped. Operator action required.'
@@ -65,7 +82,7 @@ printf 'API_IMAGE=%s\nADMIN_IMAGE=%s\nRUNTIME_UID=%s\nRUNTIME_GID=%s\n' "$2" "$3
 # Validate and pull BEFORE stopping the running version.
 compose "$release" config --quiet
 log "Pulling immutable API and admin images; the running release is still untouched."
-compose "$release" pull api admin
+pull_images "$release"
 log "Images downloaded and verified."
 phase=prepared
 recover() {

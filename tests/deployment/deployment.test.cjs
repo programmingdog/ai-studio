@@ -69,12 +69,23 @@ function fixture(t) {
   fs.writeFileSync(path.join(bin, 'docker'), `#!/bin/bash
 echo "DOCKER $*" >> "$TEST_LOG"
 case "$*" in
-  *" pull "*) exit "\${FAIL_PULL:-0}";;
+  *" pull "*)
+    if [[ -n "\${FAIL_PULL_ATTEMPTS:-}" ]]; then
+      count_file="\${TEST_LOG}.pull-count"
+      count=0
+      [[ ! -f "$count_file" ]] || count=$(<"$count_file")
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$count_file"
+      (( count > FAIL_PULL_ATTEMPTS )) || exit 1
+    fi
+    exit "\${FAIL_PULL:-0}"
+    ;;
   *dist/database/migrate.js*) echo 'migration test log'; exit "\${FAIL_MIGRATE:-0}";;
   *" up "*) exit "\${FAIL_UP:-0}";;
 esac
 exit 0
 `, { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, 'sleep'), '#!/bin/bash\necho "SLEEP $*" >> "$TEST_LOG"\n', { mode: 0o700 });
   const script = path.join(dir, 'deploy.sh');
   fs.writeFileSync(script, read('deploy/deploy.sh').replace('readonly root=/opt/aivs', `readonly root='${sandbox}'`));
   fs.copyFileSync(path.join(root, 'deploy/compose.yml'), path.join(dir, 'compose.yml'));
@@ -115,6 +126,16 @@ test('pull failure never stops the old version', linux, t => {
   const f = fixture(t); f.previous();
   assert.notEqual(f.run({ FAIL_PULL: '1' }).status, 0);
   assert.doesNotMatch(f.log(), / stop |BACKUP|dist\/database\/migrate/);
+  assert.equal((f.log().match(/ pull api/g) || []).length, 3);
+});
+test('a transient image pull failure is retried before the maintenance window', linux, t => {
+  const f = fixture(t); f.previous();
+  const result = f.run({ FAIL_PULL_ATTEMPTS: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  const log = f.log();
+  assert.equal((log.match(/ pull api/g) || []).length, 2);
+  assert.equal((log.match(/ pull admin/g) || []).length, 1);
+  assert.ok(log.indexOf(' pull admin') < log.indexOf(' stop '));
 });
 test('backup failure restarts old code without migrating', linux, t => {
   const f = fixture(t), old = f.previous();
