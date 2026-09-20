@@ -616,7 +616,7 @@ export class ModelGatewayService {
     };
   }
 
-  async approveWorkflowQuote(userId: string, rawItems: unknown[]): Promise<Record<string, unknown>> {
+  async approveWorkflowQuote(userId: string, rawItems: unknown[], rawDisplayName = ""): Promise<Record<string, unknown>> {
     if (!Array.isArray(rawItems) || rawItems.length < 1 || rawItems.length > 2_000) throw new BadRequestException("自动制作报价清单数量无效");
     const seen = new Set<string>();
     const items: Array<{ itemKey: string; providerModelId: string; capability: string; resolution: string; seconds: number | null; credits: number }> = [];
@@ -647,6 +647,7 @@ export class ModelGatewayService {
       items.push({ itemKey, providerModelId, capability, resolution, seconds, credits: currentCredits });
     }
     const approvalId = randomUUID();
+    const displayName = rawDisplayName.trim().slice(0, 191) || null;
     await this.database.transaction(async connection => {
       const [accounts] = await connection.query<RowDataPacket[]>(
         "SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' LIMIT 1 FOR UPDATE",
@@ -654,18 +655,23 @@ export class ModelGatewayService {
       );
       if (!accounts.length) throw new NotFoundException("用户积分账户不存在");
       const [balances] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) balance FROM ledger_entries WHERE account_id = ?", [accounts[0]!.id]);
-      const [holds] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+      const [holds] = await connection.query<RowDataPacket[]>(
+        `SELECT COALESCE(SUM(ch.amount), 0) held FROM credit_holds ch
+         INNER JOIN ai_tasks t ON t.id = ch.task_id
+         WHERE ch.user_id = ? AND ch.status = 'ACTIVE' AND t.status NOT IN ('FAILED', 'CANCELED')`,
+        [userId],
+      );
       const [workflowReservations] = await connection.query<RowDataPacket[]>(
         "SELECT COALESCE(SUM(reserved_credits), 0) reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)",
         [userId],
       );
       const total = Math.round(items.reduce((sum, item) => sum + Math.round(item.credits * 1_000_000), 0)) / 1_000_000;
-      const available = Number(balances[0]?.balance || 0) - Number(holds[0]?.held || 0) - Number(workflowReservations[0]?.reserved || 0);
-      if (available < total) throw new ConflictException(`可用积分不足，本次自动制作需要 ${total} 积分，当前可用 ${available} 积分`);
+      const available = Math.max(0, Number(balances[0]?.balance || 0) - Number(holds[0]?.held || 0) - Number(workflowReservations[0]?.reserved || 0));
+      if (available < total) throw new ConflictException(`可用积分不足：剩余积分不足以开启自动制作，请先购买积分。本次需要 ${total} 积分，当前可用 ${available} 积分`);
       await connection.execute(
-        `INSERT INTO workflow_quote_approvals (id, user_id, status, reserved_credits, expires_at)
-         VALUES (?, ?, 'ACTIVE', ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY))`,
-        [approvalId, userId, total, workflowQuoteLifetimeDays],
+        `INSERT INTO workflow_quote_approvals (id, user_id, status, reserved_credits, display_name, expires_at)
+         VALUES (?, ?, 'ACTIVE', ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY))`,
+        [approvalId, userId, total, displayName, workflowQuoteLifetimeDays],
       );
       for (const item of items) {
         await connection.execute(
@@ -682,11 +688,26 @@ export class ModelGatewayService {
   }
 
   async stopWorkflowQuote(userId: string, approvalId: string): Promise<{ stopped: boolean }> {
-    const result = await this.database.execute(
-      "UPDATE workflow_quote_approvals SET status = 'STOPPED', reserved_credits = 0 WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
-      [approvalId, userId],
-    );
-    return { stopped: result.affectedRows > 0 };
+    return this.database.transaction(async connection => {
+      // Use the same wallet-first lock order as task creation so stopping a
+      // workflow cannot race an item transfer from reservation to task hold.
+      const [accounts] = await connection.query<RowDataPacket[]>(
+        "SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' LIMIT 1 FOR UPDATE",
+        [userId],
+      );
+      if (!accounts.length) throw new NotFoundException("用户积分账户不存在");
+      const [approvals] = await connection.query<RowDataPacket[]>(
+        "SELECT id, status FROM workflow_quote_approvals WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE",
+        [approvalId, userId],
+      );
+      if (!approvals.length) throw new NotFoundException("自动制作积分预留不存在");
+      if (approvals[0]!.status !== "ACTIVE") return { stopped: false };
+      await connection.execute(
+        "UPDATE workflow_quote_approvals SET status = 'STOPPED', reserved_credits = 0 WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
+        [approvalId, userId],
+      );
+      return { stopped: true };
+    });
   }
 
   private async lockedWorkflowCredits(connection: PoolConnection, userId: string, approvalId: string, itemKey: string,
@@ -1095,11 +1116,22 @@ export class ModelGatewayService {
       const amount = Number(task.estimated_credits);
       const [accounts] = await connection.query<RowDataPacket[]>("SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' LIMIT 1 FOR UPDATE", [task.user_id]);
       if (!accounts.length) throw new NotFoundException("用户积分账户不存在");
+      const [balanceRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) balance FROM ledger_entries WHERE account_id = ?", [accounts[0]!.id]);
+      const ledgerBalance = Math.max(0, Number(balanceRows[0]?.balance || 0));
+      const chargedAmount = Math.min(amount, ledgerBalance);
+      const shortfall = Math.max(0, amount - chargedAmount);
+      if (shortfall > 0) {
+        this.logger.error({ event: "credit.settlement_shortfall_prevented", taskId, userId: task.user_id,
+          estimatedCredits: amount, ledgerBalance, chargedCredits: chargedAmount, shortfall });
+      }
+      const ledgerMetadata = shortfall > 0
+        ? JSON.stringify({ upstream_usage: upstreamUsage ?? null, billing_guard: { estimated_credits: amount, charged_credits: chargedAmount, shortfall } })
+        : upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage);
       const transactionId = randomUUID();
-      await connection.execute("INSERT INTO ledger_transactions (id, transaction_type, reference_type, reference_id, metadata_json) VALUES (?, 'MODEL_CONSUMPTION', 'ai_task', ?, ?)", [transactionId, taskId, upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage)]);
-      await connection.execute("INSERT INTO ledger_entries (id, transaction_id, account_id, amount) VALUES (?, ?, ?, ?)", [randomUUID(), transactionId, accounts[0]!.id, -amount]);
+      await connection.execute("INSERT INTO ledger_transactions (id, transaction_type, reference_type, reference_id, metadata_json) VALUES (?, 'MODEL_CONSUMPTION', 'ai_task', ?, ?)", [transactionId, taskId, ledgerMetadata]);
+      await connection.execute("INSERT INTO ledger_entries (id, transaction_id, account_id, amount) VALUES (?, ?, ?, ?)", [randomUUID(), transactionId, accounts[0]!.id, -chargedAmount]);
       await connection.execute("UPDATE credit_holds SET status = 'CAPTURED' WHERE task_id = ? AND status = 'ACTIVE'", [taskId]);
-      await connection.execute("UPDATE ai_tasks SET status = 'SUCCEEDED', progress = 1, settled_credits = ?, usage_json = ?, revision = revision + 1, finished_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [amount, upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage), taskId]);
+      await connection.execute("UPDATE ai_tasks SET status = 'SUCCEEDED', progress = 1, settled_credits = ?, usage_json = ?, revision = revision + 1, finished_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [chargedAmount, upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage), taskId]);
       await connection.execute("UPDATE task_attempts SET status = 'SUCCEEDED', usage_json = ?, finished_at = CURRENT_TIMESTAMP(3) WHERE task_id = ? AND finished_at IS NULL", [upstreamUsage === undefined ? null : JSON.stringify(upstreamUsage), taskId]);
       const consumptionRecordId = randomUUID();
       await connection.execute(
@@ -1107,10 +1139,10 @@ export class ModelGatewayService {
           (id, consumption_no, user_id, task_id, provider_model_id, category, credits_consumed,
            revenue_cny_per_credit, cost_credits, status, description, occurred_at)
          VALUES (?, ?, ?, ?, ?, 'MODEL_TASK', ?, ?, ?, 'CONFIRMED', ?, UTC_TIMESTAMP(3))`,
-        [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, amount,
+        [consumptionRecordId, transactionNumber("CC"), task.user_id, taskId, task.provider_model_id, chargedAmount,
           task.commission_cny_per_credit, task.commission_cost_credits, `${task.logical_model_code} 模型任务`],
       );
-      await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, amount,
+      await this.referrals.settleGenerationConsumption(connection, consumptionRecordId, taskId, task.user_id, task.capability, chargedAmount,
         task.commission_cost_credits == null ? null : Number(task.commission_cost_credits),
         task.commission_cny_per_credit == null ? null : Number(task.commission_cny_per_credit));
     });
@@ -1236,7 +1268,12 @@ export class ModelGatewayService {
         const [existingRows] = await connection.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE user_id = ? AND idempotency_key = ? LIMIT 1", [userId, input.idempotencyKey]);
         if (existingRows.length) { if (existingRows[0]!.request_hash !== requestHash) throw new ConflictException("相同幂等键对应了不同请求"); throw new ConflictException("任务正在由相同幂等请求创建"); }
         const [balanceRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) balance FROM ledger_entries WHERE account_id = ?", [accounts[0]!.id]);
-        const [holdRows] = await connection.query<RowDataPacket[]>("SELECT COALESCE(SUM(amount), 0) held FROM credit_holds WHERE user_id = ? AND status = 'ACTIVE'", [userId]);
+        const [holdRows] = await connection.query<RowDataPacket[]>(
+          `SELECT COALESCE(SUM(ch.amount), 0) held FROM credit_holds ch
+           INNER JOIN ai_tasks t ON t.id = ch.task_id
+           WHERE ch.user_id = ? AND ch.status = 'ACTIVE' AND t.status NOT IN ('FAILED', 'CANCELED')`,
+          [userId],
+        );
         if (input.workflowQuoteApprovalId && input.workflowQuoteItemKey) {
           credits = await this.lockedWorkflowCredits(connection, userId, input.workflowQuoteApprovalId, input.workflowQuoteItemKey, target, payload, currentCredits);
         }
@@ -1280,7 +1317,8 @@ export class ModelGatewayService {
           "SELECT COALESCE(SUM(reserved_credits), 0) reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)",
           [userId],
         );
-        if (Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) - Number(workflowReservationRows[0]?.reserved || 0) < credits) throw new ConflictException("可用积分不足");
+        const available = Math.max(0, Number(balanceRows[0]?.balance || 0) - Number(holdRows[0]?.held || 0) - Number(workflowReservationRows[0]?.reserved || 0));
+        if (available < credits) throw new ConflictException(`可用积分不足：剩余积分不足以创建任务，请先购买积分。本次需要 ${credits} 积分，当前可用 ${available} 积分`);
         selectedCredential = await this.selectProviderCredential(connection, target.provider_id);
         let cnyPerCredit: number | null = null;
         if (commissionCostCredits !== null) {

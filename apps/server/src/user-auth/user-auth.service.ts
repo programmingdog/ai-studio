@@ -195,7 +195,8 @@ export class UserAuthService {
     const balance = Number(balanceRows[0]?.balance || 0);
     const held = Number(holdRows[0]?.held || 0) + Number(workflowRows[0]?.reserved || 0);
     const inviteCode = user.invite_code || await this.referrals.ensureInviteCode(userId);
-    return { ...user, invite_code: inviteCode, balance_fen: Number(user.balance_fen || 0), credit_balance: balance, held_credits: held, available_credits: balance - held };
+    return { ...user, invite_code: inviteCode, balance_fen: Number(user.balance_fen || 0), credit_balance: balance,
+      held_credits: held, available_credits: Math.max(0, balance - held), overcommitted_credits: Math.max(0, held - Math.max(0, balance)) };
   }
 
   async updateProfile(userId: string, input: { displayName?: string; avatarUrl?: string | null; bio?: string; email?: string; phone?: string; currentPassword?: string; newPassword?: string }): Promise<Record<string, unknown>> {

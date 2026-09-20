@@ -17,6 +17,22 @@ export class CreditsController {
   @UseGuards(UserAuthGuard)
   balance(@Req() request: UserRequest) { return this.credits.balance(request.user.sub); }
 
+  @Get("credits/holds")
+  @UseGuards(UserAuthGuard)
+  holds(@Req() request: UserRequest) { return this.credits.holds(request.user.sub); }
+
+  @Post("credits/holds/workflows/:approvalId/release")
+  @UseGuards(UserAuthGuard)
+  releaseWorkflowHold(@Req() request: UserRequest, @Param("approvalId") approvalId: string) {
+    return this.credits.releaseWorkflowHold(request.user.sub, approvalId);
+  }
+
+  @Post("credits/holds/tasks/:holdId/release")
+  @UseGuards(UserAuthGuard)
+  releaseTaskHold(@Req() request: UserRequest, @Param("holdId") holdId: string) {
+    return this.credits.releaseTaskHold(request.user.sub, holdId);
+  }
+
   @Get("credits/purchases")
   @UseGuards(UserAuthGuard)
   purchases(@Req() request: UserRequest, @Query("page") page?: string) { return this.credits.purchases(request.user.sub, page); }

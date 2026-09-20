@@ -202,7 +202,8 @@ const schemas: Record<string, JsonSchema> = {
       status: { type: "string", example: "ACTIVE" },
       credit_balance: { type: "number", example: 3000 },
       held_credits: { type: "number", example: 20 },
-      available_credits: { type: "number", example: 2980 },
+      available_credits: { type: "number", minimum: 0, example: 2980 },
+      overcommitted_credits: { type: "number", minimum: 0, example: 0, description: "历史异常占用超过账面余额的部分；可用积分仍保护为 0" },
       created_at: { type: "string", format: "date-time" },
       updated_at: { type: "string", format: "date-time" },
     },
@@ -380,7 +381,24 @@ const schemas: Record<string, JsonSchema> = {
     properties: {
       balance: { type: "number", example: 3000 },
       held: { type: "number", example: 20 },
-      available: { type: "number", example: 2980 },
+      available: { type: "number", minimum: 0, example: 2980 },
+      overcommitted: { type: "number", minimum: 0, example: 0 },
+    },
+  },
+  CreditHold: {
+    type: "object",
+    properties: {
+      id: { type: "string", format: "uuid" },
+      type: { type: "string", enum: ["TASK_HOLD", "WORKFLOW_RESERVATION"] },
+      reference_id: { type: "string", format: "uuid" },
+      title: { type: "string" },
+      credits: { type: "number", minimum: 0 },
+      status: { type: "string" },
+      releasable: { type: "boolean" },
+      detail: { type: "string" },
+      action_hint: { type: "string" },
+      created_at: { type: "string", format: "date-time" },
+      expires_at: { type: "string", format: "date-time" },
     },
   },
   CreditPurchaseRequest: {
@@ -839,6 +857,15 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/credits/balance": {
       get: operation({ id: "creditBalance", tag: "用户积分", summary: "读取积分余额、占用与可用余额", security: true, success: ref("CreditBalance") }),
+    },
+    "/credits/holds": {
+      get: operation({ id: "creditHolds", tag: "用户积分", summary: "读取正在使用的积分明细", description: "安全回收失败、取消和过期占用后，返回执行中任务占用及自动制作未提交项目预留。", security: true }),
+    },
+    "/credits/holds/workflows/{approvalId}/release": {
+      post: operation({ id: "releaseWorkflowCreditHold", tag: "用户积分", summary: "释放自动制作未提交项目的预留积分", security: true, parameters: [pathId("approvalId", "自动制作报价确认 ID")] }),
+    },
+    "/credits/holds/tasks/{holdId}/release": {
+      post: operation({ id: "releaseTaskCreditHold", tag: "用户积分", summary: "释放已失败或已取消任务的异常占用", description: "执行中或已被供应商接单的任务禁止手动释放。", security: true, parameters: [pathId("holdId", "积分占用 ID")] }),
     },
     "/credits/purchases": {
       get: operation({ id: "listCreditPurchases", tag: "用户积分", summary: "分页读取当前用户的积分购买记录", description: "每页固定返回 10 条。", security: true, parameters: [query("page", "页码，默认1", { type: "integer", minimum: 1, maximum: 100000, default: 1 })] }),

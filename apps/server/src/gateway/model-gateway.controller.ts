@@ -63,7 +63,7 @@ export class ModelGatewayController {
   approveWorkflowQuote(@Req() request: UserRequest, @Body() input: unknown) {
     const body = asRecord(input);
     const items = jsonValue(body, "items");
-    return this.gateway.approveWorkflowQuote(request.user.sub, Array.isArray(items) ? items : []);
+    return this.gateway.approveWorkflowQuote(request.user.sub, Array.isArray(items) ? items : [], String(body.display_name || "").trim());
   }
 
   @Post("workflow-quotes/:approvalId/stop")

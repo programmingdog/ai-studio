@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { createDecipheriv, createHash, createSign, createVerify, randomBytes, randomUUID, X509Certificate } from "node:crypto";
-import { RowDataPacket } from "mysql2/promise";
+import { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
 import { ReferralsService } from "../referrals/referrals.service";
@@ -23,6 +23,16 @@ type WechatRuntime = { merchantId: string; notifyUrl: string; apiV3Key: string; 
 function orderNumber(): string { return `AV${Date.now()}${randomBytes(5).toString("hex")}`.slice(0, 32); }
 function transactionNumber(prefix: string): string { return `${prefix}${Date.now()}${randomBytes(5).toString("hex")}`; }
 function responseJson(text: string): Record<string, unknown> { try { return JSON.parse(text) as Record<string, unknown>; } catch { return { raw: text }; } }
+function taskCreditTitle(taskType: unknown, model: unknown): string {
+  const kind = String(taskType || "").toUpperCase();
+  const label = kind.includes("VIDEO_UNDERSTANDING") ? "视频链接解析"
+    : kind.includes("VIDEO_REMIX") ? "视频二次创作"
+      : kind.includes("VIDEO") ? "分镜视频生成"
+        : kind.includes("IMAGE") ? "图片生成"
+          : kind.includes("TEXT") ? "文本生成" : "生成任务";
+  const modelName = String(model || "").trim();
+  return modelName ? `${label} · ${modelName}` : label;
+}
 
 @Injectable()
 export class CreditsService {
@@ -40,7 +50,59 @@ export class CreditsService {
     return rows.map((row) => ({ ...row, base_credits: Number(row.base_credits), bonus_credits: Number(row.bonus_credits), total_credits: Number(row.base_credits) + Number(row.bonus_credits), price_fen: Number(row.price_fen) }));
   }
 
+  private async normalizeLocks(connection: PoolConnection, userId: string): Promise<void> {
+    const [accounts] = await connection.query<RowDataPacket[]>(
+      `SELECT id FROM ledger_accounts
+       WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT'
+       LIMIT 1 FOR UPDATE`,
+      [userId],
+    );
+    if (!accounts.length) return;
+    await connection.execute(
+      `UPDATE workflow_quote_approvals
+       SET status = 'EXPIRED', reserved_credits = 0
+       WHERE user_id = ? AND status = 'ACTIVE' AND expires_at <= CURRENT_TIMESTAMP(3)`,
+      [userId],
+    );
+    const [releasedTerminalHolds] = await connection.execute<ResultSetHeader>(
+      `UPDATE credit_holds ch
+       INNER JOIN ai_tasks t ON t.id = ch.task_id
+       SET ch.status = 'RELEASED'
+       WHERE ch.user_id = ? AND ch.status = 'ACTIVE' AND t.status IN ('FAILED', 'CANCELED')`,
+      [userId],
+    );
+    if (!releasedTerminalHolds.affectedRows) return;
+    // Recompute instead of incrementing so this repair stays idempotent and
+    // cannot duplicate a workflow refund after a retry or process restart.
+    await connection.execute(
+      `UPDATE workflow_quote_approvals qa
+       LEFT JOIN (
+         SELECT qi.approval_id,
+                COALESCE(SUM(CASE
+                  WHEN qi.current_task_id IS NULL THEN qi.credits
+                  WHEN t.status IN ('FAILED', 'CANCELED')
+                    AND NOT EXISTS (
+                      SELECT 1 FROM credit_holds ch
+                      WHERE ch.task_id = qi.current_task_id AND ch.status IN ('ACTIVE', 'CAPTURED')
+                    ) THEN qi.credits
+                  ELSE 0
+                END), 0) AS pending_credits
+         FROM workflow_quote_items qi
+         LEFT JOIN ai_tasks t ON t.id = qi.current_task_id
+         GROUP BY qi.approval_id
+       ) pending ON pending.approval_id = qa.id
+       SET qa.reserved_credits = COALESCE(pending.pending_credits, 0)
+       WHERE qa.user_id = ? AND qa.status = 'ACTIVE' AND qa.expires_at > CURRENT_TIMESTAMP(3)`,
+      [userId],
+    );
+  }
+
+  private async reconcileLocks(userId: string): Promise<void> {
+    await this.database.transaction(connection => this.normalizeLocks(connection, userId));
+  }
+
   async balance(userId: string): Promise<Record<string, number>> {
+    await this.reconcileLocks(userId);
     const balanceRows = await this.database.query<RowDataPacket[]>(
       `SELECT COALESCE(SUM(le.amount), 0) AS balance FROM ledger_accounts la
        LEFT JOIN ledger_entries le ON le.account_id = la.id
@@ -51,7 +113,108 @@ export class CreditsService {
     const workflowRows = await this.database.query<RowDataPacket[]>("SELECT COALESCE(SUM(reserved_credits), 0) AS reserved FROM workflow_quote_approvals WHERE user_id = ? AND status = 'ACTIVE' AND expires_at > CURRENT_TIMESTAMP(3)", [userId]);
     const balance = Number(balanceRows[0]?.balance || 0);
     const held = Number(holdRows[0]?.held || 0) + Number(workflowRows[0]?.reserved || 0);
-    return { balance, held, available: balance - held };
+    const overcommitted = Math.max(0, held - Math.max(0, balance));
+    return { balance, held, available: Math.max(0, balance - held), overcommitted };
+  }
+
+  async holds(userId: string): Promise<Record<string, unknown>> {
+    await this.reconcileLocks(userId);
+    const taskRows = await this.database.query<RowDataPacket[]>(
+      `SELECT ch.id, ch.task_id, ch.amount AS credits, ch.created_at, ch.expires_at,
+              t.local_task_id, t.task_type, t.logical_model_code, t.status AS task_status,
+              t.remote_task_id, pm.model_alias
+       FROM credit_holds ch
+       INNER JOIN ai_tasks t ON t.id = ch.task_id
+       LEFT JOIN provider_models pm ON pm.id = t.provider_model_id
+       WHERE ch.user_id = ? AND ch.status = 'ACTIVE'
+       ORDER BY ch.created_at DESC LIMIT 500`,
+      [userId],
+    );
+    const workflowRows = await this.database.query<RowDataPacket[]>(
+      `SELECT qa.id, qa.display_name, qa.reserved_credits AS credits, qa.created_at, qa.expires_at,
+              COUNT(qi.item_key) AS item_count,
+              SUM(CASE WHEN qi.current_task_id IS NULL THEN 1
+                       WHEN t.status IN ('FAILED', 'CANCELED')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM credit_holds ch
+                           WHERE ch.task_id = qi.current_task_id AND ch.status IN ('ACTIVE', 'CAPTURED')
+                         ) THEN 1 ELSE 0 END) AS remaining_items
+       FROM workflow_quote_approvals qa
+       LEFT JOIN workflow_quote_items qi ON qi.approval_id = qa.id
+       LEFT JOIN ai_tasks t ON t.id = qi.current_task_id
+       WHERE qa.user_id = ? AND qa.status = 'ACTIVE' AND qa.expires_at > CURRENT_TIMESTAMP(3)
+         AND qa.reserved_credits > 0
+       GROUP BY qa.id
+       ORDER BY qa.created_at DESC LIMIT 100`,
+      [userId],
+    );
+    const taskItems = taskRows.map(row => ({
+      id: String(row.id), type: "TASK_HOLD", reference_id: String(row.task_id),
+      title: taskCreditTitle(row.task_type, row.model_alias || row.logical_model_code),
+      credits: Number(row.credits || 0), status: String(row.task_status || "PROCESSING"),
+      task_id: String(row.task_id), local_task_id: String(row.local_task_id || ""),
+      created_at: row.created_at, expires_at: row.expires_at,
+      releasable: ["FAILED", "CANCELED"].includes(String(row.task_status)),
+      detail: row.remote_task_id ? "任务已提交供应商，积分会在成功后扣除，失败或取消后自动释放。" : "任务正在提交，积分会在失败或取消后自动释放。",
+      action_hint: "请返回对应项目或生成记录继续查询并完成任务；执行中的任务不能手动释放，以免重复生成或逃避结算。",
+    }));
+    const workflowItems = workflowRows.map(row => ({
+      id: String(row.id), type: "WORKFLOW_RESERVATION", reference_id: String(row.id),
+      title: row.display_name ? `自动制作：${String(row.display_name)}` : "自动制作工作流未提交项目", credits: Number(row.credits || 0), status: "RESERVED",
+      item_count: Number(row.item_count || 0), remaining_items: Number(row.remaining_items || 0),
+      created_at: row.created_at, expires_at: row.expires_at, releasable: true,
+      detail: `为自动制作剩余 ${Number(row.remaining_items || 0)} 个项目预留，已提交的任务积分不包含在这里。`,
+      action_hint: "可释放尚未提交的预留积分；以后继续该工作流时需要重新确认积分。",
+    }));
+    const items = [...taskItems, ...workflowItems].sort((a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime());
+    return {
+      items,
+      total: items.reduce((sum, item) => sum + Number(item.credits || 0), 0),
+      releasable_total: items.filter(item => item.releasable).reduce((sum, item) => sum + Number(item.credits || 0), 0),
+      blocked_total: items.filter(item => !item.releasable).reduce((sum, item) => sum + Number(item.credits || 0), 0),
+    };
+  }
+
+  async releaseWorkflowHold(userId: string, approvalId: string): Promise<Record<string, unknown>> {
+    if (!/^[0-9a-f-]{36}$/i.test(approvalId)) throw new BadRequestException("自动制作占用记录格式无效");
+    return this.database.transaction(async connection => {
+      await this.normalizeLocks(connection, userId);
+      const [rows] = await connection.query<RowDataPacket[]>(
+        "SELECT id, status, reserved_credits FROM workflow_quote_approvals WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE",
+        [approvalId, userId],
+      );
+      const row = rows[0];
+      if (!row) throw new NotFoundException("自动制作积分占用不存在");
+      const releasedCredits = row.status === "ACTIVE" ? Number(row.reserved_credits || 0) : 0;
+      if (row.status === "ACTIVE") {
+        await connection.execute(
+          "UPDATE workflow_quote_approvals SET status = 'STOPPED', reserved_credits = 0 WHERE id = ? AND user_id = ? AND status = 'ACTIVE'",
+          [approvalId, userId],
+        );
+      }
+      return { released: releasedCredits > 0, released_credits: releasedCredits };
+    });
+  }
+
+  async releaseTaskHold(userId: string, holdId: string): Promise<Record<string, unknown>> {
+    if (!/^[0-9a-f-]{36}$/i.test(holdId)) throw new BadRequestException("任务积分占用记录格式无效");
+    return this.database.transaction(async connection => {
+      await this.normalizeLocks(connection, userId);
+      const [rows] = await connection.query<RowDataPacket[]>(
+        `SELECT ch.id, ch.amount, ch.status AS hold_status, t.status AS task_status
+         FROM credit_holds ch INNER JOIN ai_tasks t ON t.id = ch.task_id
+         WHERE ch.id = ? AND ch.user_id = ? LIMIT 1 FOR UPDATE`,
+        [holdId, userId],
+      );
+      const row = rows[0];
+      if (!row) throw new NotFoundException("任务积分占用不存在");
+      if (row.hold_status !== "ACTIVE") return { released: false, released_credits: 0 };
+      if (!["FAILED", "CANCELED"].includes(String(row.task_status))) {
+        throw new ConflictException("该任务仍在提交或执行中，不能手动释放积分；请返回对应项目继续查询，任务失败或取消后系统会自动释放。");
+      }
+      const [result] = await connection.execute<ResultSetHeader>("UPDATE credit_holds SET status = 'RELEASED' WHERE id = ? AND user_id = ? AND status = 'ACTIVE'", [holdId, userId]);
+      return { released: result.affectedRows > 0, released_credits: result.affectedRows > 0 ? Number(row.amount || 0) : 0 };
+    });
   }
 
   async purchases(userId: string, rawPage?: string): Promise<Record<string, unknown>> {

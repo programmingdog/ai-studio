@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 require('reflect-metadata');
 const { ModelGatewayService } = require('../dist/gateway/model-gateway.service');
+const { CreditsService } = require('../dist/credits/credits.service');
 const factors = { TEXT_GENERATION: 1.5, VIDEO_UNDERSTANDING: 2, IMAGE_GENERATION: 3, VIDEO_GENERATION: 1.25 };
 const target = (capability, extra = {}) => ({ provider_id: 'provider-1', provider_code: 'demo-provider', model_id: 'model-1', model_code: 'demo', model_alias: '模型别名', capability, credit_cost: 2, credit_multiplier: factors[capability], supports_async_tasks: 0, ...extra });
 function service() {
@@ -11,6 +12,52 @@ function service() {
   gateway.scriptAnalysisConfig = async () => ({ prompt: 'x'.repeat(100), credit_cost: 10, revision: 1 });
   return gateway;
 }
+
+test('credit balance never exposes a negative available amount and reports the historical overcommit', async () => {
+  const writes = [];
+  const database = {
+    transaction: async operation => operation({
+      query: async sql => sql.includes('FROM ledger_accounts') ? [[{ id: 'account' }]] : Promise.reject(new Error(sql)),
+      execute: async (sql, args) => { writes.push({ sql, args }); return [{ affectedRows: 1 }]; },
+    }),
+    query: async sql => {
+      if (sql.includes('SUM(le.amount)')) return [{ balance: 4000 }];
+      if (sql.includes('FROM credit_holds')) return [{ held: 6219 }];
+      if (sql.includes('FROM workflow_quote_approvals')) return [{ reserved: 0 }];
+      throw new Error(sql);
+    },
+  };
+  const credits = new CreditsService(database, {}, {});
+  const result = await credits.balance('user');
+  assert.deepEqual(result, { balance: 4000, held: 6219, available: 0, overcommitted: 2219 });
+  assert.ok(writes.some(write => write.sql.includes("t.status IN ('FAILED', 'CANCELED')")));
+  assert.ok(writes.some(write => write.sql.includes('pending_credits')));
+});
+
+test('settlement guard cannot deduct beyond the remaining ledger balance', async () => {
+  const gateway = service();
+  const writes = [];
+  gateway.referrals = { settleGenerationConsumption: async () => {} };
+  gateway.database.transaction = async operation => operation({
+    query: async sql => {
+      if (sql.includes('FROM ai_tasks t INNER JOIN provider_models')) return [[{
+        id: 'task', user_id: 'user', estimated_credits: 10, provider_model_id: 'model-1',
+        logical_model_code: 'demo', capability: 'TEXT_GENERATION', commission_cny_per_credit: null,
+        commission_cost_credits: null,
+      }]];
+      if (sql.includes('FROM credit_holds')) return [[{ status: 'ACTIVE' }]];
+      if (sql.includes('FROM ledger_accounts')) return [[{ id: 'account' }]];
+      if (sql.includes('FROM ledger_entries')) return [[{ balance: 3 }]];
+      throw new Error(sql);
+    },
+    execute: async (sql, args) => { writes.push({ sql, args }); return [{ affectedRows: 1 }]; },
+  });
+  await gateway.settle('task');
+  const ledgerEntry = writes.find(write => write.sql.includes('INSERT INTO ledger_entries'));
+  assert.equal(ledgerEntry.args[3], -3);
+  const taskUpdate = writes.find(write => write.sql.includes("UPDATE ai_tasks SET status = 'SUCCEEDED'"));
+  assert.equal(taskUpdate.args[0], 3);
+});
 
 test('text quote includes its model multiplier while video understanding uses the extraction feature price', async () => {
   const gateway = service();

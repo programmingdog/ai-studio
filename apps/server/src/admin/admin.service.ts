@@ -1073,7 +1073,8 @@ export class AdminService {
       direct_count: Number(row.direct_count || 0), indirect_count: Number(row.indirect_count || 0),
       credit_balance: Number(row.credit_balance || 0),
       held_credits: Number(row.held_credits || 0),
-      available_credits: Number(row.credit_balance || 0) - Number(row.held_credits || 0),
+      available_credits: Math.max(0, Number(row.credit_balance || 0) - Number(row.held_credits || 0)),
+      overcommitted_credits: Math.max(0, Number(row.held_credits || 0) - Math.max(0, Number(row.credit_balance || 0))),
     }));
   }
 
@@ -1193,7 +1194,8 @@ export class AdminService {
          VALUES (?, ?, 'user.credit.adjust', 'user', ?, ?)`,
         [randomUUID(), adminUserId, userId, JSON.stringify({ adjustmentId, amount: input.amount, reason: input.reason, previousBalance: currentBalance, nextBalance })],
       );
-      return { adjustment_id: adjustmentId, credit_balance: nextBalance, held_credits: held, available_credits: nextBalance - held };
+      return { adjustment_id: adjustmentId, credit_balance: nextBalance, held_credits: held,
+        available_credits: Math.max(0, nextBalance - held), overcommitted_credits: Math.max(0, held - Math.max(0, nextBalance)) };
     });
   }
 
