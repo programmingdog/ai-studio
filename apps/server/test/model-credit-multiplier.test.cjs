@@ -132,6 +132,7 @@ test("settlement uses the locked final estimate even if the model factor later c
     if (sql.includes("FROM ai_tasks")) return [[{ id: "task", user_id: "user", estimated_credits: "12.500000", commission_cost_credits: "10.000000", commission_cny_per_credit: "0.100000", provider_model_id: "m1", logical_model_code: "demo", capability: "IMAGE_GENERATION" }]];
     if (sql.includes("FROM credit_holds")) return [[{ status: "ACTIVE" }]];
     if (sql.includes("FROM ledger_accounts")) return [[{ id: "account" }]];
+    if (sql.includes("FROM ledger_entries")) return [[{ balance: 100 }]];
     throw new Error("Unexpected query");
   }, execute: async (sql, args) => { writes.push({ sql, args }); } };
   const referrals = { settleGenerationConsumption: async (...args) => commissions.push(args) };
