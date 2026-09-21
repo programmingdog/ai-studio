@@ -1,6 +1,6 @@
 [package]
 name = "ai-video-studio"
-version = "1.0.3"
+version = "1.0.5"
 description = "逐梦帧 AI 视频创作工作站"
 authors = ["逐梦帧"]
 edition = "2021"

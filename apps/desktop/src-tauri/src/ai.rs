@@ -796,11 +796,7 @@ async fn openai_json_completion(
         "temperature": 0.35,
         "stream": false
     });
-    let response = if stage == "video_remix" {
-        crate::platform_media::video_remix_completion(operation, payload).await?
-    } else {
-        crate::platform_media::text_completion(operation, payload).await?
-    };
+    let response = crate::platform_media::text_completion(operation, payload).await?;
     // A successful upstream request is charged even if its content fails local
     // validation. Any correction is a new, separately confirmed paid request.
     parse_text_completion_json(&response)
@@ -979,6 +975,11 @@ pub(crate) async fn generate_idea_story(
     .await
 }
 
+pub(crate) struct VideoRemixGeneration {
+    pub result: Result<Value, String>,
+    pub billing_task_id: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate_video_remix(
     app: &tauri::AppHandle,
@@ -991,8 +992,9 @@ pub(crate) async fn generate_video_remix(
     visual_style: &str,
     language_code: &str,
     revision_note: Option<&str>,
-) -> Result<Value, String> {
-    let config = load_agent_config(app)?;
+    approved_quote: &Value,
+) -> Result<VideoRemixGeneration, String> {
+    let _config = load_agent_config(app)?;
     let language = content_language_name(language_code);
     let visual_style_instruction = if visual_style.trim().is_empty() {
         "由AI根据新剧情的题材、时代、情绪、受众和画面比例设计最合适的具体视觉风格；必须在canonical.story.visual_style中输出可直接用于生图的详细画风描述，并让所有shots.visual_style保持一致"
@@ -1036,15 +1038,28 @@ pub(crate) async fn generate_video_remix(
         ""
     };
     let correction = format!("{radical_override}{retry_correction}");
-    openai_json_completion(
-        &config,
-        "video_remix",
-        "你是擅长短剧、电影和漫剧的原创编剧兼分镜导演。二次创作必须以参考稿的核心主题为锚点：先识别其价值立场、主要议题、关注对象、核心主张和希望观众产生的情绪，再在同一主题范围内创作新的故事表达。人物、场景、事件和台词需要原创，但不得把主题替换成无关的灾难、犯罪、悬疑、爱情或其他题材。参考稿只用于主题与叙事功能学习，禁止改名式洗稿、逐场景映射、复用标志性台词或连续复制具体情节。平衡改编和高度原创应服从原稿真实存在的结构，原稿没有强冲突或反转时不得强行添加；但当原创强度为“激进原创（强冲突多反转）”时，这是用户明确要求的结构重构，必须在保留主题的前提下主动建立高强度核心对抗、至少3轮冲突升级和至少2次有效反转，不能再以“原稿没有反转”为由省略。每次反转都要有前置线索、因果触发和后续影响，并落实到story.beats、episodes和具体shots中。必须把实际台词独立写入每个分镜的dialogue字段并标明说话角色，同时把每一位说话人的台词原文直接内化到同一分镜的visual画面描述中，格式为“角色A说：‘XXXXX’”或“角色A说（具体语气）：‘XXXXX’”；video_prompt中的“台词”必须与dialogue完全一致。允许纯环境或过渡镜头写“无”，但整个二创项目至少一个分镜必须有推动剧情、表达观点或传递情绪的具体对白、独白或旁白，严禁所有分镜都写“无”。只输出有效JSON对象，不要输出Markdown。",
-        &format!(
+    let system_prompt = "你是擅长短剧、电影和漫剧的原创编剧兼分镜导演。二次创作必须以参考稿的核心主题为锚点：先识别其价值立场、主要议题、关注对象、核心主张和希望观众产生的情绪，再在同一主题范围内创作新的故事表达。人物、场景、事件和台词需要原创，但不得把主题替换成无关的灾难、犯罪、悬疑、爱情或其他题材。参考稿只用于主题与叙事功能学习，禁止改名式洗稿、逐场景映射、复用标志性台词或连续复制具体情节。平衡改编和高度原创应服从原稿真实存在的结构，原稿没有强冲突或反转时不得强行添加；但当原创强度为“激进原创（强冲突多反转）”时，这是用户明确要求的结构重构，必须在保留主题的前提下主动建立高强度核心对抗、至少3轮冲突升级和至少2次有效反转，不能再以“原稿没有反转”为由省略。每次反转都要有前置线索、因果触发和后续影响，并落实到story.beats、episodes和具体shots中。必须把实际台词独立写入每个分镜的dialogue字段并标明说话角色，同时把每一位说话人的台词原文直接内化到同一分镜的visual画面描述中，格式为“角色A说：‘XXXXX’”或“角色A说（具体语气）：‘XXXXX’”；video_prompt中的“台词”必须与dialogue完全一致。允许纯环境或过渡镜头写“无”，但整个二创项目至少一个分镜必须有推动剧情、表达观点或传递情绪的具体对白、独白或旁白，严禁所有分镜都写“无”。只输出有效JSON对象，不要输出Markdown。";
+    let user_prompt = format!(
             "输出语言：{language}\n目标成片时长：{target_duration}秒\n画面比例：{aspect_ratio}\n项目画风要求：{visual_style_instruction}\n分镜时长规则：{storyboard_duration_rule}\n要求分镜数：约{expected_shots}个\n原创强度：{originality_rule}\n用户二创方向：{creative_direction}\n\n参考视频解析稿：\n{source_analysis}\n{correction}\n\n【主题继承硬性规则】先提取参考稿的核心主题、价值立场、关注群体、核心主张与情绪目标。新故事的theme、logline、synopsis和结局必须继续表达这些内容，不能仅保留抽象的“牺牲、选择、反转”等结构词。除非用户二创方向明确要求更换主题，否则不得改变议题对象或价值立场。例如参考稿为农民群体发声，新故事仍必须以农民的贡献、处境或尊严为核心，不能改写成与农民无关的城市排洪故事。\n【结构适配规则】只继承参考稿真实存在的叙事功能：有矛盾则重构矛盾，有反转则重构反转；若原稿是事实列举、观点递进、历史回顾、情绪控诉或价值倡议，则使用事实揭示、认知递进、人物见证和情绪高潮完成二创，不得强行虚构无关反转。\n\n输出顶层字段title、logline、synopsis、adaptation_notes、canonical。adaptation_notes包含source_structure、conflict_design、reversal_design、originality_statement；source_structure首先说明保留的核心主题和价值立场，再说明真实存在的叙事结构；若原稿没有冲突或反转，conflict_design或reversal_design应明确写“原稿无强冲突/反转，改用情绪或认知递进”，不得虚构结构借鉴点。originality_statement必须同时说明哪些主题内容被保留、哪些具体表达被重构。canonical必须包含story、episodes、characters、scenes、sequences、shots：story包含title、logline、genre、theme、synopsis、tone、aspect_ratio、visual_style、beats；episodes至少1集，包含id、order、title、duration、content；characters使用CHAR_001起的稳定ID和完整字段，appearance必须是含face、hair、body、clothes、accessories五个非空字符串的对象。每个角色的states至少一个，每个state必须完整包含id、name、trigger、description、appearance_lock、clothing_lock、reference_assets、locked；name写明确的状态名称，trigger写该状态在剧情中的出现条件，appearance_lock写该状态不可改变的脸型、五官、发型和体态，clothing_lock写该状态不可改变的服装、道具、装备与配饰（没有则明确写“无”），这些字段均不得为空。角色默认只能有一个状态；只有穿着/服装、随身道具/装备或年龄阶段发生明确且明显的可见变化时，才允许为同一角色生成多个states。仅情绪、表情、动作、姿势、地点、场景、时间、普通伤势或剧情阶段变化不得拆分状态；凡人/变身等名称也只有在服装、道具或年龄实际变化时才能拆分。若生成多个状态，每个状态必须具体写明上述可见差异。scenes使用SCENE_001起的稳定ID并具体描述空间、材质、陈设、出入口和光线；sequences与shots使用稳定ID并正确互相引用。shots[].sequence_id只能填写canonical.sequences数组中真实存在的SEQ_编号，绝不能填写scene_id、场景名称或自行创建的编号；shots[].scene_id必须与其所属sequence.scene_id完全一致。每个sequence和shot的character_ids必须始终是角色ID字符串组成的JSON数组，即使没有角色也必须输出[]，严禁输出单个字符串、对象或省略该字段；每个shot的character_state_ids必须是角色ID到状态ID的JSON对象，严禁输出数组或“角色ID:状态ID”字符串。shots必须包含Canonical完整分镜字段及character_state_ids，并严格遵守上面的分镜时长规则，所有分镜总时长必须精确等于{target_duration}秒。每个visual必须写出可拍摄的具体人物、空间、构图、光线和事件，并把该分镜dialogue中每一位说话人的台词原文直接写成“角色A说：‘XXXXX’”或“角色A说（具体语气）：‘XXXXX’”；action必须是具体动作链；不得出现“按剧情呈现”“自然运镜”“人物自然行动”“待补充”“同上”等占位内容。冲突升级和反转的数量必须服从原稿结构及用户二创方向，禁止为了凑模板强行添加。image_prompt只组合具体画面和统一画风；video_prompt逐行写明运镜、画面、动作、台词、声音、约束和项目画风。"
-        ),
+        );
+    let payload = json!({
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.35,
+        "stream": false
+    });
+    let attempt = crate::platform_media::video_remix_completion(
+        "二创剧情与分镜生成",
+        payload,
+        approved_quote,
     )
-    .await
+    .await?;
+    Ok(VideoRemixGeneration {
+        result: parse_text_completion_json(&attempt.response),
+        billing_task_id: attempt.task_id,
+    })
 }
 
 pub(crate) async fn generate_idea_canonical(

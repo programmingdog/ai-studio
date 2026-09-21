@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatInstantDateTime } from "@/lib/admin-date-time";
 
 export type CreditSyncReport = {
   at: string; enabled: boolean; cny_per_credit: number; updated_count: number; unchanged_count: number; skipped_count: number;
@@ -81,7 +82,7 @@ export function CreditPricingPanel({ token }: { token: string }) {
 export function CreditSyncResults({ report }: { report: CreditSyncReport }) {
   return <details className="credit-sync-results">
     <summary>{report.enabled ? `积分定价：更新 ${report.updated_count} 项，未变 ${report.unchanged_count} 项，跳过 ${report.skipped_count} 项` : "自动定价未启用，本次仅查询价格"}{report.errors.length > 0 && ` · ${report.errors.length} 条提示`}</summary>
-    <p className="supplier-pricing-note">{new Date(report.at).toLocaleString("zh-CN", { hour12: false })} · 本次比例：1 积分 = ¥{report.cny_per_credit}。WagaAI 报价按最低可用参数组合计算；AllAIIn 按模型目录积分报价换算。</p>
+    <p className="supplier-pricing-note">{formatInstantDateTime(report.at)} · 本次比例：1 积分 = ¥{report.cny_per_credit}。WagaAI 报价按最低可用参数组合计算；AllAIIn 按模型目录积分报价换算。</p>
     {report.errors.map((error, index) => <div className="test-warning" key={index}>{error}</div>)}
     {!!report.items.length && <div className="supplier-price-table"><table><thead><tr><th>模型 / 分辨率</th><th>最低人民币价</th><th>模型消耗积分（原 → 新）</th><th>渠道 / 说明</th></tr></thead><tbody>
       {report.items.map((item) => <tr key={`${item.model_id}:${item.resolution}`}><td>{item.provider_name} · {item.model_alias}<br /><code>{item.model_code}</code>{item.resolution && <><br />{item.resolution}</>}</td>

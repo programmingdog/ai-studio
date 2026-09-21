@@ -32,6 +32,7 @@ export interface PlatformUser {
   credit_balance: number;
   held_credits: number;
   available_credits: number;
+  overcommitted_credits?: number;
   created_at: string;
   updated_at: string;
 }
@@ -44,7 +45,30 @@ export interface PlatformTokenResult {
   user: PlatformUser;
 }
 
-export interface PlatformCreditBalance { balance: number; held: number; available: number }
+export interface PlatformCreditBalance { balance: number; held: number; available: number; overcommitted?: number }
+export interface PlatformCreditHold {
+  id: string;
+  type: "TASK_HOLD" | "WORKFLOW_RESERVATION";
+  reference_id: string;
+  title: string;
+  credits: number;
+  status: string;
+  task_id?: string;
+  local_task_id?: string;
+  item_count?: number;
+  remaining_items?: number;
+  created_at: string;
+  expires_at: string;
+  releasable: boolean;
+  detail: string;
+  action_hint: string;
+}
+export interface PlatformCreditHolds {
+  items: PlatformCreditHold[];
+  total: number;
+  releasable_total: number;
+  blocked_total: number;
+}
 export interface PlatformCreditPackage {
   id: string; code: string; name: string; description: string; base_credits: number; bonus_credits: number;
   total_credits: number; price_fen: number; currency: string; status: string; sort_order: number;
@@ -243,7 +267,17 @@ export async function logoutPlatform(): Promise<void> {
 export const getPlatformUser = () => authenticatedRequest<PlatformUser>("/users/me");
 export const updatePlatformUser = (input: Record<string, unknown>) => authenticatedRequest<PlatformUser>("/users/me", { method: "PATCH", body: JSON.stringify(input) });
 export const listCreditPackages = () => publicRequest<PlatformCreditPackage[]>("/credits/packages");
-export const getCreditBalance = () => authenticatedRequest<PlatformCreditBalance>("/credits/balance");
+export const getCreditBalance = async () => {
+  const result = await authenticatedRequest<PlatformCreditBalance>("/credits/balance");
+  return { ...result, available: Math.max(0, Number(result.available) || 0), overcommitted: Math.max(0, Number(result.overcommitted) || 0) };
+};
+export const listCreditHolds = () => authenticatedRequest<PlatformCreditHolds>("/credits/holds");
+export const releaseCreditHold = (hold: PlatformCreditHold) => authenticatedRequest<{ released: boolean; released_credits: number }>(
+  hold.type === "WORKFLOW_RESERVATION"
+    ? `/credits/holds/workflows/${encodeURIComponent(hold.reference_id)}/release`
+    : `/credits/holds/tasks/${encodeURIComponent(hold.id)}/release`,
+  { method: "POST" },
+);
 export interface ModelCreditQuote {
   provider_model_id: string; model_alias: string; model_code: string;
   capability: string; credits: number; resolution: string | null; seconds: number | null;

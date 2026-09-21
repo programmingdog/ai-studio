@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 import { UserRelationsModal } from "./UserRelationsModal";
 
 type UserRow = {
@@ -30,12 +31,6 @@ type UserRow = {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function formatCredits(value: number): string {
@@ -70,7 +65,7 @@ export function UsersPanel({ token }: { token: string }) {
       <td>{row.parent ? <button className="user-relation-link" onClick={() => setRelations({ userId: row.parent!.id, level: 1 })}>上级：{row.parent.display_name || row.parent.email || row.parent.phone || row.parent.id}</button> : <span>无上级</span>}{row.pid && <small className="cell-note">{row.pid}</small>}<div className="user-relation-counts"><button className="user-relation-link" onClick={() => setRelations({ userId: row.id, level: 1 })}>直接下级 {row.direct_count || 0} 人</button><button className="user-relation-link" onClick={() => setRelations({ userId: row.id, level: 2 })}>间接下级 {row.indirect_count || 0} 人</button></div></td>
       <td><strong className="credit-balance">{formatCredits(row.credit_balance)}</strong><small className="cell-note">可用 {formatCredits(row.available_credits)} · 占用 {formatCredits(row.held_credits)}</small></td>
       <td><span className={`status ${row.status === "ACTIVE" ? "good" : "bad"}`}>{row.status}</span></td>
-      <td>{formatDate(row.last_login_at)}</td><td>{formatDate(row.created_at)}</td>
+      <td>{formatDatabaseDateTime(row.last_login_at)}</td><td>{formatDatabaseDateTime(row.created_at)}</td>
       <td><div className="table-actions"><button className="secondary" onClick={() => setRelations({ userId: row.id, level: 1 })}>查看上下级</button><button className="secondary" onClick={() => setEditing(row)}>编辑资料</button><button className="secondary credit-action" onClick={() => setAdjusting(row)}>调整积分</button></div></td>
     </tr>)}</tbody></table></div> : <div className="empty-row">还没有用户</div>}
     {editing && <UserEditModal token={token} user={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load(); }} />}

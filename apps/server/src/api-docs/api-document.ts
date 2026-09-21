@@ -903,9 +903,16 @@ export function createApiDocument(): OpenAPIObject {
     },
     "/tasks/video-remix": {
       post: operation({ id: "createVideoRemix", tag: "模型任务", summary: "按二次创作功能固定价创建文本生成任务", security: true,
-        description: "服务端固定使用默认文本模型，并以后台配置的二次创作积分定价进行报价校验、预占和结算；同时用于剧本库和视频解析结果二创。",
+        description: "服务端固定使用默认文本模型，并以后台配置的二次创作积分定价进行报价校验与预占；客户端内容校验通过后才结算，校验失败则释放且可在同一次用户授权内静默重试。",
         body: { type: "object", required: ["idempotency_key", "payload", "expected_credits"], properties: { local_task_id: { type: "string", format: "uuid" }, idempotency_key: { type: "string" }, expected_credits: { type: "number", minimum: 0 }, payload: { type: "object", additionalProperties: true } } },
         success: ref("TaskRelayResult"),
+      }),
+    },
+    "/tasks/video-remix/{taskId}/finalize": {
+      post: operation({ id: "finalizeVideoRemix", tag: "模型任务", summary: "确认二创结果是否通过客户端内容校验", security: true,
+        description: "accepted=true 时结算唯一一次积分；accepted=false 时释放本次积分占用，失败结果不扣分。重复提交按任务终态幂等处理。",
+        body: { type: "object", required: ["accepted"], properties: { accepted: { type: "boolean" }, failure: { type: "string" } } },
+        success: ref("Task"),
       }),
     },
     "/tasks/workflow-quotes": {

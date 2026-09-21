@@ -74,3 +74,9 @@ test('Windows installer check reads the renamed UTF-8 configuration without moji
   assert.equal((installer.match(/-Encoding UTF8/g) || []).length, 3);
   assert.match(installer, /tauri\.conf\.json[^\r\n]*-Encoding UTF8 \| ConvertFrom-Json/);
 });
+
+test('Windows installer limits Rust release compilation on memory-constrained builders', () => {
+  const installer = fs.readFileSync(path.join(root, 'build-windows-installer.bat'), 'utf8');
+  assert.match(installer, /set "CARGO_BUILD_JOBS=1"/);
+  assert.match(installer, /set "CARGO_INCREMENTAL=0"/);
+});

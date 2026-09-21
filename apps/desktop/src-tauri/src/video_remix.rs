@@ -11,7 +11,8 @@ use std::{
 
 use crate::project::{manager, registry};
 
-const MAX_GENERATION_ATTEMPTS: usize = 3;
+const MAX_AUTOMATIC_RETRIES: usize = 3;
+const MAX_GENERATION_ATTEMPTS: usize = MAX_AUTOMATIC_RETRIES + 1;
 
 #[derive(Debug, PartialEq)]
 enum RemixAttemptFailure {
@@ -36,6 +37,13 @@ fn evaluate_remix_attempt(
             }
         }
     }
+}
+
+fn retryable_request_failure(failure: &str) -> bool {
+    serde_json::from_str::<Value>(failure)
+        .ok()
+        .and_then(|value| value.get("retryable").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 fn default_storyboard_duration_mode() -> String {
@@ -1224,13 +1232,25 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             finish_failed(&app, &task_id, "二次创作来源内容为空".to_owned());
             return;
         }
+        update_progress(&app, &task_id, 0.08, "正在确认本次二创所需积分");
+        let approved_quote = match crate::platform_media::confirmed_video_remix_quote(
+            "二创剧情与分镜生成",
+        )
+        .await
+        {
+            Ok(quote) => quote,
+            Err(error) => {
+                finish_failed(&app, &task_id, error);
+                return;
+            }
+        };
         let mut revision_note: Option<String> = None;
         for attempt in 1..=MAX_GENERATION_ATTEMPTS {
             update_progress(
                 &app,
                 &task_id,
-                0.12 + (attempt as f64 - 1.0) * 0.22,
-                &format!("正在准备二创第{attempt}次生成；查询并确认积分后开始创作"),
+                0.14 + (attempt as f64 - 1.0) * 0.18,
+                "正在生成并检查二创剧情与分镜",
             );
             let generated = crate::ai::generate_video_remix(
                 &app,
@@ -1243,10 +1263,37 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                 &input.visual_style,
                 &input.language,
                 revision_note.as_deref(),
+                &approved_quote,
             )
             .await;
-            match evaluate_remix_attempt(generated, |value| validate_result(value, &input)) {
+            let generation = match generated {
+                Ok(generation) => generation,
+                Err(error) if attempt < MAX_GENERATION_ATTEMPTS && retryable_request_failure(&error) => {
+                    revision_note = Some("上一次请求未能完成，请重新完整生成并严格输出有效JSON".to_owned());
+                    continue;
+                }
+                Err(error) => {
+                    finish_failed(&app, &task_id, error);
+                    return;
+                }
+            };
+            let billing_task_id = generation.billing_task_id.clone();
+            match evaluate_remix_attempt(generation.result, |value| validate_result(value, &input)) {
                 Ok(result) => {
+                    if let Err(error) = crate::platform_media::finalize_video_remix(
+                        &billing_task_id,
+                        true,
+                        None,
+                    )
+                    .await
+                    {
+                        finish_failed(
+                            &app,
+                            &task_id,
+                            format!("二创结果已生成，但积分结算状态暂时无法确认：{error}。请稍后手动重启任务。"),
+                        );
+                        return;
+                    }
                     if let (Ok(connection), Ok(result_json)) =
                         (open(&app), serde_json::to_string(&result))
                     {
@@ -1261,10 +1308,34 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
                     return;
                 }
                 Err(RemixAttemptFailure::Request(error)) => {
+                    if let Err(finalize_error) = crate::platform_media::finalize_video_remix(
+                        &billing_task_id,
+                        false,
+                        Some("CLIENT_RESPONSE_INVALID"),
+                    )
+                    .await
+                    {
+                        finish_failed(&app, &task_id, format!("{error}；同时暂时无法确认失败任务未扣分：{finalize_error}。请稍后手动重启任务。"));
+                        return;
+                    }
+                    if attempt < MAX_GENERATION_ATTEMPTS && retryable_request_failure(&error) {
+                        revision_note = Some(error);
+                        continue;
+                    }
                     finish_failed(&app, &task_id, error);
                     return;
                 }
                 Err(RemixAttemptFailure::Content(error)) => {
+                    if let Err(finalize_error) = crate::platform_media::finalize_video_remix(
+                        &billing_task_id,
+                        false,
+                        Some("CLIENT_CONTENT_INVALID"),
+                    )
+                    .await
+                    {
+                        finish_failed(&app, &task_id, format!("二创结果校验未通过，且暂时无法确认失败任务未扣分：{finalize_error}。请稍后手动重启任务。"));
+                        return;
+                    }
                     revision_note = Some(error);
                 }
             }
@@ -1274,7 +1345,7 @@ fn spawn_task(app: tauri::AppHandle, task_id: String) {
             &task_id,
             json!({
                 "code": "VIDEO_REMIX_CONTENT_INVALID",
-                "message": format!("模型结果共尝试{MAX_GENERATION_ATTEMPTS}次（含首次生成）后仍未通过内容校验：{}", revision_note.unwrap_or_else(|| "未知错误".to_owned())),
+                "message": format!("首次生成及{MAX_AUTOMATIC_RETRIES}次自动重试均未成功：{}。失败尝试均未扣分，请手动重启任务。", revision_note.unwrap_or_else(|| "未知错误".to_owned())),
                 "retryable": true,
                 "stage": "content_validation",
             }).to_string(),
@@ -1556,6 +1627,15 @@ mod tests {
             let result = evaluate_remix_attempt(Err(failure.clone()), |_| panic!("no model result to validate"));
             assert_eq!(result, Err(RemixAttemptFailure::Request(failure)));
         }
+    }
+
+    #[test]
+    fn automatic_retry_policy_is_limited_to_three_silent_retries() {
+        assert_eq!(MAX_AUTOMATIC_RETRIES, 3);
+        assert_eq!(MAX_GENERATION_ATTEMPTS, 4);
+        assert!(retryable_request_failure(&json!({"retryable":true}).to_string()));
+        assert!(!retryable_request_failure(&json!({"retryable":false}).to_string()));
+        assert!(!retryable_request_failure("network result unknown"));
     }
 
     #[test]

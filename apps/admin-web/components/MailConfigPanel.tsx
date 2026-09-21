@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type MailConfig = {
   api_url: string; mail_from: string; password_configured: boolean;
@@ -78,7 +79,7 @@ export function MailConfigPanel({ token }: { token: string }) {
         <label className="mail-config-status">服务状态<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as MailConfig["status"] })}><option value="DISABLED">停用</option><option value="ACTIVE">启用</option></select></label>
       </fieldset>
       <p className="supplier-pricing-note">保存后立即生效。SMTP 使用完整发件邮箱作为认证账号，POP/IMAP 收信配置无需填写。启用前需填写发件邮箱和密码；修改发件方式、服务器、端口、加密方式或发件邮箱时需重新填写密码。停用仅暂停验证码发件，不影响已有账户登录。</p>
-      {config && <small className="mail-config-updated">最近更新：{new Date(config.updated_at).toLocaleString("zh-CN", { hour12: false })}</small>}
+      {config && <small className="mail-config-updated">最近更新：{formatDatabaseDateTime(config.updated_at)}</small>}
       <div className="mail-config-actions"><button className="primary" disabled={!config || busy}>{saving ? "加密保存中…" : "保存邮箱配置"}</button><button type="button" className="secondary" disabled={busy} onClick={() => void load()}>重新读取（放弃未保存修改）</button></div>
     </form>
   </section>;

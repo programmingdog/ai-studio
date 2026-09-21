@@ -56,7 +56,7 @@ interface WorkflowQuoteItemRow extends RowDataPacket {
 // Synchronous image models return base64 image bytes in their JSON response.
 const responseLimit = 64 * 1024 * 1024;
 const providerVideoRequestLimit = 48_000_000;
-const activeProviderTaskStatuses = ["ACCEPTED", "CREDIT_RESERVED", "SUBMITTING", "PROVIDER_ACCEPTED", "PROCESSING", "UNKNOWN"];
+const activeProviderTaskStatuses = ["ACCEPTED", "CREDIT_RESERVED", "SUBMITTING", "PROVIDER_ACCEPTED", "PROCESSING", "UNKNOWN", "CLIENT_VALIDATION_PENDING"];
 const workflowQuoteLifetimeDays = 30;
 const extractionBillingModes = new Set<ExtractionBillingMode>(["OVERALL", "PER_SEGMENT"]);
 
@@ -517,7 +517,33 @@ export class ModelGatewayService {
       expectedCredits: input.expectedCredits,
       creditOverride: Number(config.remix_credit_cost),
       taskType: "VIDEO_REMIX",
+      // A provider response is not a successful remix until the desktop has
+      // parsed and validated the complete story/canonical payload. Keep the
+      // hold uncaptured until that validation finishes so malformed responses
+      // can be retried without charging the user.
+      deferSettlement: true,
     });
+  }
+
+  async finalizeVideoRemix(userId: string, taskId: string, accepted: boolean, failure = "CLIENT_CONTENT_INVALID"): Promise<Record<string, unknown>> {
+    const rows = await this.database.query<TaskRow[]>(
+      "SELECT * FROM ai_tasks WHERE id = ? AND user_id = ? AND task_type = 'VIDEO_REMIX' LIMIT 1",
+      [taskId, userId],
+    );
+    const task = rows[0];
+    if (!task) throw new NotFoundException("二创计费任务不存在");
+    if (task.status === "CLIENT_VALIDATION_PENDING") {
+      if (accepted) await this.settle(taskId);
+      else await this.release(taskId, "FAILED", failure || "CLIENT_CONTENT_INVALID");
+    } else if ((accepted && task.status !== "SUCCEEDED") || (!accepted && !["FAILED", "CANCELED"].includes(task.status))) {
+      throw new ConflictException("二创计费任务状态已变化，请勿重复提交");
+    }
+    const finalized = await this.get(userId, taskId);
+    const status = String(finalized.status || "");
+    if ((accepted && status !== "SUCCEEDED") || (!accepted && !["FAILED", "CANCELED"].includes(status))) {
+      throw new ConflictException("二创计费任务已由另一结果完成，请刷新任务状态");
+    }
+    return finalized;
   }
 
   async scriptAnalysisQuote(): Promise<Record<string, unknown>> {
@@ -1091,6 +1117,7 @@ export class ModelGatewayService {
       const [tasks] = await connection.query<TaskRow[]>("SELECT * FROM ai_tasks WHERE id = ? LIMIT 1 FOR UPDATE", [taskId]);
       const task = tasks[0];
       const [holds] = await connection.query<RowDataPacket[]>("SELECT status FROM credit_holds WHERE task_id = ? LIMIT 1 FOR UPDATE", [taskId]);
+      if (!task || ["SUCCEEDED", "FAILED", "CANCELED"].includes(task.status)) return;
       if (task?.workflow_quote_approval_id && task.workflow_quote_item_key && holds[0]?.status === "ACTIVE") {
         await connection.execute(
           `UPDATE workflow_quote_approvals qa
@@ -1112,6 +1139,7 @@ export class ModelGatewayService {
       const [tasks] = await connection.query<TaskRow[]>("SELECT t.*, pm.capability FROM ai_tasks t INNER JOIN provider_models pm ON pm.id = t.provider_model_id WHERE t.id = ? LIMIT 1 FOR UPDATE", [taskId]); const task = tasks[0];
       if (!task) return;
       const [holds] = await connection.query<RowDataPacket[]>("SELECT status FROM credit_holds WHERE task_id = ? LIMIT 1 FOR UPDATE", [taskId]);
+      if (["FAILED", "CANCELED"].includes(task.status)) return;
       if (!holds.length || holds[0]!.status !== "ACTIVE") return;
       const amount = Number(task.estimated_credits);
       const [accounts] = await connection.query<RowDataPacket[]>("SELECT id FROM ledger_accounts WHERE owner_type = 'USER' AND owner_id = ? AND account_type = 'AVAILABLE' AND currency = 'CREDIT' LIMIT 1 FOR UPDATE", [task.user_id]);
@@ -1178,6 +1206,7 @@ export class ModelGatewayService {
     workflowQuoteApprovalId?: string; workflowQuoteItemKey?: string;
     providerTimeoutMs?: number;
     extractionBilling?: ExtractionBillingInput;
+    deferSettlement?: boolean;
   }): Promise<Record<string, unknown>> {
     const payload = asObject(input.payload); if (!Object.keys(payload).length) throw new BadRequestException("payload 必须是非空 JSON 对象");
     const temporaryReferenceTokens = this.referenceImages?.ownedTokens(payload, userId) || [];
@@ -1422,7 +1451,8 @@ export class ModelGatewayService {
       }
       if (!Number(target.supports_async_tasks) && input.validateResponse) input.validateResponse(result.value);
       const remoteTaskId = findString(result.value, ["task_id", "taskId", "id", "request_id", "prediction_id"]);
-      let status = Number(target.supports_async_tasks) ? upstreamStatus(result.value, "PROVIDER_ACCEPTED") : "SUCCEEDED";
+      let status = Number(target.supports_async_tasks) ? upstreamStatus(result.value, "PROVIDER_ACCEPTED")
+        : input.deferSettlement ? "CLIENT_VALIDATION_PENDING" : "SUCCEEDED";
       if (status === "SUCCEEDED" && target.capability === "VIDEO_UNDERSTANDING") {
         assertVideoUnderstandingResponse(result.value);
       }

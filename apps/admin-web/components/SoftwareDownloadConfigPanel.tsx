@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type DownloadConfig = {
   windows_download_enabled: boolean;
@@ -60,7 +61,7 @@ export function SoftwareDownloadConfigPanel({ token }: { token: string }) {
         <article className={config.macos_download_enabled ? "enabled" : ""}><label className="download-version-switch"><input type="checkbox" checked={config.macos_download_enabled} onChange={event => setConfig({ ...config, macos_download_enabled: event.target.checked })} /><span><strong>开放 macOS 版本</strong><small>开启后在下载页面显示 macOS 下载按钮</small></span></label><label>macOS 安装包下载地址<input type="url" maxLength={1000} value={config.macos_download_url} onChange={event => setConfig({ ...config, macos_download_url: event.target.value })} placeholder="https://download.example.com/dreamotion.dmg" /><small>支持 DMG、PKG 或完整 HTTPS 下载链接。</small></label></article>
       </fieldset>
       <p>可以暂时关闭全部版本，已填写的安装包地址会保留，重新开启后即可继续使用。</p>
-      {config.updated_at && <small className="software-download-updated">最近更新：{new Date(config.updated_at).toLocaleString("zh-CN", { hour12: false })}</small>}
+      {config.updated_at && <small className="software-download-updated">最近更新：{formatDatabaseDateTime(config.updated_at)}</small>}
       <div className="software-download-actions"><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存安装包配置"}</button><button className="secondary" type="button" disabled={saving} onClick={() => void load()}>重新读取</button></div>
     </form>}
   </section>;

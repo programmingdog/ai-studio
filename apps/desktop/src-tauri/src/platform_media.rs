@@ -126,6 +126,7 @@ pub async fn generate(
         payload,
         operation,
         workflow,
+        None,
     )
     .await
 }
@@ -177,6 +178,7 @@ pub async fn text_completion(operation: &str, payload: Value) -> Result<Value, S
         payload,
         operation,
         None,
+        None,
     )
     .await
 }
@@ -218,8 +220,17 @@ pub async fn quote(
     .await
 }
 
-pub async fn approve_workflow_quote(api_base: &str, items: Value) -> Result<Value, String> {
-    authenticated_json_request(api_base, "/tasks/workflow-quotes", json!({"items": items})).await
+pub async fn approve_workflow_quote(
+    api_base: &str,
+    items: Value,
+    display_name: &str,
+) -> Result<Value, String> {
+    authenticated_json_request(
+        api_base,
+        "/tasks/workflow-quotes",
+        json!({"items": items, "display_name": display_name}),
+    )
+    .await
 }
 
 pub async fn recommended_video_concurrency(api_base: &str) -> Result<usize, String> {
@@ -506,8 +517,21 @@ async fn request_quote(
     unreachable!("quote retry loop always returns on its final attempt")
 }
 
-pub async fn video_remix_completion(operation: &str, payload: Value) -> Result<Value, String> {
-    generate_request(
+pub(crate) struct VideoRemixAttempt {
+    pub task_id: String,
+    pub response: Value,
+}
+
+pub async fn confirmed_video_remix_quote(operation: &str) -> Result<Value, String> {
+    confirmed_quote("", None, Some("VIDEO_REMIX"), &json!({}), operation).await
+}
+
+pub async fn video_remix_completion(
+    operation: &str,
+    payload: Value,
+    approved_quote: &Value,
+) -> Result<VideoRemixAttempt, String> {
+    let result = generate_request(
         "",
         None,
         Some("VIDEO_REMIX"),
@@ -515,8 +539,43 @@ pub async fn video_remix_completion(operation: &str, payload: Value) -> Result<V
         payload,
         operation,
         None,
+        Some(approved_quote.clone()),
     )
-    .await
+    .await?;
+    let task_id = result
+        .pointer("/task/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "二创任务没有返回计费任务编号".to_owned())?
+        .to_owned();
+    let response = result
+        .get("provider_response")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .ok_or_else(|| "二创任务没有返回模型结果".to_owned())?;
+    Ok(VideoRemixAttempt { task_id, response })
+}
+
+pub async fn finalize_video_remix(
+    task_id: &str,
+    accepted: bool,
+    failure: Option<&str>,
+) -> Result<(), String> {
+    let path = format!("/tasks/video-remix/{task_id}/finalize");
+    let payload = json!({"accepted": accepted, "failure": failure});
+    let mut last_error = String::new();
+    // Finalization is idempotent for the same task and decision. Retry a lost
+    // acknowledgement so a completed charge is not mistaken for a failure and
+    // manually submitted again.
+    for attempt in 1..=3 {
+        match authenticated_json_request("", &path, payload.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(error) => last_error = error,
+        }
+        if attempt < 3 {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        }
+    }
+    Err(last_error)
 }
 
 fn quote_response_failure(failure: String) -> String {
@@ -574,6 +633,7 @@ async fn generate_request(
     payload: Value,
     operation: &str,
     workflow: Option<(&std::path::Path, &str, String)>,
+    approved_quote: Option<Value>,
 ) -> Result<Value, String> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -682,6 +742,8 @@ async fn generate_request(
             crate::workflow_credit::reserve_legacy(root, id, key, &value, local_task_id)?;
             value
         }
+    } else if let Some(quote) = approved_quote {
+        quote
     } else {
         confirmed_quote(&base, provider_model_id, capability, &payload, operation).await?
     };
@@ -768,6 +830,12 @@ async fn generate_request(
             }
         }
     };
+    if capability == Some("VIDEO_REMIX")
+        && task_status(&created) == "CLIENT_VALIDATION_PENDING"
+        && created.get("provider_response").is_some()
+    {
+        return Ok(created);
+    }
     let result = wait_for_result(&client, &base, &token, created, &workflow, local_task_id).await?;
     if let Some((root, _, _)) = &workflow {
         crate::workflow_credit::save_response(root, local_task_id, &result)

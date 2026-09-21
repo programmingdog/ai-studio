@@ -59,6 +59,17 @@ export class ModelGatewayController {
     });
   }
 
+  @Post("video-remix/:taskId/finalize")
+  finalizeVideoRemix(@Req() request: UserRequest, @Param("taskId") taskId: string, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.gateway.finalizeVideoRemix(
+      request.user.sub,
+      taskId,
+      body.accepted === true,
+      typeof body.failure === "string" ? body.failure.slice(0, 100) : undefined,
+    );
+  }
+
   @Post("workflow-quotes")
   approveWorkflowQuote(@Req() request: UserRequest, @Body() input: unknown) {
     const body = asRecord(input);

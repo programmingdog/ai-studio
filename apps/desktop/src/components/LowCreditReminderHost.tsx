@@ -27,7 +27,8 @@ export function LowCreditReminderHost() {
   // Account-scoped cache avoids displaying a previous user's balance at login.
   // Payment invalidation of ["credit-balance"] also refreshes this query.
   const balance = useQuery({ queryKey: ["credit-balance", userId], queryFn: getCreditBalance, enabled: Boolean(userId), refetchInterval: userId ? 15_000 : false, retry: false });
-  const available = !balance.isError && userId ? balance.data?.available : undefined;
+  const available = !balance.isError && userId && balance.data?.available !== undefined
+    ? Math.max(0, Number(balance.data.available)) : undefined;
   const [state, setState] = useState(initialLowCreditState);
   const [blocked, setBlocked] = useState(true);
   const [purchaseUserId, setPurchaseUserId] = useState<string | null>(null);

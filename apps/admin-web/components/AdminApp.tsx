@@ -22,6 +22,7 @@ import { ScriptAnalysisConfigPanel, ScriptAnalysisPricingPanel } from "@/compone
 import { ClientRuntimeConfigPanel } from "@/components/ClientRuntimeConfigPanel";
 import { ScriptLibraryPanel } from "@/components/ScriptLibraryPanel";
 import { FinancialOverview } from "@/components/FinancialOverview";
+import { formatDatabaseDateTime, formatInstantDateTime } from "@/lib/admin-date-time";
 
 type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
 type NavigationItem = { id: View; label: string; eyebrow: string };
@@ -90,12 +91,6 @@ const navigationGroups: NavigationGroup[] = [
   ] },
 ];
 const navigation = [...primaryNavigation, ...navigationGroups.flatMap((group) => group.items)];
-
-function formatDate(value: unknown) {
-  if (!value) return "—";
-  const date = new Date(String(value));
-  return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
-}
 
 function statusTone(status: unknown) {
   const value = String(status || "").toUpperCase();
@@ -186,7 +181,7 @@ export function AdminApp() {
           {view === "credit-packages" && <CreditsPanel token={token} section="packages" />}
           {view === "orders" && <PageTabs label="交易订单" description="统一查看积分购买业务单和支付渠道订单。" tabs={[
             { id: "credit-purchases", label: "积分购买", content: <CreditsPanel token={token} section="purchases" /> },
-            { id: "payments", label: "支付订单", content: <DataPanel token={token} path="/admin/payments" empty="还没有微信支付订单" columns={["out_trade_no", "description", "amount_fen", "status", "paid_at", "created_at"]} /> },
+            { id: "payments", label: "支付订单", content: <DataPanel token={token} path="/admin/payments" empty="还没有微信支付订单" columns={["out_trade_no", "description", "amount_fen", "status", "paid_at", "created_at"]} instantColumns={["paid_at"]} /> },
           ]} />}
           {view === "credit-consumptions" && <CreditsPanel token={token} section="consumptions" />}
           {view === "integrations" && <PageTabs label="外部渠道集成" description="敏感凭据集中维护；注册、登录和支付页面只引用这里的连接状态。" tabs={[
@@ -331,13 +326,13 @@ function CreateConfigModal({ token, onClose, onCreated }: { token: string; onClo
   return <div className="modal-backdrop"><form className="modal" onSubmit={submit}><header><div><span className="kicker">NEW CONFIG</span><h2>新建版本化配置</h2></div><button type="button" onClick={onClose}>×</button></header><div className="two-columns"><label>配置键<input value={form.config_key} onChange={(event) => setForm({ ...form, config_key: event.target.value })} placeholder="prompt.storyboard.default" required /></label><label>分类<select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option>PROMPT</option><option>GENERATION</option><option>PIPELINE</option></select></label></div><label>名称<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>说明<input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>初始 JSON<textarea value={form.value} onChange={(event) => setForm({ ...form, value: event.target.value })} /></label>{error && <div className="form-error">{error}</div>}<footer><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary">创建草稿</button></footer></form></div>;
 }
 
-function DataPanel({ token, path, empty, columns }: { token: string; path: string; empty: string; columns: string[] }) {
+function DataPanel({ token, path, empty, columns, instantColumns = [] }: { token: string; path: string; empty: string; columns: string[]; instantColumns?: string[] }) {
   const [rows, setRows] = useState<GenericRow[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => { apiRequest<GenericRow[]>(path, {}, token).then(setRows).catch((reason) => setError(String(reason))); }, [path, token]);
   if (error) return <ErrorCard message={error} />;
   if (!rows) return <LoadingCard />;
-  return <section className="section-card table-card"><header><div><span className="kicker">LATEST RECORDS</span><h2>最近记录</h2><p>仅展示必要业务元数据，不展示任务提示词或媒体结果。</p></div><span className="record-count">{rows.length} 条</span></header>{rows.length ? <div className="table-scroll"><table><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || index)}>{columns.map((column) => <td key={column}>{column.includes("status") ? <span className={`status ${statusTone(row[column])}`}>{String(row[column] ?? "—")}</span> : column.endsWith("_at") ? formatDate(row[column]) : column === "amount_fen" ? `¥${(Number(row[column] || 0) / 100).toFixed(2)}` : String(row[column] ?? "—")}</td>)}</tr>)}</tbody></table></div> : <div className="empty-row">{empty}</div>}</section>;
+  return <section className="section-card table-card"><header><div><span className="kicker">LATEST RECORDS</span><h2>最近记录</h2><p>仅展示必要业务元数据，不展示任务提示词或媒体结果。</p></div><span className="record-count">{rows.length} 条</span></header>{rows.length ? <div className="table-scroll"><table><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || index)}>{columns.map((column) => <td key={column}>{column.includes("status") ? <span className={`status ${statusTone(row[column])}`}>{String(row[column] ?? "—")}</span> : column.endsWith("_at") ? (instantColumns.includes(column) ? formatInstantDateTime(row[column]) : formatDatabaseDateTime(row[column])) : column === "amount_fen" ? `¥${(Number(row[column] || 0) / 100).toFixed(2)}` : String(row[column] ?? "—")}</td>)}</tr>)}</tbody></table></div> : <div className="empty-row">{empty}</div>}</section>;
 }
 
 function LoadingCard() { return <div className="loading-card"><span className="spinner" />正在读取平台数据…</div>; }

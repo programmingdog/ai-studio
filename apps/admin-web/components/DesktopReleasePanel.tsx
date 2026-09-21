@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type Artifact = { id?: string; target: "windows" | "darwin"; arch: "x86_64" | "aarch64"; url: string; signature: string };
 type Release = {
@@ -27,10 +28,7 @@ const artifactOptions: Array<{ target: Artifact["target"]; arch: Artifact["arch"
 type ReleaseForm = Omit<Release, "id" | "status" | "created_at" | "updated_at" | "published_at">;
 const emptyForm = (): ReleaseForm => ({ version: "", channel: "stable", notes: "", min_supported_version: "0.0.0", rollout_percent: 100, artifacts: [] });
 
-function time(value: string | null) {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
+const time = (value: string | null) => formatDatabaseDateTime(value);
 
 function statusLabel(status: Release["status"]) {
   return status === "DRAFT" ? "草稿" : status === "PUBLISHED" ? "已发布" : "已归档";

@@ -123,7 +123,8 @@ export function buildFinancialReport(rows: Array<Record<string, unknown>>, now =
   };
 }
 
-const chinaDayStartSql = "DATE_SUB(DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)), INTERVAL 29 DAY), INTERVAL 8 HOUR)";
+const chinaUtcDayStartSql = "DATE_SUB(DATE_SUB(DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)), INTERVAL 29 DAY), INTERVAL 8 HOUR)";
+const chinaWallDayStartSql = "DATE_SUB(DATE(CURRENT_TIMESTAMP()), INTERVAL 29 DAY)";
 
 function numberValue(value: unknown): number {
   const result = Number(value || 0);
@@ -321,14 +322,14 @@ export class AdminService {
       this.database.query<CountRow[]>(`
       SELECT
         (SELECT COUNT(*) FROM users) AS users,
-        (SELECT COUNT(*) FROM users WHERE created_at >= ${chinaDayStartSql}) AS new_users_30d,
+        (SELECT COUNT(*) FROM users WHERE created_at >= ${chinaWallDayStartSql}) AS new_users_30d,
         (SELECT COUNT(*) FROM ai_tasks WHERE status IN ('ACCEPTED','CREDIT_RESERVED','SUBMITTING','PROVIDER_ACCEPTED','PROCESSING','UNKNOWN')) AS active_tasks,
         (SELECT COUNT(*) FROM payment_orders WHERE status = 'PAID') AS paid_orders,
         (SELECT COUNT(*) FROM config_versions WHERE status = 'PUBLISHED') AS published_configs,
         (SELECT COUNT(*) FROM providers WHERE status = 'ACTIVE') AS enabled_providers,
         (SELECT COALESCE(SUM(COALESCE(payer_paid_amount_fen, amount_fen)), 0) FROM payment_orders WHERE status = 'PAID') AS revenue_fen,
         (SELECT COUNT(*) FROM referral_rewards) AS invitation_total,
-        (SELECT COUNT(*) FROM referral_rewards WHERE created_at >= ${chinaDayStartSql}) AS invitation_30d,
+        (SELECT COUNT(*) FROM referral_rewards WHERE created_at >= ${chinaWallDayStartSql}) AS invitation_30d,
         (SELECT COALESCE(SUM(status = 'PENDING_PAYMENT'), 0) FROM referral_rewards) AS invitation_pending,
         (SELECT COALESCE(SUM(status = 'REWARDED'), 0) FROM referral_rewards) AS invitation_rewarded,
         (SELECT COALESCE(SUM(status = 'LIMITED'), 0) FROM referral_rewards) AS invitation_limited,
@@ -337,7 +338,7 @@ export class AdminService {
         (SELECT COALESCE(SUM(amount_fen), 0) FROM commission_records) AS commission_total_fen,
         (SELECT COALESCE(SUM(CASE WHEN level = 1 THEN amount_fen ELSE 0 END), 0) FROM commission_records) AS commission_direct_fen,
         (SELECT COALESCE(SUM(CASE WHEN level = 2 THEN amount_fen ELSE 0 END), 0) FROM commission_records) AS commission_indirect_fen,
-        (SELECT COALESCE(SUM(amount_fen), 0) FROM commission_records WHERE created_at >= ${chinaDayStartSql}) AS commission_30d_fen,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM commission_records WHERE created_at >= ${chinaWallDayStartSql}) AS commission_30d_fen,
         (SELECT COALESCE(SUM(available_fen), 0) FROM commission_wallets) AS commission_available_fen,
         (SELECT COALESCE(SUM(frozen_fen), 0) FROM commission_wallets) AS commission_frozen_fen,
         (SELECT COUNT(*) FROM withdrawal_applications) AS withdrawal_total,
@@ -350,21 +351,21 @@ export class AdminService {
         (SELECT COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED','PROCESSING') THEN amount_fen ELSE 0 END), 0) FROM withdrawal_applications) AS withdrawal_waiting_fen,
         (SELECT COUNT(*) FROM manual_payout_records) AS payout_total,
         (SELECT COALESCE(SUM(amount_fen), 0) FROM manual_payout_records) AS payout_total_fen,
-        (SELECT COUNT(*) FROM manual_payout_records WHERE created_at >= ${chinaDayStartSql}) AS payout_30d_count,
-        (SELECT COALESCE(SUM(amount_fen), 0) FROM manual_payout_records WHERE created_at >= ${chinaDayStartSql}) AS payout_30d_fen
+        (SELECT COUNT(*) FROM manual_payout_records WHERE created_at >= ${chinaWallDayStartSql}) AS payout_30d_count,
+        (SELECT COALESCE(SUM(amount_fen), 0) FROM manual_payout_records WHERE created_at >= ${chinaWallDayStartSql}) AS payout_30d_fen
     `),
       this.database.query<DashboardTrendRow[]>(`
         SELECT DATE_FORMAT(DATE_ADD(paid_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS date_key,
                COALESCE(SUM(COALESCE(payer_paid_amount_fen, amount_fen)), 0) AS value,
                COUNT(*) AS count
         FROM payment_orders
-        WHERE status = 'PAID' AND paid_at >= ${chinaDayStartSql}
+        WHERE status = 'PAID' AND paid_at >= ${chinaUtcDayStartSql}
         GROUP BY date_key ORDER BY date_key
       `),
       this.database.query<DashboardTrendRow[]>(`
-        SELECT DATE_FORMAT(DATE_ADD(created_at, INTERVAL 8 HOUR), '%Y-%m-%d') AS date_key,
+        SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS date_key,
                COUNT(*) AS value, COUNT(*) AS count
-        FROM users WHERE created_at >= ${chinaDayStartSql}
+        FROM users WHERE created_at >= ${chinaWallDayStartSql}
         GROUP BY date_key ORDER BY date_key
       `),
       this.database.query<RowDataPacket[]>(`
@@ -442,15 +443,16 @@ export class AdminService {
   }
 
   async financials(): Promise<Record<string, unknown>> {
-    const dateExpression = (column: string) => `DATE_FORMAT(DATE_ADD(${column}, INTERVAL 8 HOUR), '%Y-%m-%d')`;
+    const utcDateExpression = (column: string) => `DATE_FORMAT(DATE_ADD(${column}, INTERVAL 8 HOUR), '%Y-%m-%d')`;
+    const wallDateExpression = (column: string) => `DATE_FORMAT(${column}, '%Y-%m-%d')`;
     const [cashRows, consumptionRows, commissionRows, payoutRows, categoryRows, capabilityRows, liabilityRows] = await Promise.all([
       this.database.query<RowDataPacket[]>(`
-        SELECT ${dateExpression("COALESCE(paid_at, updated_at)")} date,
+        SELECT DATE_FORMAT(CASE WHEN paid_at IS NOT NULL THEN DATE_ADD(paid_at, INTERVAL 8 HOUR) ELSE updated_at END, '%Y-%m-%d') date,
                SUM(COALESCE(payer_paid_amount_fen, amount_fen)) cash_revenue_fen,
                COUNT(*) paid_orders
         FROM payment_orders WHERE status='PAID' GROUP BY date ORDER BY date`),
       this.database.query<RowDataPacket[]>(`
-        SELECT ${dateExpression("occurred_at")} date,
+        SELECT ${utcDateExpression("occurred_at")} date,
                SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL THEN ROUND(credits_consumed * revenue_cny_per_credit * 100) ELSE 0 END) recognized_revenue_fen,
                SUM(CASE WHEN revenue_cny_per_credit IS NOT NULL AND cost_credits IS NOT NULL THEN ROUND(cost_credits * revenue_cny_per_credit * 100) ELSE 0 END) model_cost_fen,
                SUM(credits_consumed) consumed_credits, COUNT(*) consumption_count,
@@ -458,10 +460,10 @@ export class AdminService {
                SUM(revenue_cny_per_credit IS NULL) unpriced_records
         FROM credit_consumption_records WHERE status='CONFIRMED' GROUP BY date ORDER BY date`),
       this.database.query<RowDataPacket[]>(`
-        SELECT ${dateExpression("created_at")} date, SUM(amount_fen) commission_fen
+        SELECT ${wallDateExpression("created_at")} date, SUM(amount_fen) commission_fen
         FROM commission_records GROUP BY date ORDER BY date`),
       this.database.query<RowDataPacket[]>(`
-        SELECT ${dateExpression("created_at")} date, SUM(amount_fen) payout_fen
+        SELECT ${wallDateExpression("created_at")} date, SUM(amount_fen) payout_fen
         FROM manual_payout_records GROUP BY date ORDER BY date`),
       this.database.query<RowDataPacket[]>(`
         SELECT category name, COUNT(*) consumption_count, SUM(credits_consumed) consumed_credits,

@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type IpRule = {
   id: string; cidr: string; address_family: number; prefix_length: number; note: string;
@@ -78,7 +79,7 @@ export function IpAccessRulesPanel({ token }: { token: string }) {
     {loading ? <div className="loading-card"><span className="spinner" />正在读取 IP 风控规则…</div> :
       <div className="table-scroll ip-access-table"><table><thead><tr><th>IP / 网段</th><th>类型</th><th>备注</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
         {!data?.rules.length && <tr><td className="empty-row" colSpan={6}>暂未添加 IP 风控规则</td></tr>}
-        {data?.rules.map(rule => <tr key={rule.id}><td><code>{rule.cidr}</code></td><td>IPv{rule.address_family}</td><td className="ip-access-note">{rule.note || "—"}</td><td><span className={`status ${rule.enabled ? "bad" : "warn"}`}>{rule.enabled ? "拦截中" : "已停用"}</span></td><td>{new Date(rule.updated_at).toLocaleString("zh-CN", { hour12: false })}</td><td><div className="table-actions"><button className="secondary" disabled={Boolean(busyId)} onClick={() => void toggle(rule)}>{rule.enabled ? "停用" : "启用"}</button><button className="danger-button" disabled={Boolean(busyId)} onClick={() => void remove(rule)}>删除</button></div></td></tr>)}
+        {data?.rules.map(rule => <tr key={rule.id}><td><code>{rule.cidr}</code></td><td>IPv{rule.address_family}</td><td className="ip-access-note">{rule.note || "—"}</td><td><span className={`status ${rule.enabled ? "bad" : "warn"}`}>{rule.enabled ? "拦截中" : "已停用"}</span></td><td>{formatDatabaseDateTime(rule.updated_at)}</td><td><div className="table-actions"><button className="secondary" disabled={Boolean(busyId)} onClick={() => void toggle(rule)}>{rule.enabled ? "停用" : "启用"}</button><button className="danger-button" disabled={Boolean(busyId)} onClick={() => void remove(rule)}>删除</button></div></td></tr>)}
       </tbody></table></div>}
   </section>;
 }

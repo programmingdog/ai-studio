@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type ClientRuntimeConfig = {
   recommended_video_concurrency: number;
@@ -70,7 +71,7 @@ export function ClientRuntimeConfigPanel({ token }: { token: string }) {
       <label className={`client-runtime-source ${inheritEnvironment ? "selected" : ""}`}><input type="checkbox" checked={inheritEnvironment} disabled={saving} onChange={event => setInheritEnvironment(event.target.checked)} /><span><strong>跟随服务器环境变量</strong><small>当前环境默认值为 {config.environment_default_video_concurrency === 0 ? "0（不限制）" : config.environment_default_video_concurrency}。取消勾选后使用下方数据库配置。</small></span></label>
       <label>推荐视频并发数<input type="number" min="0" step="1" inputMode="numeric" value={value} disabled={saving || inheritEnvironment} onChange={event => setValue(event.target.value)} required={!inheritEnvironment} /><small><strong>0</strong> 表示客户端不设置并发上限；正整数表示同时生成的视频任务数，不设置人为上限。</small></label>
       <div className="client-runtime-summary"><span>当前实际生效</span><strong>{config.recommended_video_concurrency === 0 ? "不限制" : `${config.recommended_video_concurrency} 个并发任务`}</strong><small>来源：{config.source === "database" ? "管理后台数据库配置" : "服务器环境变量"}。已运行的工作流保持原并发，新启动的工作流使用新值。</small></div>
-      <div className="client-runtime-actions"><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存运行配置"}</button><button className="secondary" type="button" disabled={saving} onClick={() => void load()}>重新读取</button>{config.updated_at && <small>最近更新：{new Date(config.updated_at).toLocaleString("zh-CN", { hour12: false })}</small>}</div>
+      <div className="client-runtime-actions"><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存运行配置"}</button><button className="secondary" type="button" disabled={saving} onClick={() => void load()}>重新读取</button>{config.updated_at && <small>最近更新：{formatDatabaseDateTime(config.updated_at)}</small>}</div>
     </form>}
   </section>;
 }

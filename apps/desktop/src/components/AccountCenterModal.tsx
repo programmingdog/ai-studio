@@ -8,7 +8,7 @@ import { InvitationCard, ReferralCommissionRecords, ReferralInvitationRecords, R
 import { RecordPagination } from "./RecordPagination";
 import {
   clearInvalidPlatformSession, createCreditPurchase, getCreditBalance, getCreditPurchase,
-  getPlatformUser, listCreditConsumptions, listCreditPackages, listCreditPurchases,
+  getPlatformUser, listCreditConsumptions, listCreditHolds, listCreditPackages, listCreditPurchases, releaseCreditHold,
   loadPlatformSession, logoutPlatform, updatePlatformUser,
   PlatformApiError, type PlatformPurchase, type PlatformUser,
 } from "../services/platform";
@@ -67,16 +67,16 @@ export function AccountCenterModal({ onClose, required = false, initialSection =
 }
 
 function ProfilePanel({ user, loading, error, onSaved, onLogout, loggingOut }: { user?: PlatformUser; loading: boolean; error: unknown; onSaved: (user: PlatformUser) => void; onLogout: () => void; loggingOut: boolean }) {
-  const [form, setForm] = useState({ display_name: "", email: "", phone: "", avatar_url: "", bio: "", current_password: "", new_password: "" });
-  useEffect(() => { if (user) setForm({ display_name: user.display_name || "", email: user.email || "", phone: user.phone || "", avatar_url: user.avatar_url || "", bio: user.bio || "", current_password: "", new_password: "" }); }, [user]);
-  const save = useMutation({ mutationFn: () => updatePlatformUser({ ...form, email: form.email || null, phone: form.phone || null, avatar_url: form.avatar_url || null, current_password: form.current_password || undefined, new_password: form.new_password || undefined }), onSuccess: (next) => { onSaved(next); setForm((current) => ({ ...current, current_password: "", new_password: "" })); } });
+  const [form, setForm] = useState({ display_name: "", phone: "", avatar_url: "", bio: "", current_password: "", new_password: "" });
+  useEffect(() => { if (user) setForm({ display_name: user.display_name || "", phone: user.phone || "", avatar_url: user.avatar_url || "", bio: user.bio || "", current_password: "", new_password: "" }); }, [user]);
+  const save = useMutation({ mutationFn: () => updatePlatformUser({ ...form, phone: form.phone || null, avatar_url: form.avatar_url || null, current_password: form.current_password || undefined, new_password: form.new_password || undefined }), onSuccess: (next) => { onSaved(next); setForm((current) => ({ ...current, current_password: "", new_password: "" })); } });
   if (loading) return <div className="account-loading"><LoaderCircle className="spin" />正在读取账户…</div>;
   if (error || !user) return <div className="error-banner">{message(error || "无法读取账户")}</div>;
   return <div className="profile-panel"><section className="account-summary"><div className="account-avatar">{user.display_name?.slice(0, 1).toUpperCase() || "U"}</div><div><strong>{user.display_name}</strong><span>{user.email || user.phone || "微信用户"}</span><small>注册于 {date(user.created_at)}</small></div><button className="secondary-button" onClick={onLogout} disabled={loggingOut}><LogOut size={15} />退出登录</button></section>
     <InvitationCard userId={user.id} />
     <label>上级用户 ID（pid）<input readOnly value={user.pid || "无上级"} /></label>
     <label>分润余额（含提现冻结）<input readOnly value={`¥${(Number(user.balance_fen || 0) / 100).toFixed(2)}`} /><small>分润到账时增加，实际打款后扣减；可提现金额和记录见“分润与提现”。</small></label>
-    <div className="profile-grid"><label>显示名称<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><label>邮箱<input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>手机号<input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label><label>HTTPS 头像地址<input value={form.avatar_url} onChange={(event) => setForm({ ...form, avatar_url: event.target.value })} /></label></div>
+    <div className="profile-grid"><label>显示名称<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><label>邮箱<input type="email" readOnly aria-describedby="account-email-readonly-hint" value={user.email || ""} placeholder="未绑定邮箱" /><small id="account-email-readonly-hint">登录邮箱不可在此修改</small></label><label>手机号<input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label><label>HTTPS 头像地址<input value={form.avatar_url} onChange={(event) => setForm({ ...form, avatar_url: event.target.value })} /></label></div>
     <label>个人简介<textarea rows={3} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} /></label><div className="profile-grid"><label>当前密码<input type="password" value={form.current_password} onChange={(event) => setForm({ ...form, current_password: event.target.value })} placeholder="修改凭据时填写" /></label><label>新密码<input type="password" value={form.new_password} onChange={(event) => setForm({ ...form, new_password: event.target.value })} placeholder="不修改请留空" /></label></div>
     {save.error && <div className="error-banner">{message(save.error)}</div>}{save.isSuccess && <div className="settings-success"><CheckCircle2 size={16} />资料已更新</div>}<button className="primary-button profile-save" onClick={() => save.mutate()} disabled={save.isPending || !form.display_name.trim()}>{save.isPending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}保存资料</button>
   </div>;
@@ -85,8 +85,19 @@ function ProfilePanel({ user, loading, error, onSaved, onLogout, loggingOut }: {
 function CreditsPanel({ onPurchased, purchaseFlow = false }: { onPurchased?: () => void; purchaseFlow?: boolean }) {
   const queryClient = useQueryClient();
   const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance });
+  const holds = useQuery({ queryKey: ["credit-holds"], queryFn: listCreditHolds });
   const packages = useQuery({ queryKey: ["credit-packages"], queryFn: listCreditPackages });
   const [activePurchase, setActivePurchase] = useState<PlatformPurchase | null>(null);
+  const releaseHold = useMutation({
+    mutationFn: releaseCreditHold,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["credit-balance"] }),
+        queryClient.invalidateQueries({ queryKey: ["credit-holds"] }),
+        queryClient.invalidateQueries({ queryKey: ["platform-user"] }),
+      ]);
+    },
+  });
   const purchase = useMutation({ mutationFn: createCreditPurchase, onSuccess: (result, packageId) => {
     const selectedPackage = packages.data?.find(item => item.id === packageId);
     setActivePurchase({ ...result, package_name_snapshot: result.package_name_snapshot || selectedPackage?.name, credits_granted: result.credits_granted ?? result.credits ?? selectedPackage?.total_credits });
@@ -107,7 +118,20 @@ function CreditsPanel({ onPurchased, purchaseFlow = false }: { onPurchased?: () 
     }, 2500);
     return () => window.clearInterval(timer);
   }, [activePurchase, queryClient]);
-  return <div className="credits-panel"><div className="balance-grid"><article><span>积分余额</span><strong>{balance.data?.balance ?? "—"}</strong></article><article><span>正在使用的积分</span><strong>{balance.data?.held ?? "—"}</strong></article><article className="available"><span>可用积分</span><strong>{balance.data?.available ?? "—"}</strong></article></div>
+  return <div className="credits-panel"><div className="balance-grid"><article><span>积分余额</span><strong>{balance.data?.balance ?? "—"}</strong></article><article><span>正在使用的积分</span><strong>{balance.data?.held ?? "—"}</strong></article><article className="available"><span>可用积分</span><strong>{balance.data ? Math.max(0, Number(balance.data.available)) : "—"}</strong></article></div>
+    {Boolean(balance.data?.overcommitted) && <div className="credit-lock-warning">检测到历史任务占用超过账面余额，系统已将可用积分保护为 0，并暂停创建新任务。请查看下方明细；可释放项目可直接释放，执行中的项目请回到对应项目继续查询。</div>}
+    <section className="platform-section credit-holds-section"><header><div><strong>正在使用的积分明细</strong><span>失败、取消和过期占用会自动回收；执行中的任务为避免重复结算不能强制释放。</span></div><em>{holds.data?.items.length ?? 0} 项</em></header>
+      {holds.isLoading ? <div className="account-loading"><LoaderCircle className="spin" />正在核对积分占用…</div>
+        : holds.error ? <div className="error-banner">{message(holds.error)}</div>
+          : holds.data?.items.length ? <div className="credit-hold-list">{holds.data.items.map(item => <article key={`${item.type}:${item.id}`}>
+            <div className="credit-hold-main"><div><strong>{item.title}</strong><span className={`platform-status ${item.releasable ? "pending" : taskTone(item.status)}`}>{item.type === "WORKFLOW_RESERVATION" ? "工作流预留" : localizedStatusLabel(item.status, "zh-CN")}</span></div><p>{item.detail}</p><small>{item.action_hint}</small><code>{item.type === "WORKFLOW_RESERVATION" ? `工作流 ${item.reference_id}` : `任务 ${item.local_task_id || item.task_id || item.reference_id}`} · 创建于 {date(item.created_at)}</code></div>
+            <div className="credit-hold-actions"><strong>{item.credits} 积分</strong>{item.releasable ? <button className="secondary-button" type="button" disabled={releaseHold.isPending} onClick={() => {
+              if (item.type === "WORKFLOW_RESERVATION" && !window.confirm("确认释放这次自动制作尚未提交项目的预留积分？以后继续时需要重新确认积分。")) return;
+              releaseHold.mutate(item);
+            }}>{releaseHold.isPending && releaseHold.variables?.id === item.id ? "释放中…" : "释放积分"}</button> : <span>任务进行中，不可释放</span>}</div>
+          </article>)}</div> : <div className="credit-holds-empty">当前没有正在使用的积分。</div>}
+      {releaseHold.error && <div className="error-banner">{message(releaseHold.error)}</div>}
+    </section>
     <section className="platform-section"><header><div><strong>积分套餐</strong><span>赠送积分额外到账，不抵扣套餐售价；微信支付成功后自动到账。</span></div></header><div className="package-grid">{packages.data?.map((item) => <article key={item.id}><span>{item.name}</span><strong>{item.base_credits}<small> 积分</small></strong><p>{item.description}</p>{item.bonus_credits > 0 && <em>额外赠送 {item.bonus_credits}，支付后实得 {item.total_credits}</em>}<button className="primary-button" onClick={() => purchase.mutate(item.id)} disabled={purchase.isPending}><CreditCard size={15} />{money(item.price_fen)} 购买</button></article>)}</div>{purchase.error && <div className="error-banner">{message(purchase.error)}</div>}</section>
     {activePurchase && createPortal(<PaymentDialog purchase={activePurchase} purchaseFlow={purchaseFlow} onClose={() => { const paid = activePurchase.status === "PAID"; setActivePurchase(null); if (paid) onPurchased?.(); }} />, document.body)}
   </div>;

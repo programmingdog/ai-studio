@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "逐梦帧",
   "mainBinaryName": "逐梦帧",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "identifier": "studio.aivideo.desktop",
   "build": {
     "beforeDevCommand": "npm run prepare:media:dev && npm run prepare:worker && npm run dev",

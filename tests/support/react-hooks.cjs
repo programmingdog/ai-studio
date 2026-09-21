@@ -1,7 +1,18 @@
 // Tiny deterministic hook runner for component event-handler tests (not a DOM renderer).
 const fs = require('node:fs');
+const path = require('node:path');
 const ts = require('typescript');
 const flush = () => new Promise(resolve => setImmediate(resolve));
+let adminDateTime;
+function adminDateTimeModule() {
+  if (adminDateTime) return adminDateTime;
+  const file = path.join(__dirname, '../../apps/admin-web/lib/admin-date-time.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const loaded = { exports: {} };
+  new Function('require', 'module', 'exports', compiled)(require, loaded, loaded.exports);
+  adminDateTime = loaded.exports;
+  return adminDateTime;
+}
 function componentHarness(file, name, props, imports = {}) {
   const slots = [], effects = []; let cursor = 0, tree;
   const depsChanged = (old, next) => !old || !next || old.length !== next.length || next.some((x, i) => !Object.is(x, old[i]));
@@ -26,7 +37,7 @@ function componentHarness(file, name, props, imports = {}) {
   };
   const source = fs.readFileSync(file, 'utf8');
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
-  const localRequire = id => id === 'react' ? react : id === '@tanstack/react-query' ? query : id === 'react-dom' ? { createPortal: node => node } : imports[id] || require(id);
+  const localRequire = id => id === 'react' ? react : id === '@tanstack/react-query' ? query : id === 'react-dom' ? { createPortal: node => node } : id === '@/lib/admin-date-time' ? adminDateTimeModule() : imports[id] || require(id);
   const module = { exports: {} };
   new Function('require', 'module', 'exports', compiled + `\nmodule.exports.TestComponent = ${name};`)(localRequire, module, module.exports);
   function render() { cursor = 0; tree = module.exports.TestComponent(props); while (effects.length) effects.shift()(); }

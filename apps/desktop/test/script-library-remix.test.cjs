@@ -40,7 +40,10 @@ test("paid remix confirmation stacks above the remix modal", () => {
 test("both remix entry points use the dedicated server-side feature price", () => {
   assert.match(page, /ModelCreditNotice capability="VIDEO_REMIX" action="二创"/);
   assert.match(app, /ModelCreditNotice capability="VIDEO_REMIX" action="二创"/);
-  assert.match(ai, /stage == "video_remix"[\s\S]*video_remix_completion/);
+  assert.match(ai, /generate_video_remix[\s\S]*video_remix_completion/);
+  assert.match(backend, /confirmed_video_remix_quote[\s\S]*for attempt in 1\.\.=MAX_GENERATION_ATTEMPTS/);
+  assert.match(backend, /MAX_AUTOMATIC_RETRIES: usize = 3/);
+  assert.match(backend, /finalize_video_remix[\s\S]*CLIENT_CONTENT_INVALID/);
   assert.match(platform, /Some\("VIDEO_REMIX"\)/);
   assert.match(platform, /create_path = if capability == Some\("VIDEO_REMIX"\)/);
   assert.match(platform, /"\/tasks\/video-remix"/);

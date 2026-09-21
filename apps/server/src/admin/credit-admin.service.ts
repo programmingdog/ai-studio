@@ -84,6 +84,35 @@ function dateValue(value: string | null | undefined, field: string, fallbackNow 
   return result;
 }
 
+function chinaWallDateValue(value: string | null | undefined, field: string, fallbackNow = false): string | null {
+  if (!value) {
+    if (!fallbackNow) return null;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(new Date());
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+    return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}.000`;
+  }
+  const wall = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(value.trim());
+  if (wall) {
+    const [, year, month, day, hour, minute, second = "00", fraction = "0"] = wall;
+    const check = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+    if (check.getUTCFullYear() === Number(year) && check.getUTCMonth() === Number(month) - 1 && check.getUTCDate() === Number(day)
+      && check.getUTCHours() === Number(hour) && check.getUTCMinutes() === Number(minute) && check.getUTCSeconds() === Number(second)) {
+      return `${year}-${month}-${day} ${hour}:${minute}:${second}.${fraction.padEnd(3, "0")}`;
+    }
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(instant.valueOf())) throw new BadRequestException(`${field} 格式无效`);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}.${String(instant.getUTCMilliseconds()).padStart(3, "0")}`;
+}
+
 function generatedNumber(prefix: string): string {
   return `${prefix}${Date.now()}${randomUUID().replaceAll("-", "").slice(0, 10)}`;
 }
@@ -221,7 +250,7 @@ export class CreditAdminService {
     const bonusCredits = Number(creditPackage.bonus_credits);
     const id = randomUUID();
     const purchaseNo = generatedNumber("CP");
-    const purchasedAt = dateValue(input.purchasedAt, "购买时间", input.status === "PAID");
+    const purchasedAt = chinaWallDateValue(input.purchasedAt, "购买时间", input.status === "PAID");
     await this.database.execute(
       `INSERT INTO credit_package_purchases
         (id, purchase_no, user_id, package_id, package_code_snapshot, package_name_snapshot,
@@ -252,7 +281,7 @@ export class CreditAdminService {
       [input.userId, creditPackage.id, creditPackage.code, creditPackage.name, baseCredits, bonusCredits,
        input.creditsGranted ?? baseCredits + bonusCredits, input.paidAmountFen ?? Number(creditPackage.price_fen),
        input.currency || creditPackage.currency, input.paymentOrderId || null, input.status,
-       dateValue(input.purchasedAt, "购买时间", input.status === "PAID"), input.notes, purchaseId],
+       chinaWallDateValue(input.purchasedAt, "购买时间", input.status === "PAID"), input.notes, purchaseId],
     );
     if (!result.affectedRows) throw new NotFoundException("套餐购买记录不存在");
     await this.audit.record({ adminUserId, action: "credit_purchase.update", entityType: "credit_package_purchase", entityId: purchaseId, details: { userId: input.userId, packageId: input.packageId, status: input.status } });

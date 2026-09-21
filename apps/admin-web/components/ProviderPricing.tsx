@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatInstantDateTime } from "@/lib/admin-date-time";
 import { CreditSyncResults, type CreditSyncReport } from "./CreditPricingPanel";
 
 type PricingProvider = { id: string; display_name: string; code: string };
@@ -26,7 +27,7 @@ type ProviderPrice = {
   catalog_total: number; success_count: number; failed_count: number; models: ModelPrice[];
 };
 const price = (value: number | null) => value === null ? "未提供" : String(value);
-const time = (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false });
+const time = (value: string) => formatInstantDateTime(value);
 const typeNames: Record<string, string> = { chat: "文本", image: "图片", video: "视频", audio: "音频", tts: "语音", music: "音乐" };
 function groupPrice(group: PriceGroup) {
   if (/token/i.test(group.billing_method)) return `输入 ${price(group.input_token_price)} / 输出 ${price(group.output_token_price)}`;

@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type AuthMethodsConfig = {
   registration_enabled: boolean;
@@ -68,7 +69,7 @@ export function AuthMethodsConfigPanel({ token }: { token: string }) {
         <label className={form.wechat_enabled ? "selected" : ""}><input type="checkbox" checked={form.wechat_enabled} onChange={event => setForm({ ...form, wechat_enabled: event.target.checked })} /><span><strong>微信扫码登录</strong><small>{form.registration_enabled ? "首次扫码可自动创建账户；微信方式不要求填写邀请码。" : "仅已绑定微信身份的账户可以扫码登录。"}</small></span></label>
       </fieldset>
       {noneAvailableSelected && <div className="form-error" role="alert">至少需要启用一种当前可用的登录方式。</div>}
-      <div className="auth-method-actions"><button className="primary" disabled={!config || loading || saving || noneAvailableSelected}>{saving ? "保存中…" : "保存登录方式"}</button><button type="button" className="secondary" disabled={loading || saving} onClick={() => void load()}>重新读取</button>{config && <small>最近更新：{new Date(config.updated_at).toLocaleString("zh-CN", { hour12: false })}</small>}</div>
+      <div className="auth-method-actions"><button className="primary" disabled={!config || loading || saving || noneAvailableSelected}>{saving ? "保存中…" : "保存登录方式"}</button><button type="button" className="secondary" disabled={loading || saving} onClick={() => void load()}>重新读取</button>{config && <small>最近更新：{formatDatabaseDateTime(config.updated_at)}</small>}</div>
     </form>
   </section>;
 }

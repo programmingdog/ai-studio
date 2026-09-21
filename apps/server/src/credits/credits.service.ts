@@ -64,6 +64,18 @@ export class CreditsService {
        WHERE user_id = ? AND status = 'ACTIVE' AND expires_at <= CURRENT_TIMESTAMP(3)`,
       [userId],
     );
+    // A desktop that exits while validating a remix must not leave its
+    // temporary hold blocking the wallet forever. No successful validation
+    // means no charge.
+    await connection.execute(
+      `UPDATE ai_tasks t
+       INNER JOIN credit_holds ch ON ch.task_id = t.id
+       SET t.status = 'FAILED', t.error_code = 'CLIENT_VALIDATION_EXPIRED',
+           t.finished_at = CURRENT_TIMESTAMP(3), t.revision = t.revision + 1
+       WHERE ch.user_id = ? AND ch.status = 'ACTIVE' AND ch.expires_at <= CURRENT_TIMESTAMP(3)
+         AND t.status = 'CLIENT_VALIDATION_PENDING'`,
+      [userId],
+    );
     const [releasedTerminalHolds] = await connection.execute<ResultSetHeader>(
       `UPDATE credit_holds ch
        INNER JOIN ai_tasks t ON t.id = ch.task_id

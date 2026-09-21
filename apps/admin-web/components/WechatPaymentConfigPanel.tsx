@@ -2,6 +2,7 @@
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type WechatConfig = {
   id: string; merchant_id: string; payment_notify_url: string;
@@ -21,7 +22,7 @@ type WechatConfig = {
 
 type Upload = { filename: string; base64: string };
 function errorMessage(reason: unknown, fallback: string) { return reason instanceof Error ? reason.message : fallback; }
-function formatDate(value: string | null) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未上传"; }
+function formatDate(value: string | null) { return formatDatabaseDateTime(value, "尚未上传"); }
 async function fileUpload(file: File): Promise<Upload> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";

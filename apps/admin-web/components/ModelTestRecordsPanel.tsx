@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
+import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 
 type TestRecord = {
   id: string;
@@ -33,12 +34,6 @@ function statusTone(status: string) {
   if (status === "SUCCEEDED") return "good";
   if (status.includes("FAILED")) return "bad";
   return "warn";
-}
-
-function formatDate(value: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function errorMessage(reason: unknown) {
@@ -77,7 +72,7 @@ export function ModelTestRecordsPanel({ token }: { token: string }) {
       <header><div><span className="kicker">MODEL TEST HISTORY</span><h2>测试记录</h2><p>保存模型任务创建与查询的脱敏请求、响应、耗时和状态。</p></div><div className="record-header-actions"><span className="record-count">{records.length} 条</span><button className="secondary" onClick={() => void load()}>刷新</button></div></header>
       {error && <div className="form-error">{error}</div>}
       {records.length ? <div className="table-scroll"><table><thead><tr><th>供应商</th><th>模型</th><th>状态</th><th>创建接口</th><th>耗时</th><th>任务 ID</th><th>测试时间</th><th>操作</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>
-        <td>{record.provider_name}</td><td>{record.model_alias}</td><td><span className={`status ${statusTone(record.status)}`}>{record.status}</span></td><td>{record.create_http_status ?? "—"}</td><td>{record.create_duration_ms ?? "—"} ms</td><td><code>{record.remote_task_id || "—"}</code></td><td>{formatDate(record.created_at)}</td><td><div className="table-actions"><button className="secondary" onClick={() => setSelected(record)}>查看</button>{record.remote_task_id && record.query_endpoint && <button className="secondary" disabled={queryingId === record.id} onClick={() => void query(record)}>{queryingId === record.id ? "查询中…" : "查询"}</button>}</div></td>
+        <td>{record.provider_name}</td><td>{record.model_alias}</td><td><span className={`status ${statusTone(record.status)}`}>{record.status}</span></td><td>{record.create_http_status ?? "—"}</td><td>{record.create_duration_ms ?? "—"} ms</td><td><code>{record.remote_task_id || "—"}</code></td><td>{formatDatabaseDateTime(record.created_at)}</td><td><div className="table-actions"><button className="secondary" onClick={() => setSelected(record)}>查看</button>{record.remote_task_id && record.query_endpoint && <button className="secondary" disabled={queryingId === record.id} onClick={() => void query(record)}>{queryingId === record.id ? "查询中…" : "查询"}</button>}</div></td>
       </tr>)}</tbody></table></div> : <div className="empty-row">还没有模型测试记录，请从 AI 供应商中的模型卡片发起测试。</div>}
     </section>
     {selected && <div className="modal-backdrop"><div className="modal model-test-modal test-record-detail"><header><div><span className="kicker">TEST RECORD</span><h2>{selected.model_alias}</h2><p>{selected.provider_name} · {selected.model_code}</p></div><button type="button" onClick={() => setSelected(null)}>×</button></header>

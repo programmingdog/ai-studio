@@ -373,8 +373,8 @@ function AccountIdentity({ onOpenAccount }: { onOpenAccount: () => void }) {
   const loggedIn = Boolean(session.data);
   const user = useQuery({ queryKey: ["platform-user"], queryFn: getPlatformUser, enabled: loggedIn, retry: false });
   const balance = useQuery({ queryKey: ["credit-balance"], queryFn: getCreditBalance, enabled: loggedIn, retry: false, refetchInterval: 15_000 });
-  const name = user.data?.display_name?.trim() || user.data?.email || user.data?.phone || "平台用户";
-  const detail = user.data?.email || user.data?.phone || "微信账户";
+  const name = user.data?.display_name?.trim() || "平台用户";
+  const detail = "账户与积分中心";
   const currentCredits = balance.data?.balance ?? user.data?.credit_balance;
   return <button className="account-identity" type="button" onClick={onOpenAccount} aria-label={loggedIn ? "打开用户信息" : "用户注册登录"}>
     <span className="account-identity-avatar">{session.isLoading || user.isLoading ? <LoaderCircle className="spin" size={17} /> : loggedIn ? name.slice(0, 1).toUpperCase() : <CircleUserRound size={19} />}</span>
@@ -3710,8 +3710,8 @@ function VideoReferenceModeConfirmModal({ title, total, onCancel, onSelect }: { 
   }, [onCancel]);
   return createPortal(<div className="modal-backdrop video-reference-mode-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
     <section className="bulk-video-confirm-modal video-reference-mode-modal" role="dialog" aria-modal="true" aria-labelledby="video-reference-mode-title">
-      <header><div className="bulk-video-modal-icon"><Clapperboard size={23} /></div><div><span className="eyebrow">VIDEO GENERATION MODE</span><h2 id="video-reference-mode-title">是否直接使用纯文字生成？</h2><p>{title}将生成 {total} 个分镜视频，请选择本次视频任务是否携带参考图。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭生成方式选择"><X size={18} /></button></header>
-      <div className="bulk-video-confirm-body video-reference-mode-options"><button className="video-reference-mode-option" type="button" onClick={() => onSelect("pure_text")}><span><FileText size={21} /></span><div><strong>直接纯文字生成</strong><small>只发送视频提示词，不上传分镜图、首帧、场景图、角色图或道具图。</small></div><ChevronRight size={18} /></button><button className="video-reference-mode-option secondary" type="button" onClick={() => onSelect("references")}><span><Images size={21} /></span><div><strong>使用已有参考图生成</strong><small>仅上传当前已经存在的参考图；素材不齐全也允许继续生成。</small></div><ChevronRight size={18} /></button></div>
+      <header><div className="bulk-video-modal-icon"><Clapperboard size={23} /></div><div><span className="eyebrow">VIDEO GENERATION MODE</span><h2 id="video-reference-mode-title">选择视频生成模式</h2><p>{title}将生成 {total} 个分镜视频，请选择本次视频任务是否携带参考图。</p></div><button className="modal-close" type="button" onClick={onCancel} aria-label="关闭生成方式选择"><X size={18} /></button></header>
+      <div className="bulk-video-confirm-body video-reference-mode-options"><button className="video-reference-mode-option" type="button" autoFocus onClick={() => onSelect("references")}><span><Images size={21} /></span><div><strong>使用参考图生成<em>推荐</em></strong><small>使用参考图生成分镜视频，参考图未生成的会继续生成。</small></div><ChevronRight size={18} /></button><button className="video-reference-mode-option secondary" type="button" onClick={() => onSelect("pure_text")}><span><FileText size={21} /></span><div><strong>直接纯文字生成</strong><small>只发送视频提示词，不上传分镜图、首帧、场景图、角色图或道具图。</small></div><ChevronRight size={18} /></button></div>
       <footer><button className="secondary-button" type="button" onClick={onCancel}>取消生成</button></footer>
     </section>
   </div>, document.body);

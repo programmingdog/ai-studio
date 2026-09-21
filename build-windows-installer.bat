@@ -46,6 +46,11 @@ for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%PRODUCTION_ENV%") do (
 )
 
 set "NODE_ENV=production"
+rem Limit Rust release compilation to one rustc process. On 16 GB Windows
+rem build machines, Cargo's default parallelism can exhaust available memory
+rem and make rustc_driver terminate with 0xc0000409.
+set "CARGO_BUILD_JOBS=1"
+set "CARGO_INCREMENTAL=0"
 if not defined VITE_PLATFORM_API_URL (
   echo [ERROR] VITE_PLATFORM_API_URL is missing from .env.production.
   goto :failed
@@ -78,7 +83,7 @@ if errorlevel 1 (
 echo [OK] Production environment, signing keys, and version numbers validated.
 if /i "%~1"=="--check" goto :check_complete
 
-echo [INFO] Building the NSIS installer. This can take several minutes...
+echo [INFO] Building the NSIS installer with one Rust compile job. This can take several minutes...
 call npm run build:installers:windows
 if errorlevel 1 goto :failed
 

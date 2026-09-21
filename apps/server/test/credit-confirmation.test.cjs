@@ -251,7 +251,32 @@ test('video remix quote and task creation use the configured fixed feature price
   assert.equal(submitted.userId, 'user');
   assert.equal(submitted.input.creditOverride, 20);
   assert.equal(submitted.input.taskType, 'VIDEO_REMIX');
+  assert.equal(submitted.input.deferSettlement, true);
   assert.equal(submitted.input.providerModelId, 'model-1');
+});
+
+test('video remix holds credits until client validation and only finalizes the accepted result', async () => {
+  const state = taskHarness();
+  await state.gateway.create('user', { idempotencyKey: 'remix-deferred', providerModelId: 'model-1',
+    payload: { messages: [{ role: 'user', content: '二创' }] }, expectedCredits: 3,
+    taskType: 'VIDEO_REMIX', deferSettlement: true });
+  assert.equal(state.settled.length, 0);
+  assert.equal(state.released.length, 0);
+  const pending = state.writes.find(write => write.sql.includes('UPDATE ai_tasks SET remote_task_id'));
+  assert.equal(pending.args[1], 'CLIENT_VALIDATION_PENDING');
+
+  const finalized = service();
+  const actions = [];
+  finalized.database.query = async () => [{ id: 'remix-task', user_id: 'user', task_type: 'VIDEO_REMIX', status: 'CLIENT_VALIDATION_PENDING' }];
+  finalized.settle = async id => actions.push(['settle', id]);
+  finalized.release = async (...args) => actions.push(['release', ...args]);
+  finalized.get = async (_userId, id) => ({ id, status: id === 'accepted-task' ? 'SUCCEEDED' : 'FAILED' });
+  await finalized.finalizeVideoRemix('user', 'accepted-task', true);
+  await finalized.finalizeVideoRemix('user', 'rejected-task', false, 'CLIENT_CONTENT_INVALID');
+  assert.deepEqual(actions, [
+    ['settle', 'accepted-task'],
+    ['release', 'rejected-task', 'FAILED', 'CLIENT_CONTENT_INVALID'],
+  ]);
 });
 
 test('workflow approval atomically reserves the full displayed total', async () => {

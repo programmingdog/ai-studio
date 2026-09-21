@@ -55,3 +55,17 @@ test("automatic AllAIIn workflow waits for the whole reference batch before crea
     "video tasks must be created only after the complete reference batch is ready");
   assert.match(app.slice(barrier, submit), /provider_code !== "allaiin"/);
 });
+
+test("reference generation is the first and recommended mode in the generation dialog", () => {
+  const app = fs.readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8");
+  const start = app.indexOf("function VideoReferenceModeConfirmModal");
+  const end = app.indexOf("function useVideoReferenceModePrompt", start);
+  const modal = app.slice(start, end);
+  const references = modal.indexOf('onSelect("references")');
+  const pureText = modal.indexOf('onSelect("pure_text")');
+  assert.ok(references >= 0 && references < pureText, "reference mode should be listed before pure-text mode");
+  assert.match(modal, /type="button" autoFocus onClick=\{\(\) => onSelect\("references"\)\}/);
+  assert.match(modal, /<strong>使用参考图生成<em>推荐<\/em><\/strong>/);
+  assert.match(modal, /使用参考图生成分镜视频，参考图未生成的会继续生成。/);
+  assert.doesNotMatch(modal, /使用已有参考图生成/);
+});

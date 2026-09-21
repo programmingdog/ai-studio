@@ -171,9 +171,15 @@ pub async fn approve_workflow_credit(
             return Err(error("生成清单有重复，请重新开始。"));
         }
     }
+    let display_name = Path::new(&project_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("自动制作项目")
+        .to_owned();
     let response = crate::platform_media::approve_workflow_quote(
         &api_base,
         serde_json::to_value(&items).map_err(|e| e.to_string())?,
+        &display_name,
     )
     .await?;
     let server_approval_id = response["approval_id"]
@@ -413,6 +419,9 @@ pub async fn stop_workflow_credit(project_path: String, id: String) -> Result<()
                 "workflow.quote_stop_failed",
                 json!({"approval_id":approval_id,"error":message}),
             );
+            return Err(format!(
+                "本地工作流已停止，但服务端预留积分释放失败：{message}。请重试停止操作，或到用户中心的积分占用明细中手动释放。"
+            ));
         }
     }
     Ok(())

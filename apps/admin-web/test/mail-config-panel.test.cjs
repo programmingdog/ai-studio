@@ -5,6 +5,10 @@ const path = require('node:path');
 const ts = require('typescript');
 const source = fs.readFileSync(path.join(__dirname, '../components/MailConfigPanel.tsx'), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+const dateSource = fs.readFileSync(path.join(__dirname, '../lib/admin-date-time.ts'), 'utf8');
+const dateCompiled = ts.transpileModule(dateSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const dateModule = { exports: {} };
+new Function('require', 'module', 'exports', dateCompiled)(require, dateModule, dateModule.exports);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const baseConfig = { api_url: 'https://yuntianxing.net/mail_sys/send_mail_http.json', delivery_method: 'HTTP', smtp_host: 'mail.yuntianxing.net', smtp_port: 25, smtp_security: 'STARTTLS', mail_from: 'sender@yuntianxing.net', password_configured: true, status: 'ACTIVE', revision: 3, updated_at: '2026-08-31T00:00:00Z' };
 
@@ -17,7 +21,7 @@ function harness(request) {
     useRef(initial) { const slot = cursor++; if (!(slot in cells)) cells[slot] = { current: initial }; return cells[slot]; },
     useCallback(fn) { return fn; },
     useEffect(fn) { const slot = cursor++; if (!(slot in cells)) { cells[slot] = true; effects.push(fn); } },
-  } : name === '@/lib/api' ? { async apiRequest(...args) { calls.push(args); if (request) return request(...args); return args[1].method === 'PATCH' ? { ...baseConfig, revision: 4 } : { ...baseConfig }; } } : require(name);
+  } : name === '@/lib/api' ? { async apiRequest(...args) { calls.push(args); if (request) return request(...args); return args[1].method === 'PATCH' ? { ...baseConfig, revision: 4 } : { ...baseConfig }; } } : name === '@/lib/admin-date-time' ? dateModule.exports : require(name);
   new Function('require', 'module', 'exports', compiled)(mockRequire, module, module.exports);
   function render() { cursor = 0; tree = module.exports.MailConfigPanel({ token: 'test-only-token' }); while (effects.length) effects.shift()(); }
   function nodes(node = tree) { if (!node || typeof node !== 'object') return []; if (Array.isArray(node)) return node.flatMap(nodes); return [node, ...nodes(node.props?.children ?? null)]; }
