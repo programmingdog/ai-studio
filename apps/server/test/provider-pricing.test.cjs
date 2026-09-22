@@ -35,6 +35,18 @@ test("AllAIIn live catalog matches local models by numeric ID and exposes upstre
   assert.equal(result.models[0].channel_groups[0].base_price, 8);
 });
 
+test("AllAIIn per-request video models keep the upstream points but display request billing", async (t) => {
+  upstream(t, () => Response.json({ code: 200, data: [{ id: 76, name: "MiniMax H3 官", type: 3, points_cost: 20 }] }));
+  const { instance } = service({ code: "allaiin", models: [{
+    model_code: "minimax-h3-official", model_alias: "MiniMax H3 官", display_name: "MiniMax H3 官",
+    billing_unit: "PER_REQUEST", config_json: { remote_numeric_id: 76 },
+  }] });
+  const result = await instance.query("p1");
+  assert.equal(result.models[0].price_unit, "次");
+  assert.equal(result.models[0].channel_groups[0].billing_method, "按次");
+  assert.equal(result.models[0].channel_groups[0].base_price, 20);
+});
+
 test("normalization preserves zero, paused state, token prices and option casing without exposing unknown fields", () => {
   const result = normalizePricingGroup({ ...channel, is_active: false, input_token_price: "0", output_token_price: "1.2", secret: "do-not-forward" });
   assert.equal(result.base_price, 0.02);

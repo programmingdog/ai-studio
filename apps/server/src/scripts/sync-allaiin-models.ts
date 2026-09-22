@@ -63,13 +63,19 @@ const videoAliasOverrides = new Map<number, string>([
   [55, "Seedance 2.5"],
   [65, "Seedance 2.0 冲量版"],
   [69, "Wan3"],
+  [76, "MiniMax H3 官"],
 ]);
 
 const videoCodeOverrides = new Map<number, string>([
   // AllAIIn id 65 uses "Seedance 2.0 Fast" as model_id. Use a stable,
   // unambiguous local code while routing requests by remote_numeric_id.
   [65, "seedance-2-0-chongliang"],
+  [76, "minimax-h3-official"],
 ]);
+
+function range(min: number, max: number): number[] {
+  return Array.from({ length: max - min + 1 }, (_, index) => min + index);
+}
 
 function isHappyHorse11(model: RemoteModel): boolean {
   const identity = `${model.name} ${model.model_id}`.toLowerCase().replace(/[\s_-]+/g, "");
@@ -77,6 +83,7 @@ function isHappyHorse11(model: RemoteModel): boolean {
 }
 
 function videoReferenceSupport(model: RemoteModel): { maxReferenceImages: number; supportsReferenceVideo: boolean } {
+  if (model.id === 76) return { maxReferenceImages: 9, supportsReferenceVideo: true };
   const code = model.model_id.toLowerCase();
   if (/seedance[-\s_]*2[-.\s_]*0/.test(code)) {
     return { maxReferenceImages: 2, supportsReferenceVideo: true };
@@ -219,6 +226,21 @@ function parameterSchema(model: CatalogModel): Record<string, unknown>[] {
       { name: "reference_images", label: "多张参考图", type: "upload", required: false, description: "多个参考图 URL 数组。" },
     ];
   }
+  if (model.modelCode === "minimax-h3-official") {
+    return [
+      commonPromptParameter(),
+      { name: "size", label: "视频比例", type: "select", required: false, options: ["16:9", "9:16", "1:1", "3:4", "4:3"], description: "输出视频比例。" },
+      { name: "seconds", label: "视频时长", type: "select", required: false, options: range(4, 15), description: "支持 4～15 秒整数。" },
+      { name: "resolution", label: "分辨率", type: "select", required: false, options: ["768P"], description: "当前官方通道默认支持 768P。" },
+      { name: "count", label: "生成数量", type: "number", required: false, options: [1, 2, 3, 4], description: "客户端单次生成固定提交 1 个。" },
+      { name: "reference_image", label: "参考图", type: "upload", required: false, description: "单张参考图公网 URL。" },
+      { name: "reference_images", label: "多张参考图", type: "upload", required: false, description: "多个参考图公网 URL 数组。" },
+      { name: "reference_audio", label: "参考音频", type: "upload", required: false, description: "参考音频不能作为唯一参考输入。" },
+      { name: "reference_audios", label: "多个参考音频", type: "upload", required: false, description: "多个参考音频公网 URL 数组。" },
+      { name: "reference_video", label: "参考视频", type: "upload", required: false, description: "单个参考视频公网 URL。" },
+      { name: "reference_videos", label: "多个参考视频", type: "upload", required: false, description: "多个参考视频公网 URL 数组。" },
+    ];
+  }
   return [
     commonPromptParameter(),
     { name: "size", label: "视频比例", type: "select", required: false, options: ["3:4", "4:3", "16:9", "9:16", "21:9"], description: "输出视频比例。" },
@@ -341,6 +363,11 @@ async function main(): Promise<void> {
           source_cny_per_credit: cnyPerCredit,
           line_selection: remote.line_selection || null,
           pricing_synced_at: syncedAt,
+          ...(selected.modelCode === "minimax-h3-official" ? {
+            reference_image_mode: "reference_images",
+            video_duration_options: range(4, 15),
+            aspect_ratio_options: ["16:9", "9:16", "1:1", "3:4", "4:3"],
+          } : {}),
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
             : undefined,
@@ -372,12 +399,18 @@ async function main(): Promise<void> {
            `${remote.name}，由 AllAIIn API 提供，上游基础价 ${remote.points_cost} 积分（¥${(Number(remote.points_cost) * ALLAIIN_POINT_CNY).toFixed(2)}）。`,
            JSON.stringify(parameterSchema(selected)), JSON.stringify(config)],
         );
+        if (selected.modelCode === "minimax-h3-official") {
+          await db.execute(
+            "UPDATE provider_models SET billing_unit = 'PER_REQUEST' WHERE provider_id = ? AND model_code = ? AND capability = 'VIDEO_GENERATION'",
+            [provider.id, selected.modelCode],
+          );
+        }
         if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(selected.capability)) {
           await db.execute(
             `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
              SELECT id, ?, credit_cost, 0 FROM provider_models
              WHERE provider_id = ? AND model_code = ? AND capability = ?`,
-            [selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.modelCode, selected.capability],
+            [selected.modelCode === "minimax-h3-official" ? "768P" : selected.capability === "VIDEO_GENERATION" ? "720p" : "1K", provider.id, selected.modelCode, selected.capability],
           );
         }
       }

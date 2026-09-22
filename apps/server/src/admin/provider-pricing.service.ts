@@ -44,7 +44,13 @@ export function normalizePricingGroup(input: unknown) {
 
 interface ProviderRow extends RowDataPacket { id: string; code: string; display_name: string; base_url: string }
 interface CredentialRow extends RowDataPacket { name: string; api_key_ciphertext: string }
-interface ModelRow extends RowDataPacket { model_code: string; model_alias: string; display_name: string; config_json: unknown }
+interface ModelRow extends RowDataPacket {
+  model_code: string;
+  model_alias: string;
+  display_name: string;
+  billing_unit: string;
+  config_json: unknown;
+}
 type CatalogModel = { name: string; display_name: string; type: string; available_for_this_key: boolean | null };
 type ModelPrice = CatalogModel & {
   local_aliases: string[]; queried_at: string; error: string | null; pricing_note: string;
@@ -128,7 +134,7 @@ export class ProviderPricingService {
       const catalog = await get("/models");
       if (catalog.code !== 200 || !Array.isArray(catalog.data) || catalog.data.length > 2000) throw new BadGatewayException("AllAIIn 模型目录格式无效或超过查询上限");
       const localModels = await this.database.query<ModelRow[]>(
-        "SELECT model_code, model_alias, display_name, config_json FROM provider_models WHERE provider_id = ?", [providerId],
+        "SELECT model_code, model_alias, display_name, billing_unit, config_json FROM provider_models WHERE provider_id = ?", [providerId],
       );
       const queriedAt = new Date().toISOString();
       const remote = catalog.data.map((value) => {
@@ -142,15 +148,19 @@ export class ProviderPricingService {
           const raw = parseStoredJson(local.config_json);
           return Number(record(raw).remote_numeric_id) === item.id;
         });
-        return (locals.length ? locals : [null]).map((local) => ({
-          name: local?.model_code || String(item.id), display_name: item.name, type: item.type === 3 ? "video" : item.type === 2 ? "image" : "chat",
-          available_for_this_key: true, local_aliases: local ? [local.model_alias || local.display_name] : [],
-          queried_at: queriedAt, error: null, pricing_note: "1 慧心积分 = ¥0.10", currency: "积分",
-          price_unit: item.type === 3 ? "秒" : "次", remote_numeric_id: item.id, source_points: item.points,
-          channel_groups: [normalizePricingGroup({ group_name: "AllAIIn", is_active: true, in_key_whitelist: true,
-            billing_method: item.type === 3 ? "按秒" : "按次", currency: "积分", price_unit: item.type === 3 ? "秒" : "次",
-            base_price: item.points, min_price: item.points })],
-        }));
+        return (locals.length ? locals : [null]).map((local) => {
+          const perRequest = local?.billing_unit === "PER_REQUEST";
+          const priceUnit = item.type === 3 && !perRequest ? "秒" : "次";
+          return {
+            name: local?.model_code || String(item.id), display_name: item.name, type: item.type === 3 ? "video" : item.type === 2 ? "image" : "chat",
+            available_for_this_key: true, local_aliases: local ? [local.model_alias || local.display_name] : [],
+            queried_at: queriedAt, error: null, pricing_note: "1 慧心积分 = ¥0.10", currency: "积分",
+            price_unit: priceUnit, remote_numeric_id: item.id, source_points: item.points,
+            channel_groups: [normalizePricingGroup({ group_name: "AllAIIn", is_active: true, in_key_whitelist: true,
+              billing_method: `按${priceUnit}`, currency: "积分", price_unit: priceUnit,
+              base_price: item.points, min_price: item.points })],
+          };
+        });
       });
       return { provider_id: providerId, provider_name: provider.display_name, credential_name: credential.name,
         queried_at: queriedAt, catalog_total: remote.length, success_count: models.length, failed_count: 0, models };
@@ -160,7 +170,7 @@ export class ProviderPricingService {
     const catalog = await get("/v1/skills/models");
     if (!Array.isArray(catalog.models) || catalog.models.length > 2000) throw new BadGatewayException("供应商模型目录格式无效或超过查询上限");
     const localModels = await this.database.query<ModelRow[]>(
-      "SELECT model_code, model_alias, display_name, config_json FROM provider_models WHERE provider_id = ?", [providerId],
+      "SELECT model_code, model_alias, display_name, billing_unit, config_json FROM provider_models WHERE provider_id = ?", [providerId],
     );
     const entries = new Map<string, CatalogModel>();
     for (const value of catalog.models) {

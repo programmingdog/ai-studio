@@ -21,7 +21,7 @@ interface TargetRow extends RowDataPacket {
   provider_id: string; provider_code: string; base_url: string; provider_config_json: unknown;
   model_id: string; model_code: string; model_alias: string; capability: string; api_protocol: string;
   generation_endpoint: string; query_endpoint: string | null; credit_cost: number | string; billing_unit: string; credit_multiplier: number | string;
-  supports_async_tasks: number; model_config_json: unknown; parameter_schema_json: unknown; credential_id: string; api_key_ciphertext: string;
+  max_reference_images: number | string; supports_async_tasks: number; model_config_json: unknown; parameter_schema_json: unknown; credential_id: string; api_key_ciphertext: string;
 }
 interface TaskRow extends RowDataPacket {
   id: string; user_id: string; local_task_id: string; idempotency_key: string; request_hash: string;
@@ -362,7 +362,7 @@ export class ModelGatewayService {
     const rows = await this.database.query<TargetRow[]>(
       `SELECT p.id AS provider_id, p.code AS provider_code, p.base_url, p.config_json AS provider_config_json,
               pm.id AS model_id, pm.model_code, pm.model_alias, pm.capability, pm.api_protocol,
-              pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier, pm.supports_async_tasks,
+               pm.generation_endpoint, pm.query_endpoint, pm.credit_cost, pm.billing_unit, pm.credit_multiplier, pm.max_reference_images, pm.supports_async_tasks,
               pm.config_json AS model_config_json, pm.parameter_schema_json, pc.id AS credential_id, pc.api_key_ciphertext
        FROM provider_models pm INNER JOIN providers p ON p.id = pm.provider_id
        INNER JOIN provider_credentials pc ON pc.provider_id = p.id
@@ -991,6 +991,10 @@ export class ModelGatewayService {
         if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new BadRequestException("慧心AI 参考图需要公网 URL，请使用新版客户端重新上传参考图；本次未开始生成");
         return { url, type: String(reference.type || "reference") };
       });
+      const maxReferenceImages = Number(target.max_reference_images);
+      if (Number.isInteger(maxReferenceImages) && maxReferenceImages >= 0 && referenceUrls.length > maxReferenceImages) {
+        throw new BadRequestException(`慧心AI ${target.model_alias || target.model_code} 最多支持 ${maxReferenceImages} 张参考图，当前有 ${referenceUrls.length} 张`);
+      }
       const firstFrame = referenceUrls.find((reference) => reference.type === "shot_first_frame");
       body = { prompt: String(supplied.prompt || "") };
       if (target.capability === "VIDEO_GENERATION") {
@@ -1000,9 +1004,13 @@ export class ModelGatewayService {
       for (const field of ["n", "count", "reference_image", "reference_video", "reference_videos", "reference_audio", "reference_audios", "frame_start", "frame_end", "selectedLineModelId"]) {
         if (supplied[field] != null) body[field] = supplied[field];
       }
-      if (firstFrame) body.frame_start = firstFrame.url;
-      const additionalImages = referenceUrls.filter((reference) => reference !== firstFrame).map((reference) => reference.url);
-      if (additionalImages.length) body.reference_images = additionalImages;
+      if (String(modelConfig.reference_image_mode || "") === "reference_images") {
+        if (referenceUrls.length) body.reference_images = referenceUrls.map((reference) => reference.url);
+      } else {
+        if (firstFrame) body.frame_start = firstFrame.url;
+        const additionalImages = referenceUrls.filter((reference) => reference !== firstFrame).map((reference) => reference.url);
+        if (additionalImages.length) body.reference_images = additionalImages;
+      }
       const id = Number(modelConfig.remote_numeric_id);
       if (Number.isInteger(id) && id > 0) body.model_id = id;
       else body.model = target.model_code;
