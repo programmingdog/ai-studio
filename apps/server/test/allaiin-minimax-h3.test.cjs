@@ -5,6 +5,7 @@ const { test } = require("node:test");
 require("reflect-metadata");
 
 const { ModelGatewayService } = require("../dist/gateway/model-gateway.service");
+const { ModelTestService } = require("../dist/admin/model-test.service");
 
 const durations = Array.from({ length: 12 }, (_, index) => index + 4);
 const ratios = ["16:9", "9:16", "1:1", "3:4", "4:3"];
@@ -32,6 +33,7 @@ function target() {
       reference_image_mode: "reference_images",
       video_duration_options: durations,
       aspect_ratio_options: ratios,
+      resolution_mapping: { "768P": "720P" },
     },
     parameter_schema_json: [
       { name: "resolution", options: ["768P"] },
@@ -58,9 +60,32 @@ test("MiniMax H3 official sends the documented AllAIIn payload", () => {
   assert.equal(request.body.model_id, 76);
   assert.equal(request.body.size, "16:9");
   assert.equal(request.body.seconds, 4);
-  assert.equal(request.body.resolution, "768P");
+  assert.equal(request.body.resolution, "720P");
   assert.deepEqual(request.body.reference_images, [reference, "https://example.com/character.png"]);
   assert.equal(request.body.frame_start, undefined);
+});
+
+test("MiniMax H3 admin test maps the displayed 768P tier to the upstream 720P enum", () => {
+  const service = new ModelTestService({}, {}, {});
+  const request = service.createRequest({
+    base_url: "https://ailingg.store/api/v1",
+    model_code: "minimax-h3-official",
+    capability: "VIDEO_GENERATION",
+    api_protocol: "allaiin_rest",
+    generation_endpoint: "/video/generations",
+  }, "MiniMax H3 官", {
+    prompt: "海边日落延时摄影",
+    size: "16:9",
+    seconds: 4,
+    resolution: "768P",
+  }, {
+    remote_numeric_id: 76,
+    resolution_mapping: { "768P": "720P" },
+  }, {}, "fixture-key");
+
+  assert.equal(request.body.model_id, 76);
+  assert.equal(request.body.resolution, "720P");
+  assert.equal(request.body.seconds, 4);
 });
 
 test("MiniMax H3 official rejects reference counts above the configured client limit", () => {
@@ -78,6 +103,7 @@ test("sync and migration keep MiniMax H3 official configuration aligned", () => 
   const sync = fs.readFileSync(path.join(__dirname, "../src/scripts/sync-allaiin-models.ts"), "utf8");
   const migration = fs.readFileSync(path.join(__dirname, "../src/database/migrations/059_allaiin_minimax_h3_official.sql"), "utf8");
   const correction = fs.readFileSync(path.join(__dirname, "../src/database/migrations/060_allaiin_minimax_h3_768p.sql"), "utf8");
+  const mapping = fs.readFileSync(path.join(__dirname, "../src/database/migrations/061_allaiin_minimax_h3_resolution_mapping.sql"), "utf8");
   for (const source of [sync, migration]) {
     assert.match(source, /minimax-h3-official/);
     assert.match(source, /MiniMax H3 官/);
@@ -91,6 +117,8 @@ test("sync and migration keep MiniMax H3 official configuration aligned", () => 
   assert.match(sync, /"768P"/);
   assert.match(correction, /'768P'/);
   assert.match(correction, /resolution = '720P'/);
+  assert.match(sync, /resolution_mapping: \{ "768P": "720P" \}/);
+  assert.match(mapping, /'\$\.resolution_mapping', JSON_OBJECT\('768P', '720P'\)/);
   assert.match(migration, /JSON_ARRAY\(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15\)/);
   assert.match(migration, /INSERT INTO ai_default_media_models/);
 });

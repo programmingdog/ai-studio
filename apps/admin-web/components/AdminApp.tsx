@@ -22,9 +22,10 @@ import { ScriptAnalysisConfigPanel, ScriptAnalysisPricingPanel } from "@/compone
 import { ClientRuntimeConfigPanel } from "@/components/ClientRuntimeConfigPanel";
 import { ScriptLibraryPanel } from "@/components/ScriptLibraryPanel";
 import { FinancialOverview } from "@/components/FinancialOverview";
+import { AnnouncementsPanel } from "@/components/AnnouncementsPanel";
 import { formatDatabaseDateTime, formatInstantDateTime } from "@/lib/admin-date-time";
 
-type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
+type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "announcements" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
 type NavigationItem = { id: View; label: string; eyebrow: string };
 type NavigationGroup = { id: "product" | "ai" | "growth" | "commerce" | "operations"; label: string; eyebrow: string; mark: string; items: NavigationItem[] };
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
@@ -60,6 +61,7 @@ const navigationGroups: NavigationGroup[] = [
     { id: "product-brand", label: "品牌与展示", eyebrow: "BRAND" },
     { id: "auth-methods", label: "注册与登录", eyebrow: "ACCESS" },
     { id: "client-distribution", label: "下载与版本", eyebrow: "DELIVERY" },
+    { id: "announcements", label: "通知公告", eyebrow: "NOTICES" },
   ] },
   { id: "ai", label: "AI 与创作", eyebrow: "AI & CREATION", mark: "AI", items: [
     { id: "model-routing", label: "模型路由", eyebrow: "ROUTING" },
@@ -157,6 +159,7 @@ export function AdminApp() {
             { id: "software-downloads", label: "下载入口", content: <SoftwareDownloadConfigPanel token={token} /> },
             { id: "client-releases", label: "版本发布", content: <DesktopReleasePanel token={token} /> },
           ]} />}
+          {view === "announcements" && <AnnouncementsPanel token={token} />}
           {view === "model-routing" && <DefaultModelConfigPanel token={token} />}
           {view === "providers" && <ProvidersPanel token={token} />}
           {view === "script-analysis" && <><ConfigScope title="剧本提取能力" description="服务端读取提示词并调用默认文本模型；客户端只负责提交剧本和接收结果。" badges={["服务端执行", "保存即生效", "依赖默认文本模型"]} /><ScriptAnalysisModelSummary token={token} onOpenRouting={() => setView("model-routing")} /><ScriptAnalysisConfigPanel token={token} /></>}

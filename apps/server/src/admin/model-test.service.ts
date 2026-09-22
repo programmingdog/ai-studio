@@ -415,6 +415,13 @@ export class ModelTestService {
       body = { model: requestModel, prompt: typeof prompt === "string" ? prompt : "模型连接测试", params: { ...source, ...providedParams } };
     } else if (protocol === "allaiin_rest") {
       body = { ...source };
+      const requestedResolution = String(body.resolution || "").trim();
+      const resolutionMapping = asObject(modelConfig.resolution_mapping);
+      const mapping = Object.entries(resolutionMapping).find(([resolution]) => resolution.toLowerCase() === requestedResolution.toLowerCase());
+      if (mapping) {
+        const mapped = typeof mapping[1] === "string" ? mapping[1] : asObject(mapping[1])[String(body.size || body.aspect_ratio || "")];
+        if (typeof mapped === "string" && mapped.trim()) body.resolution = mapped.trim();
+      }
       if (!body.model && !body.model_id) {
         const numericId = Number(modelConfig.remote_numeric_id);
         if (Number.isInteger(numericId) && numericId > 0) body.model_id = numericId;

@@ -367,6 +367,7 @@ async function main(): Promise<void> {
             reference_image_mode: "reference_images",
             video_duration_options: range(4, 15),
             aspect_ratio_options: ["16:9", "9:16", "1:1", "3:4", "4:3"],
+            resolution_mapping: { "768P": "720P" },
           } : {}),
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
