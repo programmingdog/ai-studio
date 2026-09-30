@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Inject, Param, Post, Req, Res, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Get, Header, Headers, HttpException, Inject, Param, Post, Req, Res, StreamableFile, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
 import { asRecord, jsonValue, optionalString, requiredString } from "../common/input";
@@ -135,21 +135,59 @@ export class ModelGatewayController {
 
   @Post("script-analysis/upload")
   @UseInterceptors(FileInterceptor("script", { limits: { fileSize: 20 * 1024 * 1024, files: 1 } }))
-  createScriptAnalysisUpload(
+  async createScriptAnalysisUpload(
     @Req() request: UserRequest,
     @Body() input: Record<string, unknown>,
     @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string; size: number },
+    @Headers("x-script-progress") progressFormat?: string,
+    @Res() response?: Response,
   ) {
     const body = asRecord(input);
-    return this.gateway.createScriptAnalysisUpload(request.user.sub, {
+    const options = {
       idempotencyKey: requiredString(body, "idempotency_key", 191),
       expectedCredits: body.expected_credits === undefined ? undefined : Number(body.expected_credits),
       file,
-    });
+    };
+    if (!response) return this.gateway.createScriptAnalysisUpload(request.user.sub, options);
+    if (progressFormat !== "ndjson") {
+      response.json(await this.gateway.createScriptAnalysisUpload(request.user.sub, options));
+      return;
+    }
+    response.status(200);
+    response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("X-Accel-Buffering", "no");
+    response.flushHeaders();
+    const emit = (event: Record<string, unknown>) => {
+      if (!response.writableEnded) response.write(`${JSON.stringify(event)}\n`);
+    };
+    emit({ type: "progress", completed: 0, total: 1, message: "正在读取并拆分剧本" });
+    const heartbeat = setInterval(() => emit({ type: "heartbeat" }), 15_000);
+    try {
+      const result = await this.gateway.createScriptAnalysisUpload(request.user.sub, {
+        ...options,
+        onProgress: (completed, total, message) => emit({ type: "progress", completed, total, message }),
+      });
+      emit({ type: "result", value: result });
+    } catch (error) {
+      const detail = error instanceof HttpException ? error.getResponse() : null;
+      const message = typeof detail === "string" ? detail
+        : detail && typeof detail === "object" && "message" in detail ? String(detail.message)
+          : error instanceof Error ? error.message : "剧本解析失败";
+      emit({ type: "error", message, status: error instanceof HttpException ? error.getStatus() : 500 });
+    } finally {
+      clearInterval(heartbeat);
+      response.end();
+    }
   }
 
   @Get()
   list(@Req() request: UserRequest) { return this.gateway.list(request.user.sub); }
+
+  @Get("script-analysis/by-key/:idempotencyKey")
+  scriptAnalysisResult(@Req() request: UserRequest, @Param("idempotencyKey") idempotencyKey: string) {
+    return this.gateway.scriptAnalysisResult(request.user.sub, idempotencyKey);
+  }
 
   @Get(":taskId")
   get(@Req() request: UserRequest, @Param("taskId") taskId: string) { return this.gateway.get(request.user.sub, taskId); }

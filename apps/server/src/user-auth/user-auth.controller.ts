@@ -5,6 +5,7 @@ import { UserAuthGuard, UserRequest } from "./user-auth.guard";
 import { UserAuthService } from "./user-auth.service";
 import { RegistrationVerificationService } from "./registration-verification.service";
 import { AuthMethodConfigService } from "../common/auth-method-config.service";
+import { WagaByokAccessService } from "../common/waga-byok-access.service";
 
 @Controller()
 export class UserAuthController {
@@ -12,7 +13,16 @@ export class UserAuthController {
     @Inject(UserAuthService) private readonly auth: UserAuthService,
     @Inject(RegistrationVerificationService) private readonly registration: RegistrationVerificationService,
     @Inject(AuthMethodConfigService) private readonly authMethods: AuthMethodConfigService,
+    @Inject(WagaByokAccessService) private readonly wagaByok: WagaByokAccessService,
   ) {}
+
+  @Get("auth/me/waga-byok")
+  @UseGuards(UserAuthGuard)
+  @Header("Cache-Control", "no-store")
+  async wagaByokAccess(@Req() request: UserRequest) {
+    const access = await this.wagaByok.get(request.user.sub);
+    return { user_id: request.user.sub, enabled: access.enabled };
+  }
 
   @Post("auth/email/status")
   @HttpCode(200)

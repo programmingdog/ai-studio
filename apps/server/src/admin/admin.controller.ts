@@ -9,6 +9,7 @@ import { IpAccessControlService } from "../common/ip-access-control.service";
 import { ProductBrandConfigService } from "../common/product-brand-config.service";
 import { DesktopReleaseService, type DesktopReleaseInput } from "../common/desktop-release.service";
 import { ClientRuntimeConfigService } from "../common/client-runtime-config.service";
+import { WagaByokAccessService } from "../common/waga-byok-access.service";
 import { AdminService } from "./admin.service";
 import { CreditAdminService } from "./credit-admin.service";
 import { ModelTestService } from "./model-test.service";
@@ -34,6 +35,7 @@ export class AdminController {
     @Inject(ProductBrandConfigService) private readonly productBrand: ProductBrandConfigService,
     @Inject(DesktopReleaseService) private readonly desktopReleases: DesktopReleaseService,
     @Inject(ClientRuntimeConfigService) private readonly clientRuntimeConfig: ClientRuntimeConfigService,
+    @Inject(WagaByokAccessService) private readonly wagaByok: WagaByokAccessService,
   ) {}
 
   @Get("desktop-releases")
@@ -273,6 +275,18 @@ export class AdminController {
   @RequirePermissions("configs.manage")
   listIpAccessRules(@Req() request: AdminRequest) {
     return this.ipAccess.list(request.ip || request.socket.remoteAddress);
+  }
+
+  @Get("users/:userId/waga-byok")
+  @Header("Cache-Control", "no-store")
+  @RequirePermissions("users.read")
+  getWagaByokConfig(@Param("userId") userId: string) { return this.wagaByok.get(userId); }
+
+  @Patch("users/:userId/waga-byok")
+  @RequirePermissions("users.manage")
+  updateWagaByokConfig(@Req() request: AdminRequest, @Param("userId") userId: string, @Body() input: unknown) {
+    const body = asRecord(input);
+    return this.wagaByok.update(request.admin.sub, userId, { enabled: body.enabled, revision: body.revision });
   }
 
   @Post("configs/ip-access-rules")

@@ -130,6 +130,14 @@ const schemas: Record<string, JsonSchema> = {
       updated_at: { type: "string", format: "date-time" },
     },
   },
+  UserWagaByokAccess: {
+    type: "object", required: ["user_id", "enabled"],
+    properties: { user_id: { type: "string" }, enabled: { type: "boolean", default: false }, revision: { type: "integer", minimum: 0 }, migration_required: { type: "boolean" } },
+  },
+  UserWagaByokAccessRequest: {
+    type: "object", required: ["enabled", "revision"],
+    properties: { enabled: { type: "boolean" }, revision: { type: "integer", minimum: 0 } },
+  },
   ClientRuntimeConfigRequest: {
     type: "object",
     required: ["recommended_video_concurrency", "revision"],
@@ -982,6 +990,13 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/configs/client-runtime": {
       get: operation({ id: "getClientRuntimeConfig", tag: "管理配置", summary: "读取客户端运行配置", security: true, success: ref("ClientRuntimeConfig") }),
       patch: operation({ id: "updateClientRuntimeConfig", tag: "管理配置", summary: "实时调整客户端视频并发", description: "保存后新启动的自动工作流立即使用；0 表示不限制，NULL 表示跟随 RECOMMENDED_VIDEO_CONCURRENCY。", security: true, body: ref("ClientRuntimeConfigRequest"), success: ref("ClientRuntimeConfig") }),
+    },
+    "/auth/me/waga-byok": {
+      get: operation({ id: "getMyWagaByokAccess", tag: "用户认证", summary: "查询当前登录用户的 WagaAI 自备 Key 授权", description: "仅使用登录令牌中的用户身份，不接受查询其他用户；未授权默认关闭。不会返回或接收供应商 Key。", security: true, success: ref("UserWagaByokAccess") }),
+    },
+    "/admin/users/{userId}/waga-byok": {
+      get: operation({ id: "getUserWagaByokAccess", tag: "用户管理", summary: "读取指定用户的 WagaAI 授权", security: true, parameters: [pathId("userId", "用户 ID")], success: ref("UserWagaByokAccess") }),
+      patch: operation({ id: "updateUserWagaByokAccess", tag: "用户管理", summary: "单独授予或撤销用户的 WagaAI 自备 Key 权限", description: "需要 users.manage 权限；乐观锁及审计记录，不修改其他用户或平台积分。", security: true, parameters: [pathId("userId", "用户 ID")], body: ref("UserWagaByokAccessRequest"), success: ref("UserWagaByokAccess") }),
     },
     "/admin/configs/ip-access-rules": {
       get: operation({ id: "listIpAccessRules", tag: "管理配置", summary: "读取 IP 风控规则和当前管理端 IP", security: true }),

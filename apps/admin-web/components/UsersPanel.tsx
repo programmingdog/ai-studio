@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
 import { formatDatabaseDateTime } from "@/lib/admin-date-time";
 import { UserRelationsModal } from "./UserRelationsModal";
+import { WagaByokConfigPanel } from "./WagaByokConfigPanel";
 
 type UserRow = {
   id: string;
@@ -43,6 +44,7 @@ export function UsersPanel({ token }: { token: string }) {
   const [rows, setRows] = useState<UserRow[] | null>(null);
   const [editing, setEditing] = useState<UserRow | null>(null);
   const [adjusting, setAdjusting] = useState<UserRow | null>(null);
+  const [wagaUser, setWagaUser] = useState<UserRow | null>(null);
   const [relations, setRelations] = useState<{ userId: string; level: 1 | 2 } | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
@@ -66,9 +68,10 @@ export function UsersPanel({ token }: { token: string }) {
       <td><strong className="credit-balance">{formatCredits(row.credit_balance)}</strong><small className="cell-note">可用 {formatCredits(row.available_credits)} · 占用 {formatCredits(row.held_credits)}</small></td>
       <td><span className={`status ${row.status === "ACTIVE" ? "good" : "bad"}`}>{row.status}</span></td>
       <td>{formatDatabaseDateTime(row.last_login_at)}</td><td>{formatDatabaseDateTime(row.created_at)}</td>
-      <td><div className="table-actions"><button className="secondary" onClick={() => setRelations({ userId: row.id, level: 1 })}>查看上下级</button><button className="secondary" onClick={() => setEditing(row)}>编辑资料</button><button className="secondary credit-action" onClick={() => setAdjusting(row)}>调整积分</button></div></td>
+      <td><div className="table-actions"><button className="secondary" onClick={() => setRelations({ userId: row.id, level: 1 })}>查看上下级</button><button className="secondary" onClick={() => setEditing(row)}>编辑资料</button><button className="secondary credit-action" onClick={() => setAdjusting(row)}>调整积分</button><button className="secondary" onClick={() => setWagaUser(row)}>WagaAI 授权</button></div></td>
     </tr>)}</tbody></table></div> : <div className="empty-row">还没有用户</div>}
     {editing && <UserEditModal token={token} user={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await load(); }} />}
+    {wagaUser && <div className="modal-backdrop"><section className="modal model-modal" role="dialog" aria-modal="true" aria-label="用户 WagaAI 授权"><header><h2>{wagaUser.display_name || wagaUser.email || wagaUser.id}</h2><button type="button" aria-label="关闭" onClick={() => setWagaUser(null)}>×</button></header><WagaByokConfigPanel key={wagaUser.id} token={token} userId={wagaUser.id} /></section></div>}
     {adjusting && <CreditAdjustmentModal token={token} user={adjusting} onClose={() => setAdjusting(null)} onSaved={async () => { setAdjusting(null); await load(); }} />}
     {relations && <UserRelationsModal key={`${relations.userId}-${relations.level}`} token={token} userId={relations.userId} initialLevel={relations.level} onClose={() => setRelations(null)} />}
   </section>;

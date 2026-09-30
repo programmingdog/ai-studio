@@ -121,3 +121,13 @@ HTTP 发生超时、5xx、连接重置、跳转、无效 JSON 或未知响应格
 验证码（包含发件结果未确认的验证码）和频控均在 MySQL 中共享，多实例必须使用相同的数据库与 `CREDENTIAL_ENCRYPTION_KEY`；轮换该密钥后旧码失效。若 API 置于反向代理后，请按实际代理填写 `TRUST_PROXY` IP/CIDR 白名单（本机 Nginx 可用 `loopback`），代理应覆盖来自外部的 `X-Forwarded-For`。默认不信任该请求头，避免客户端伪造 IP 绕过限流。不要信任所有来源；公网部署还应在网关限制匿名请求体大小和请求速率。
 
 测试：`npm run test:registration --workspace @aivs/server`、`npm run test:mail-config --workspace @aivs/admin-web` 和 `npm run test:registration --workspace @aivs/desktop`。测试模拟邮件响应及事务状态，并通过本地 SMTP 握手验证 STARTTLS 不可用时拒绝明文认证及问候超时；不连接正式邮件服务，不实际发送邮件。
+
+## WagaAI 用户自备 Key
+
+用户级授权入口、客户端配置、计费隔离、迁移审核和回滚步骤见 [WagaAI 接入说明](../../docs/waga-byok.md)。授权默认关闭，仅对后台选中的用户生效；本次不替换原有平台积分模式。
+
+## 剧本上传双模式（AIVS-TXT-V1）
+
+客户端默认将普通 TXT/MD/DOCX/PDF 交给文本模型解析：长文按分集或行边界拆分（每段最多约 3800 字符），逐段校验后由程序合并为一个规范项目，整份剧本按一次剧本解析任务预留和结算积分。另有显式“按固定模板直接导入”模式：用户下载并填写 `apps/desktop/src/data/fixed-script-template.txt`，角色、场景、分集和镜头由本地程序读取与校验，不调用模型、不扣解析积分。普通 TXT 不会自动误判为免费导入。
+
+上线前必须先审核并执行 `063_script_analysis_results.sql`，它仅新增按任务 ID 保存完成结果的 `script_analysis_results` 表，不修改旧数据或积分表；新版客户端掉线或重启后用原幂等键查询结果，不能重提新的付费任务。**未获数据库变更确认时不要执行迁移。**注意 `npm run db:migrate` 会运行全部待执行迁移，应先用 `npm run db:migrate -- --check` 核对。回滚需先停用新版 API、备份解析结果，再执行 `DROP TABLE script_analysis_results; DELETE FROM schema_migrations WHERE id='063_script_analysis_results.sql';`，删除表会永久删除其中的解析结果。旧版反向代理仍需允许 `/api/v1/` 的长连接与禁用缓冲；分段进度通过 NDJSON 心跳传输。真实供应商调用与生产迁移尚须在目标环境验证。

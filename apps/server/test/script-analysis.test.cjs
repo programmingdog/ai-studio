@@ -58,6 +58,47 @@ test("script extraction enables streaming for OpenAI-compatible text models", as
   assert.match(result.normalized_script, /四、分镜列表/);
 });
 
+test("long TXT submits one billed task containing bounded segments", async () => {
+  const { fixture } = require("./fixtures/normalized-script.cjs");
+  const gateway = new ModelGatewayService({}, {});
+  gateway.defaultTextTarget = async () => ({ model_id: "model-1", model_code: "text", api_protocol: "openai",
+    generation_endpoint: "/v1/chat/completions", supports_async_tasks: 0 });
+  gateway.scriptAnalysisConfig = async () => ({ prompt: "忠实提取剧本", credit_cost: 10, revision: 1 });
+  let submissions = 0;
+  gateway.create = async (_userId, input) => {
+    submissions++;
+    assert.equal(input.creditOverride, 10);
+    assert.equal(input.taskType, "SCRIPT_ANALYSIS");
+    assert.equal(input.payload.mode, "SCRIPT_CHUNKS");
+    assert.ok(!JSON.stringify(input.payload).includes("对白与动作"));
+    assert.ok(input.scriptAnalysisChunks.chunks.length > 1);
+    assert.ok(input.scriptAnalysisChunks.chunks.every(chunk => chunk.text.length <= 3_800));
+    return { provider_response: { choices: [{ message: { content: JSON.stringify(fixture()) } }] } };
+  };
+  const script = `标题：大剧本\n第1集：开端\n${"对白与动作。\n".repeat(1_000)}`;
+  const result = await gateway.createScriptAnalysisUpload("user-1", {
+    idempotencyKey: "long-script", expectedCredits: 10,
+    file: { buffer: Buffer.from(script), mimetype: "text/plain", originalname: "story.txt", size: Buffer.byteLength(script) },
+  });
+  assert.equal(submissions, 1);
+  assert.ok(result.analysis.shots.length > 0);
+});
+
+test("replayed upload returns the original persisted result without a second provider request", async () => {
+  const { fixture } = require("./fixtures/normalized-script.cjs");
+  const gateway = new ModelGatewayService({}, {});
+  gateway.defaultTextTarget = async () => ({ model_id: "model-1", model_code: "text", api_protocol: "openai",
+    generation_endpoint: "/v1/chat/completions", supports_async_tasks: 0 });
+  gateway.scriptAnalysisConfig = async () => ({ prompt: "忠实提取剧本", credit_cost: 10, revision: 1 });
+  gateway.create = async () => ({ idempotent_replay: true });
+  gateway.scriptAnalysisResult = async () => ({ task: { status: "SUCCEEDED" }, analysis: fixture(), normalized_script: "已保存" });
+  const result = await gateway.createScriptAnalysisUpload("user-1", {
+    idempotencyKey: "replay", file: { buffer: Buffer.from("原文对白与场景内容还有动作"), mimetype: "text/plain", originalname: "story.txt", size: 39 },
+  });
+  assert.equal(result.normalized_script, "已保存");
+  assert.equal(result.task.status, "SUCCEEDED");
+});
+
 test("video URL and upload storyboard extraction use the configured feature price", async () => {
   const gateway = new ModelGatewayService({}, {});
   const target = {
