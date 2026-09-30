@@ -12,7 +12,9 @@ export interface ScriptChunk {
 }
 
 const episodeHeading = /^第\s*([零一二三四五六七八九十百\d]+)\s*集(?:[：:\s]+(.+))?\s*$/;
+const shotHeading = /^第\s*[零一二三四五六七八九十百\d]+\s*(?:段|镜头|分镜)(?:[（(：:\s]|$)|^镜头\s*[零一二三四五六七八九十百\d]+(?:[（(：:\s]|$)/;
 const maxChunkCharacters = 3_800;
+const maxShotsPerChunk = 4;
 const maximumChunks = 160;
 
 function episodeNumberFromText(value: string): number {
@@ -37,19 +39,23 @@ export function splitScriptText(source: string): ScriptChunk[] {
   let episodeNumber = 1;
   let episodeTitle = "完整剧本";
   let hasEpisode = false;
+  let shotCount = 0;
   const flush = () => {
     if (!current.trim()) return;
     chunks.push({ index: chunks.length, text: current, label: `第${episodeNumber}集·第${chunks.length + 1}段`, episodeNumber, episodeTitle });
     current = "";
+    shotCount = 0;
   };
   for (const line of lines) {
     const heading = episodeHeading.exec(line.trim());
+    const startsShot = shotHeading.test(line.trim());
     if (heading) {
       if ((hasEpisode || current.length + line.length > maxChunkCharacters) && current.trim()) flush();
       episodeNumber = episodeNumberFromText(heading[1]!);
       episodeTitle = heading[2]?.trim() || `第${episodeNumber}集`;
       hasEpisode = true;
     }
+    if (startsShot && shotCount >= maxShotsPerChunk && current.trim()) flush();
     if (current.length + line.length > maxChunkCharacters && current.trim() && !heading) flush();
     if (line.length > maxChunkCharacters) {
       let rest = line;
@@ -63,6 +69,7 @@ export function splitScriptText(source: string): ScriptChunk[] {
     } else {
       current += line;
     }
+    if (startsShot) shotCount++;
     if (chunks.length > maximumChunks) throw new BadRequestException(`剧本超过分段处理上限（${maximumChunks}段）；请按故事分成多个项目`);
   }
   flush();

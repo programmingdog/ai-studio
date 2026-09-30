@@ -177,6 +177,15 @@ function generatedText(value: unknown): string {
 }
 
 export function parseScriptAnalysis(value: unknown): Record<string, unknown> {
+  const response = asObject(value);
+  const choices = response.choices;
+  const modelCandidates = response.candidates;
+  const finishReason = Array.isArray(choices) ? asObject(choices[0]).finish_reason
+    : Array.isArray(modelCandidates) ? asObject(modelCandidates[0]).finishReason : undefined;
+  const incompleteReason = asObject(response.incomplete_details).reason;
+  if (["length", "max_tokens", "max_output_tokens"].includes(String(finishReason || incompleteReason || "").toLowerCase())) {
+    throw new BadGatewayException("文本大模型剧本输出达到长度上限，结果被截断；请缩小单段剧本或减少单段分镜数");
+  }
   const raw = generatedText(value)
     .replace(/^\uFEFF/, "")
     .replace(/&quot;|&#34;|&#x22;/gi, "\"")

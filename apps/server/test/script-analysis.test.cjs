@@ -14,6 +14,11 @@ test("accepts fenced OpenAI-compatible canonical JSON", () => {
   assert.equal(result.story.title, "原文标题");
 });
 
+test("reports a provider output limit before trying to parse truncated script JSON", () => {
+  assert.throws(() => parseScriptAnalysis({ choices: [{ message: { content: '{"story":' }, finish_reason: "length" }] }), /输出达到长度上限/);
+  assert.throws(() => parseScriptAnalysis({ candidates: [{ content: { parts: [{ text: '{"story":' }] }, finishReason: "MAX_TOKENS" }] }), /输出达到长度上限/);
+});
+
 test("repairs common JSON5 model output and explanatory prose", () => {
   const output = parseScriptAnalysis({ choices: [{ message: { content: `结果如下：\n\`\`\`json5\n{story:{title:'原文标题'},episodes:[],characters:[],scenes:[],props:[],sequences:[],shots:[],}\n\`\`\`` } }] });
   assert.equal(output.story.title, "原文标题");

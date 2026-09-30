@@ -21,6 +21,16 @@ test("long scripts without episode headings are still bounded and lossless", () 
   assert.equal(chunks.map(chunk => chunk.text).join(""), source);
 });
 
+test("dense preformatted storyboards keep at most four shots in each chunk", () => {
+  const source = `标题：上面还有一层\n角色与场景设定\n${Array.from({ length: 30 }, (_, index) =>
+    `第${index + 1}段（${index * 10}～${(index + 1) * 10}秒）\n画面：第${index + 1}段画面\n台词：原文对白\n\n`).join("")}`;
+  const chunks = splitScriptText(source);
+  assert.ok(chunks.length >= 8);
+  assert.ok(chunks.every(chunk => chunk.text.length <= 3_800));
+  assert.ok(chunks.every(chunk => (chunk.text.match(/^第\d+段（/gm) || []).length <= 4));
+  assert.equal(chunks.map(chunk => chunk.text).join(""), source);
+});
+
 test("independent validated results merge with global IDs, time and episodes", () => {
   const chunks = [
     { index: 0, text: "第1集：雨夜\n林夏发现信件", label: "第1集", episodeNumber: 1, episodeTitle: "雨夜" },
