@@ -10,7 +10,7 @@ const file = path.join(__dirname, '../components/UserRelationsModal.tsx');
 
 test('directory shows cash separate from credits, parent and both descendant counts', async () => {
   const row = { ...root, parent, direct_count: 1, indirect_count: 2, credit_balance: 50, held_credits: 0, available_credits: 50, commission_available_fen: 25850, commission_frozen_fen: 10000 };
-  const h = componentHarness(path.join(__dirname, '../components/UsersPanel.tsx'), 'UsersPanel', { token: 'test' }, { '@/lib/api': { async apiRequest() { return [row]; } }, './UserRelationsModal': { UserRelationsModal: 'RelationsModal' } });
+  const h = componentHarness(path.join(__dirname, '../components/UsersPanel.tsx'), 'UsersPanel', { token: 'test' }, { '@/lib/api': { async apiRequest() { return [row]; } }, './UserRelationsModal': { UserRelationsModal: 'RelationsModal' }, './WagaByokConfigPanel': { WagaByokConfigPanel: 'WagaByokConfigPanel' } });
   await h.ready();
   const text = h.nodes().map(h.text).join(' ');
   assert.match(text, /¥358\.50/); assert.match(text, /可提现 ¥258\.50/); assert.match(text, /冻结 ¥100\.00/);

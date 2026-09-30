@@ -4,6 +4,7 @@ require('reflect-metadata');
 const { RegistrationVerificationService } = require('../dist/user-auth/registration-verification.service');
 const { UserAuthService } = require('../dist/user-auth/user-auth.service');
 const { UserAuthController } = require('../dist/user-auth/user-auth.controller');
+const { WagaByokAccessService } = require('../dist/common/waga-byok-access.service');
 const { MailDeliveryUnconfirmedException } = require('../dist/user-auth/mail-delivery-unconfirmed.exception');
 
 // Transactional SQL double: serializes concurrent transactions and restores rows on rollback.
@@ -353,6 +354,7 @@ test('HTTP routes require code/proof fields, return no-store and wire the three-
     controllers: [UserAuthController],
     providers: [UserAuthGuard,
       { provide: UserAuthService, useValue: { registerEmail: (...args) => { calls.push(['register', ...args]); return { accepted: true }; } } },
+      { provide: WagaByokAccessService, useValue: { async get() { return { enabled: false, revision: 0 }; } } },
       { provide: require('../dist/common/auth-method-config.service').AuthMethodConfigService, useValue: { assertRegistrationEnabled: async () => undefined } },
       { provide: RegistrationVerificationService, useValue: {
         emailStatus: (...args) => { calls.push(['email-status', ...args]); return { email: args[0], registered: false }; },
@@ -362,7 +364,7 @@ test('HTTP routes require code/proof fields, return no-store and wire the three-
       } },
     ],
   })(RegistrationTestModule);
-  const app = await NestFactory.create(RegistrationTestModule, { logger: false });
+  const app = await NestFactory.create(RegistrationTestModule, { logger: false, abortOnError: false });
   app.setGlobalPrefix('api/v1');
   await app.listen(0, '127.0.0.1');
   try {
