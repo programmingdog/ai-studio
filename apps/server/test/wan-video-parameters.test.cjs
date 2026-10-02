@@ -29,8 +29,31 @@ test('Wan maps the exact desktop workflow payload to documented parameters', () 
     version: 'standard', duration: '10', resolution: '720P', ratio: '9:16',
     image_url: reference_images.map(r => r.data_url || r.url),
   });
-  assert.match(result.body.prompt, /第1张：角色/);
-  assert.match(result.body.prompt, /第2张：场景/);
+  assert.match(result.body.prompt, /图1为角色。/);
+  assert.match(result.body.prompt, /图2为场景。/);
+  assert.equal(result.body.prompt.split('【参考图片对应关系】').length - 1, 1);
+  assert.equal(JSON.stringify(payload), original);
+});
+
+test('Wan sends the storyboard first frame first with matching scene and character prompt numbers', () => {
+  const reference_images = [
+    { url: 'https://example.com/scene.png', type: 'scene', label: '场景“书房”' },
+    { data_url: 'data:image/png;base64,dGVzdA==', type: 'character', label: '角色“沈砚”·白衣' },
+    { url: 'https://example.com/previous-tail.png', type: 'shot_first_frame', label: '分镜图（视频首帧）' },
+  ];
+  const payload = { prompt: '在参考图1的书房中，参考图2中的沈砚转身，以参考图3为首帧。',
+    aspect_ratio: '9:16', seconds: 10, duration: 10, resolution: '720p', reference_images };
+  const original = JSON.stringify(payload);
+  const body = request(payload).body;
+  assert.deepEqual(body.params, {
+    version: 'standard', duration: '10', resolution: '720P', ratio: '9:16',
+    image_url: [reference_images[2].url, reference_images[0].url, reference_images[1].data_url],
+  });
+  assert.match(body.prompt, /^在参考图2的书房中，参考图3中的沈砚转身，以参考图1为首帧。/);
+  assert.match(body.prompt, /图1是本视频的分镜图，并作为视频首帧/);
+  assert.match(body.prompt, /图2为本视频场景“书房”/);
+  assert.match(body.prompt, /图3为角色沈砚的三视图（状态：白衣）/);
+  assert.equal(body.prompt.split('【参考图片对应关系】').length - 1, 1);
   assert.equal(JSON.stringify(payload), original);
 });
 
