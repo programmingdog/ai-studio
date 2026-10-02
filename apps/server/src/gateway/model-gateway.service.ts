@@ -6,6 +6,7 @@ import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
 import { resolveMediaResolution, supportsMediaResolution } from "./media-resolution";
 import { wagaMediaParams, wagaProfiles, wagaTaskStatus } from "./waga-media";
+import { orderedVideoReferenceImages, withVideoReferenceRelationships } from "./video-reference-prompt";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
 import { multiplyCredits, roundedModelCredits, storedModelCreditMultiplier } from "../common/model-credit";
 import mammoth from "mammoth";
@@ -949,8 +950,10 @@ export class ModelGatewayService {
     let endpoint = target.generation_endpoint.replaceAll("{model}", encodeURIComponent(target.model_code)).replaceAll("{action}", String(modelConfig.test_action || "generateContent"));
     let body: Record<string, unknown> | FormData;
     if (protocol === "gemini") {
-      const prompt = source.prompt;
-      const referenceImages = Array.isArray(source.reference_images) ? source.reference_images : [];
+      const rawReferenceImages = Array.isArray(source.reference_images) ? source.reference_images : [];
+      const originalVideoImages = rawReferenceImages.map(asObject);
+      const referenceImages = target.capability === "VIDEO_GENERATION" ? orderedVideoReferenceImages(originalVideoImages) : rawReferenceImages;
+      const prompt = target.capability === "VIDEO_GENERATION" ? withVideoReferenceRelationships(String(source.prompt || ""), referenceImages.map(asObject), originalVideoImages) : source.prompt;
       const aspectRatio = String(source.aspect_ratio || asObject(source.params).aspect_ratio || "");
       const resolution = String(source.resolution || asObject(source.params).resolution || "");
       const videoUri = source.video_uri || source.reference_video;
@@ -995,6 +998,9 @@ export class ModelGatewayService {
           const reference = asObject(item);
           const dataUrl = String(reference.data_url || "");
           const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
+          if (!match && target.capability === "VIDEO_GENERATION") {
+            throw new BadRequestException("GEM 视频参考图必须包含有效的内嵌图片数据；请升级客户端后重试，避免参考图遗漏");
+          }
           if (match) parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
         }
         body = { ...source, contents: [{ role: "user", parts }], ...(target.capability === "IMAGE_GENERATION" ? { generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: { ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { imageSize: resolution } : {}) } } } : {}) };
@@ -1002,10 +1008,11 @@ export class ModelGatewayService {
       if (target.capability === "VIDEO_UNDERSTANDING") validateGeminiVideoPayload(body);
     } else if (protocol === "lingkeai_media") {
       const prompt = source.prompt; const providedParams = { ...asObject(source.params) }; delete source.prompt; delete source.params;
-      const references = (Array.isArray(source.reference_images) ? source.reference_images : Array.isArray(providedParams.reference_images) ? providedParams.reference_images : []).map((item) => {
+      const rawReferences = (Array.isArray(source.reference_images) ? source.reference_images : Array.isArray(providedParams.reference_images) ? providedParams.reference_images : []).map((item) => {
         const reference = asObject(item);
         return { url: typeof item === "string" ? item : String(reference.data_url || reference.url || ""), label: String(reference.label || "参考图"), type: String(reference.type || "reference") };
-      }).filter((reference) => reference.url).sort((a, b) => Number(b.type === "shot_first_frame") - Number(a.type === "shot_first_frame"));
+      }).filter((reference) => reference.url);
+      const references = target.capability === "VIDEO_GENERATION" ? orderedVideoReferenceImages(rawReferences) : rawReferences;
       delete source.reference_images; delete providedParams.reference_images;
       let params = { ...source, ...providedParams };
       delete params.seconds;
@@ -1017,23 +1024,24 @@ export class ModelGatewayService {
         if (target.model_code === "omni_flash-10s") { delete params.resolution; delete params.duration; delete params.version; }
       } else params.reference_images = references;
       const guide = references.length ? `\n\n参考图对应关系：\n${references.map((reference, index) => `第${index + 1}张：${reference.label}`).join("\n")}` : "";
-      body = { model: target.model_code, prompt: `${typeof prompt === "string" ? prompt : ""}${guide}`, params,
+      body = { model: target.model_code, prompt: target.capability === "VIDEO_GENERATION" ? withVideoReferenceRelationships(typeof prompt === "string" ? prompt : "", references, rawReferences) : `${typeof prompt === "string" ? prompt : ""}${guide}`, params,
         ...(target.capability === "IMAGE_GENERATION" && !wagaProfiles[target.model_code] ? { images: references } : {}) };
     } else if (protocol === "allaiin_rest") {
       const supplied = { ...asObject(source.params), ...source };
       const rawReferences = Array.isArray(source.reference_images) ? source.reference_images : Array.isArray(asObject(source.params).reference_images) ? asObject(source.params).reference_images as unknown[] : [];
-      const referenceUrls = rawReferences.map((item) => {
+      const originalReferences = rawReferences.map((item) => {
         const reference = asObject(item);
         const url = typeof item === "string" ? item : String(reference.url || reference.data_url || "");
         if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new BadRequestException("慧心AI 参考图需要公网 URL，请使用新版客户端重新上传参考图；本次未开始生成");
-        return { url, type: String(reference.type || "reference") };
+        return { url, type: String(reference.type || "reference"), label: String(reference.label || "参考图") };
       });
+      const referenceUrls = target.capability === "VIDEO_GENERATION" ? orderedVideoReferenceImages(originalReferences) : originalReferences;
       const maxReferenceImages = Number(target.max_reference_images);
       if (Number.isInteger(maxReferenceImages) && maxReferenceImages >= 0 && referenceUrls.length > maxReferenceImages) {
         throw new BadRequestException(`慧心AI ${target.model_alias || target.model_code} 最多支持 ${maxReferenceImages} 张参考图，当前有 ${referenceUrls.length} 张`);
       }
       const firstFrame = referenceUrls.find((reference) => reference.type === "shot_first_frame");
-      body = { prompt: String(supplied.prompt || "") };
+      body = { prompt: target.capability === "VIDEO_GENERATION" ? withVideoReferenceRelationships(String(supplied.prompt || ""), referenceUrls, originalReferences) : String(supplied.prompt || "") };
       if (target.capability === "VIDEO_GENERATION") {
         body.size = String(supplied.size || supplied.aspect_ratio || "9:16");
         if (supplied.seconds != null || supplied.duration != null) body.seconds = Number(supplied.seconds ?? supplied.duration);
@@ -1045,8 +1053,7 @@ export class ModelGatewayService {
         if (referenceUrls.length) body.reference_images = referenceUrls.map((reference) => reference.url);
       } else {
         if (firstFrame) body.frame_start = firstFrame.url;
-        const additionalImages = referenceUrls.filter((reference) => reference !== firstFrame).map((reference) => reference.url);
-        if (additionalImages.length) body.reference_images = additionalImages;
+        if (referenceUrls.length) body.reference_images = referenceUrls.map((reference) => reference.url);
       }
       const id = Number(modelConfig.remote_numeric_id);
       if (Number.isInteger(id) && id > 0) body.model_id = id;
@@ -1071,6 +1078,12 @@ export class ModelGatewayService {
       } else body = { model: target.model_code, prompt, size };
     } else {
       body = { ...source, model: target.model_code };
+      if (target.capability === "VIDEO_GENERATION" && Array.isArray(source.reference_images)) {
+        const originalReferences = source.reference_images.map(asObject);
+        const references = orderedVideoReferenceImages(originalReferences);
+        body.reference_images = references;
+        body.prompt = withVideoReferenceRelationships(String(source.prompt || ""), references, originalReferences);
+      }
       if (!["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(target.capability) && !body.messages && typeof body.prompt === "string") { body.messages = [{ role: "user", content: body.prompt }]; delete body.prompt; }
     }
     if (isMedia) {

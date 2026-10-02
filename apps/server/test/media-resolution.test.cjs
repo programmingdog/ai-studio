@@ -69,7 +69,7 @@ test("AllAIIn media sends public reference URLs in documented fields", () => {
     reference_images: [{ url: "https://example.com/first.png", type: "shot_first_frame" }, { url: "https://example.com/ref.png" }] };
   const body = request(model, payload).body;
   assert.equal(body.frame_start, "https://example.com/first.png");
-  assert.deepEqual(body.reference_images, ["https://example.com/ref.png"]);
+  assert.deepEqual(body.reference_images, ["https://example.com/first.png", "https://example.com/ref.png"]);
   assert.equal(body.seconds, 5);
   assert.equal(body.duration, undefined);
   assert.equal(body.version, undefined);

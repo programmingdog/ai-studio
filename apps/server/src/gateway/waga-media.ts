@@ -1,4 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
+import { orderedVideoReferenceImages } from "./video-reference-prompt";
 
 type Obj = Record<string, any>;
 const object = (v: unknown): Obj => v && typeof v === "object" && !Array.isArray(v) ? v : {};
@@ -82,7 +83,7 @@ export function wagaMediaParams(model: string, schema: unknown, config: unknown,
   if (!options.submit) return result;
   const refs = options.references || [];
   // First/last-frame models must receive the actual first frame first.
-  const ordered = [...refs.filter(r => r.type === "shot_first_frame"), ...refs.filter(r => r.type !== "shot_first_frame")];
+  const ordered = profile.video ? orderedVideoReferenceImages(refs) : refs;
   const imageInput = ordered.length ? ordered.map(r => r.url) : source[profile.images];
   const images = imageInput == null ? [] : Array.isArray(imageInput) ? imageInput : [imageInput];
   if (images.length > profile.max) fail(`最多支持 ${profile.max} 张参考图，当前有 ${images.length} 张，请减少参考图或更换方案。`);

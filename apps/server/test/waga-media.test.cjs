@@ -118,7 +118,8 @@ test('first frame is first in both the provider array and reference label guide'
   const code='kling-v3-video';
   const body=new ModelGatewayService({},{}).request(target(code),{...payload(code),reference_images:[{url:ref,label:'尾帧'},{url:'https://example.com/first.png',type:'shot_first_frame',label:'首帧'}]},'fixture').body;
   assert.equal(body.params.images[0],'https://example.com/first.png');
-  assert.match(body.prompt,/第1张：首帧/);
+  assert.match(body.prompt,/图1是本视频的分镜图，并作为视频首帧/);
+  assert.match(body.prompt,/图2为尾帧/);
 });
 test('invalid media counts, missing references, unsupported durations and editions fail before submit', () => {
   for(const code of Object.keys(wagaProfiles)) {
