@@ -62,6 +62,61 @@ function operation(input: {
 }
 
 const schemas: Record<string, JsonSchema> = {
+  DesktopReleaseArtifact: {
+    type: "object",
+    required: ["target", "arch", "url", "signature"],
+    properties: {
+      target: { type: "string", enum: ["windows", "darwin"] },
+      arch: { type: "string", enum: ["x86_64", "aarch64"] },
+      url: { type: "string", format: "uri", maxLength: 1000, description: "在线升级的 HTTPS 签名更新包地址" },
+      signature: { type: "string", minLength: 1, maxLength: 2000 },
+    },
+  },
+  DesktopReleaseRequest: {
+    type: "object",
+    required: ["version", "artifacts"],
+    properties: {
+      version: { type: "string", maxLength: 32, example: "1.2.3" },
+      channel: { type: "string", maxLength: 32, default: "stable" },
+      notes: { type: "string", maxLength: 20000 },
+      backup_download_url: { type: "string", maxLength: 2000, description: "可选的绝对 HTTP/HTTPS 网盘或下载页面地址；允许查询和片段，禁止账号密码。新建省略为空，编辑草稿省略保留旧值，空字符串清空。" },
+      min_supported_version: { type: "string", maxLength: 32, default: "0.0.0" },
+      rollout_percent: { type: "integer", minimum: 1, maximum: 100, default: 100 },
+      artifacts: { type: "array", maxItems: 4, items: ref("DesktopReleaseArtifact") },
+    },
+  },
+  DesktopRelease: {
+    allOf: [ref("DesktopReleaseRequest"), {
+      type: "object",
+      required: ["id", "status", "backup_download_url"],
+      properties: {
+        id: { type: "string", format: "uuid" },
+        status: { type: "string", enum: ["DRAFT", "PUBLISHED", "ARCHIVED"] },
+        backup_download_url: { type: "string", maxLength: 2000, description: "未配置时返回空字符串" },
+        created_at: { type: "string", format: "date-time" },
+        updated_at: { type: "string", format: "date-time" },
+        published_at: { type: "string", format: "date-time", nullable: true },
+      },
+    }],
+  },
+  DesktopReleaseBackupDownloadUrlRequest: {
+    type: "object",
+    required: ["backup_download_url"],
+    properties: {
+      backup_download_url: { type: "string", maxLength: 2000, description: "绝对 HTTP/HTTPS 地址，允许查询和片段，禁止账号密码；空字符串清空。" },
+    },
+  },
+  DesktopUpdate: {
+    type: "object",
+    required: ["version", "notes", "url", "signature", "backup_download_url", "mandatory", "min_supported_version", "rollout_percent"],
+    properties: {
+      version: { type: "string" }, notes: { type: "string" }, pub_date: { type: "string", format: "date-time" },
+      url: { type: "string", format: "uri", description: "在线升级使用的签名更新包地址" },
+      signature: { type: "string" },
+      backup_download_url: { type: "string", maxLength: 2000, description: "供用户复制后手动下载安装的备用地址，未配置时为空；不替换签名更新包。" },
+      mandatory: { type: "boolean" }, min_supported_version: { type: "string" }, rollout_percent: { type: "integer" },
+    },
+  },
   ErrorResponse: {
     type: "object",
     required: ["statusCode", "message"],
@@ -762,6 +817,22 @@ export function createApiDocument(): OpenAPIObject {
     "/client-config/releases/current": {
       get: operation({ id: "currentConfigRelease", tag: "客户端配置", summary: "读取当前发布配置", parameters: [query("channel", "发布渠道，默认 stable")] }),
     },
+    "/client-config/desktop-updates/{target}/{arch}/{currentVersion}": {
+      get: {
+        ...operation({ id: "desktopUpdate", tag: "客户端配置", summary: "检查符合平台、版本和灰度规则的桌面更新", description: "无可用更新返回 204。备用地址随符合规则的签名更新包一起返回，不改变强制升级或灰度规则。", parameters: [
+          { name: "target", in: "path", required: true, schema: { type: "string", enum: ["windows", "darwin"] } },
+          { name: "arch", in: "path", required: true, schema: { type: "string", enum: ["x86_64", "aarch64"] } },
+          { name: "currentVersion", in: "path", required: true, schema: { type: "string", example: "1.0.0" } },
+          query("channel", "发布渠道，默认 stable"),
+          { name: "X-Update-Cohort", in: "header", schema: { type: "string", maxLength: 128 }, description: "稳定的设备标识，用于灰度分组" },
+        ], success: ref("DesktopUpdate") }),
+        responses: {
+          "200": { description: "有可用更新", content: { "application/json": { schema: ref("DesktopUpdate") } } },
+          "204": { description: "当前没有符合条件的更新" },
+          "400": { description: "版本、平台或渠道参数无效" },
+        },
+      },
+    },
     "/client-config/models": {
       get: operation({ id: "clientModels", tag: "客户端配置", summary: "读取启用的大模型目录与积分价格", success: arrayOf(ref("Model")) }),
     },
@@ -978,6 +1049,16 @@ export function createApiDocument(): OpenAPIObject {
     "/admin/configs/mail": {
       get: operation({ id: "getMailConfig", tag: "管理配置", summary: "读取邮箱配置（不含密码）", security: true, success: ref("MailConfig") }),
       patch: operation({ id: "saveMailConfig", tag: "管理配置", summary: "保存邮箱配置", description: "需要 configs.manage 权限；发件密码加密保存、留空保留。携带当前 revision 防止并发覆盖。保存后新邮件请求立即使用配置。", security: true, body: ref("MailConfigRequest"), success: ref("MailConfig") }),
+    },
+    "/admin/desktop-releases": {
+      get: operation({ id: "listDesktopReleases", tag: "版本管理", summary: "读取桌面版本及备用下载链接（releases.manage）", security: true, success: arrayOf(ref("DesktopRelease")) }),
+      post: operation({ id: "createDesktopRelease", tag: "版本管理", summary: "创建桌面版本草稿（releases.manage）", security: true, body: ref("DesktopReleaseRequest"), success: ref("DesktopRelease") }),
+    },
+    "/admin/desktop-releases/{releaseId}": {
+      patch: operation({ id: "updateDesktopRelease", tag: "版本管理", summary: "编辑桌面版本草稿（releases.manage）", description: "只有草稿可编辑整体版本信息；省略 backup_download_url 保留原值，空字符串清空。", security: true, parameters: [pathId("releaseId", "桌面版本 ID")], body: ref("DesktopReleaseRequest"), success: ref("DesktopRelease") }),
+    },
+    "/admin/desktop-releases/{releaseId}/backup-download-url": {
+      patch: operation({ id: "updateDesktopReleaseBackupDownloadUrl", tag: "版本管理", summary: "修改或清空各状态版本的备用下载链接（releases.manage）", description: "允许草稿、已发布和已归档版本。记录修改前后审计，不修改更新包签名、发布状态或灰度比例。", security: true, parameters: [pathId("releaseId", "桌面版本 ID")], body: ref("DesktopReleaseBackupDownloadUrlRequest"), success: ref("DesktopRelease") }),
     },
     "/admin/configs/auth-methods": {
       get: operation({ id: "getAdminAuthMethods", tag: "管理配置", summary: "读取客户端登录方式配置", security: true, success: ref("ClientAuthMethods") }),

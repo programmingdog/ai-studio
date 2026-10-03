@@ -47,6 +47,21 @@ test('admin health check targets a successful page instead of the redirecting ro
   assert.match(healthcheck, /redirect: 'error'/);
 });
 
+test('tutorial media survives releases and large uploads bypass the temporary proxy buffer', () => {
+  const compose = read('deploy/compose.yml');
+  assert.match(compose, /TUTORIAL_MEDIA_DIRECTORY: \/var\/lib\/aivs\/tutorial-media/);
+  assert.match(compose, /\/opt\/aivs\/shared\/tutorial-media:\/var\/lib\/aivs\/tutorial-media:rw/);
+  assert.match(read('deploy/deploy.sh'), /mkdir -p "\$root\/shared\/tutorial-media"/);
+  const proxy = read('deploy/nginx.conf.example');
+  const upload = proxy.match(/location = \/api\/v1\/admin\/tutorials\/media \{([^}]+)\}/)?.[1];
+  assert.ok(upload, 'the larger upload limit must be limited to the tutorial upload endpoint');
+  assert.match(upload, /client_max_body_size 512m;/);
+  assert.match(upload, /proxy_request_buffering off;/);
+  assert.match(upload, /proxy_pass http:\/\/127\.0\.0\.1:3101;/);
+  assert.match(upload, /X-Forwarded-For \$remote_addr/);
+  assert.match(read('.github/workflows/platform.yml'), /curl --fail 'http:\/\/127\.0\.0\.1:3101\/api\/v1\/tutorials\?page=1'/);
+});
+
 test('CI publishes exactly the tested images and protects production', () => {
   const workflow = read('.github/workflows/platform.yml');
   assert.match(workflow, /docker save aivs-api:ci aivs-admin:ci/);
@@ -133,6 +148,7 @@ test('successful release stops, backs up, migrates, checks health and switches c
   assert.equal(fs.readlinkSync(path.join(f.sandbox, 'current')), path.join(f.sandbox, 'releases/new'));
   assert.equal(fs.readlinkSync(path.join(f.sandbox, 'previous')), old);
   assert.ok(fs.existsSync(path.join(f.sandbox, 'releases/new/healthy')));
+  assert.ok(fs.statSync(path.join(f.sandbox, 'shared/tutorial-media')).isDirectory());
 });
 test('pull failure never stops the old version', linux, t => {
   const f = fixture(t); f.previous();

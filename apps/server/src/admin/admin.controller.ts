@@ -93,6 +93,12 @@ export class AdminController {
     return this.desktopReleases.updateNotes(request.admin.sub, releaseId, asRecord(input).notes);
   }
 
+  @Patch("desktop-releases/:releaseId/backup-download-url")
+  @RequirePermissions("releases.manage")
+  updateDesktopReleaseBackupDownloadUrl(@Req() request: AdminRequest, @Param("releaseId") releaseId: string, @Body() input: unknown) {
+    return this.desktopReleases.updateBackupDownloadUrl(request.admin.sub, releaseId, asRecord(input).backup_download_url);
+  }
+
   @Delete("desktop-releases/:releaseId")
   @RequirePermissions("releases.manage")
   deleteDesktopRelease(@Req() request: AdminRequest, @Param("releaseId") releaseId: string) {
@@ -652,10 +658,12 @@ export class AdminController {
   private desktopReleaseInput(body: Record<string, unknown>): DesktopReleaseInput {
     const rawArtifacts = body.artifacts;
     if (!Array.isArray(rawArtifacts)) throw new BadRequestException("artifacts 必须是数组");
+    if ("backup_download_url" in body && typeof body.backup_download_url !== "string") throw new BadRequestException("backup_download_url 必须是字符串");
     return {
       version: requiredString(body, "version", 32),
       channel: optionalString(body, "channel", 32) || "stable",
       notes: optionalString(body, "notes", 20000) || "",
+      backupDownloadUrl: body.backup_download_url as string | undefined,
       minSupportedVersion: optionalString(body, "min_supported_version", 32) || "0.0.0",
       rolloutPercent: Number(body.rollout_percent ?? 100),
       artifacts: rawArtifacts.map((value) => {

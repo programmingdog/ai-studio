@@ -11,6 +11,7 @@ type Release = {
   channel: string;
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   notes: string;
+  backup_download_url: string;
   min_supported_version: string;
   rollout_percent: number;
   created_at: string;
@@ -26,7 +27,7 @@ const artifactOptions: Array<{ target: Artifact["target"]; arch: Artifact["arch"
 ];
 
 type ReleaseForm = Omit<Release, "id" | "status" | "created_at" | "updated_at" | "published_at">;
-const emptyForm = (): ReleaseForm => ({ version: "", channel: "stable", notes: "", min_supported_version: "0.0.0", rollout_percent: 100, artifacts: [] });
+const emptyForm = (): ReleaseForm => ({ version: "", channel: "stable", notes: "", backup_download_url: "", min_supported_version: "0.0.0", rollout_percent: 100, artifacts: [] });
 
 const time = (value: string | null) => formatDatabaseDateTime(value);
 
@@ -34,10 +35,26 @@ function statusLabel(status: Release["status"]) {
   return status === "DRAFT" ? "草稿" : status === "PUBLISHED" ? "已发布" : "已归档";
 }
 
+function normalizeBackupDownloadUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed.length > 2000) throw new Error("备用下载链接不能超过 2000 个字符");
+  if (!/^https?:\/\//i.test(trimmed) || /[\u0000-\u001f\u007f\\]/.test(trimmed)) throw new Error("备用下载链接必须是完整的 HTTP 或 HTTPS 地址");
+  let url: URL;
+  try { url = new URL(trimmed); }
+  catch { throw new Error("备用下载链接必须是有效的 HTTP 或 HTTPS 地址"); }
+  if (!/^https?:$/.test(url.protocol) || !url.hostname) throw new Error("备用下载链接必须是有效的 HTTP 或 HTTPS 地址");
+  if (url.username || url.password) throw new Error("备用下载链接不能包含账号密码");
+  const normalized = url.toString();
+  if (normalized.length > 2000) throw new Error("备用下载链接不能超过 2000 个字符");
+  return normalized;
+}
+
 export function DesktopReleasePanel({ token }: { token: string }) {
   const [releases, setReleases] = useState<Release[] | null>(null);
   const [editing, setEditing] = useState<Release | "new" | null>(null);
   const [editingNotes, setEditingNotes] = useState<Release | null>(null);
+  const [editingBackup, setEditingBackup] = useState<Release | null>(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -76,17 +93,18 @@ export function DesktopReleasePanel({ token }: { token: string }) {
 
   return <>
     <section className="section-card desktop-release-card">
-      <header><div><span className="kicker">SIGNED DESKTOP UPDATES</span><h2>客户端版本管理</h2><p>管理签名更新包、灰度比例和强制升级门槛。发布后更新包与签名保持锁定，更新说明可随时修订并由客户端直接读取。</p></div><button className="primary" onClick={() => setEditing("new")}>新建版本</button></header>
+      <header><div><span className="kicker">SIGNED DESKTOP UPDATES</span><h2>客户端版本管理</h2><p>管理签名更新包、灰度比例和强制升级门槛。发布后更新包与签名保持锁定，更新说明和备用下载链接可随时修改。</p></div><button className="primary" onClick={() => setEditing("new")}>新建版本</button></header>
       <div className="release-practices"><span>① CI 构建并签名</span><span>② 上传更新包与 .sig</span><span>③ 后台保存为草稿</span><span>④ 小范围验证后发布</span></div>
       {error && <div className="form-error" role="alert">{error}</div>}
       {message && <div className="form-success" role="status">{message}</div>}
       {!releases ? <div className="loading-card"><span className="spinner" />正在读取客户端版本…</div> : releases.length === 0 ? <div className="empty-row">还没有客户端版本。请先由构建机生成签名更新包。</div> : <div className="release-list">
         {releases.map((release) => <article key={release.id}>
           <div className="release-version"><strong>v{release.version}</strong><span className={`status ${release.status === "PUBLISHED" ? "good" : release.status === "ARCHIVED" ? "bad" : "warn"}`}>{statusLabel(release.status)}</span><small>{release.channel}</small></div>
-          <div className="release-detail"><p>{release.notes || "未填写更新说明"}</p><small>更新包：{release.artifacts.map((item) => artifactOptions.find((option) => option.target === item.target && option.arch === item.arch)?.label || `${item.target}/${item.arch}`).join("、") || "尚未配置"}</small><small>灰度 {release.rollout_percent}% · 最低可运行 v{release.min_supported_version} · 发布于 {time(release.published_at)}</small></div>
+          <div className="release-detail"><p>{release.notes || "未填写更新说明"}</p><small>更新包：{release.artifacts.map((item) => artifactOptions.find((option) => option.target === item.target && option.arch === item.arch)?.label || `${item.target}/${item.arch}`).join("、") || "尚未配置"}</small><small>备用下载：{release.backup_download_url ? "已配置" : "未配置"}</small><small>灰度 {release.rollout_percent}% · 最低可运行 v{release.min_supported_version} · 发布于 {time(release.published_at)}</small></div>
           <div className="release-actions">
             {release.status === "DRAFT" && <><button className="secondary" disabled={busyId === release.id} onClick={() => setEditing(release)}>编辑</button><button className="primary" disabled={busyId === release.id || !release.artifacts.length} onClick={() => void action(release, "publish")}>发布</button><button className="danger-button" disabled={busyId === release.id} onClick={() => void action(release, "delete")}>删除</button></>}
             {release.status !== "DRAFT" && <button className="secondary" disabled={busyId === release.id} onClick={() => setEditingNotes(release)}>编辑更新说明</button>}
+            <button className="secondary" disabled={busyId === release.id} onClick={() => setEditingBackup(release)}>编辑备用链接</button>
             {release.status === "PUBLISHED" && <><button className="secondary" disabled={busyId === release.id} onClick={() => void changeRollout(release)}>调整灰度</button><button className="secondary" disabled={busyId === release.id} onClick={() => void action(release, "archive")}>停止分发</button></>}
           </div>
         </article>)}
@@ -94,7 +112,32 @@ export function DesktopReleasePanel({ token }: { token: string }) {
     </section>
     {editing && <ReleaseEditor token={token} release={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={async (release) => { setEditing(null); setMessage(release.status === "DRAFT" ? `v${release.version} 草稿已保存。` : "版本已保存。"); await load(); }} />}
     {editingNotes && <ReleaseNotesEditor token={token} release={editingNotes} onClose={() => setEditingNotes(null)} onSaved={async () => { setEditingNotes(null); setMessage(`v${editingNotes.version} 的客户端更新说明已更新。`); await load(); }} />}
+    {editingBackup && <ReleaseBackupEditor token={token} release={editingBackup} onClose={() => setEditingBackup(null)} onSaved={async (url) => { setEditingBackup(null); setMessage(`v${editingBackup.version} 的备用下载链接已${url ? "更新" : "清空"}。`); await load(); }} />}
   </>;
+}
+
+function ReleaseBackupEditor({ token, release, onClose, onSaved }: { token: string; release: Release; onClose: () => void; onSaved: (url: string) => void }) {
+  const [value, setValue] = useState(release.backup_download_url || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError("");
+    let url: string;
+    try { url = normalizeBackupDownloadUrl(value); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "备用下载链接无效"); return; }
+    setSaving(true);
+    try {
+      await apiRequest(`/admin/desktop-releases/${release.id}/backup-download-url`, { method: "PATCH", body: JSON.stringify({ backup_download_url: url }) }, token);
+      onSaved(url);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "保存备用下载链接失败"); }
+    finally { setSaving(false); }
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (!saving && event.key === "Escape") onClose(); }}><form className="modal release-editor-modal" role="dialog" aria-modal="true" aria-labelledby="release-backup-heading" onSubmit={submit}>
+    <header><div><span className="kicker">BACKUP DOWNLOAD LINK</span><h2 id="release-backup-heading">编辑 v{release.version} 备用下载链接</h2><p>支持网盘或其他下载地址。保存后，客户端升级弹窗会提供复制链接选项；留空可移除备用链接。</p></div><button type="button" aria-label="关闭备用下载链接编辑" disabled={saving} onClick={onClose}>×</button></header>
+    <label>备用下载链接<input type="url" aria-label="备用下载链接" autoFocus value={value} onChange={(event) => setValue(event.target.value)} maxLength={2000} placeholder="https://pan.example.com/share/..." /><small>可选，仅支持 HTTP 或 HTTPS 地址，最多 2000 个字符。</small></label>
+    {error && <div className="form-error" role="alert">{error}</div>}
+    <footer><button type="button" className="secondary" disabled={saving} onClick={onClose}>取消</button><button className="primary" disabled={saving}>{saving ? "保存中…" : "保存备用链接"}</button></footer>
+  </form></div>;
 }
 
 function ReleaseNotesEditor({ token, release, onClose, onSaved }: { token: string; release: Release; onClose: () => void; onSaved: () => void }) {
@@ -118,7 +161,7 @@ function ReleaseNotesEditor({ token, release, onClose, onSaved }: { token: strin
 }
 
 function ReleaseEditor({ token, release, onClose, onSaved }: { token: string; release: Release | null; onClose: () => void; onSaved: (release: Release) => void }) {
-  const [form, setForm] = useState<ReleaseForm>(() => release ? { version: release.version, channel: release.channel, notes: release.notes, min_supported_version: release.min_supported_version, rollout_percent: release.rollout_percent, artifacts: release.artifacts.map((artifact) => ({ ...artifact })) } : emptyForm());
+  const [form, setForm] = useState<ReleaseForm>(() => release ? { version: release.version, channel: release.channel, notes: release.notes, backup_download_url: release.backup_download_url || "", min_supported_version: release.min_supported_version, rollout_percent: release.rollout_percent, artifacts: release.artifacts.map((artifact) => ({ ...artifact })) } : emptyForm());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -135,17 +178,19 @@ function ReleaseEditor({ token, release, onClose, onSaved }: { token: string; re
     event.preventDefault();
     setSaving(true); setError("");
     try {
-      const result = await apiRequest<Release>(release ? `/admin/desktop-releases/${release.id}` : "/admin/desktop-releases", { method: release ? "PATCH" : "POST", body: JSON.stringify(form) }, token);
+      const payload = { ...form, backup_download_url: normalizeBackupDownloadUrl(form.backup_download_url) };
+      const result = await apiRequest<Release>(release ? `/admin/desktop-releases/${release.id}` : "/admin/desktop-releases", { method: release ? "PATCH" : "POST", body: JSON.stringify(payload) }, token);
       onSaved(result);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); }
     finally { setSaving(false); }
   }
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (!saving && event.target === event.currentTarget) onClose(); }}><form className="modal release-editor-modal" onSubmit={submit}>
-    <header><div><span className="kicker">{release ? "EDIT RELEASE DRAFT" : "NEW RELEASE DRAFT"}</span><h2>{release ? `编辑 v${release.version}` : "新建客户端版本"}</h2><p>版本发布后即锁定。私钥只保留在 CI，不要粘贴到这里。</p></div><button type="button" disabled={saving} onClick={onClose}>×</button></header>
+    <header><div><span className="kicker">{release ? "EDIT RELEASE DRAFT" : "NEW RELEASE DRAFT"}</span><h2>{release ? `编辑 v${release.version}` : "新建客户端版本"}</h2><p>版本发布后，版本号、更新包与签名锁定；更新说明和备用下载链接仍可修改。</p></div><button type="button" disabled={saving} onClick={onClose}>×</button></header>
     <div className="three-columns"><label>版本号<input value={form.version} onChange={(event) => setForm({ ...form, version: event.target.value })} placeholder="1.2.3" required /></label><label>渠道<input value={form.channel} onChange={(event) => setForm({ ...form, channel: event.target.value })} placeholder="stable" required /></label><label>灰度比例（%）<input type="number" min="1" max="100" value={form.rollout_percent} onChange={(event) => setForm({ ...form, rollout_percent: Number(event.target.value) })} required /></label></div>
     <label>最低可运行版本<input value={form.min_supported_version} onChange={(event) => setForm({ ...form, min_supported_version: event.target.value })} placeholder="0.0.0" required /><small>当前版本低于此值时将强制升级。普通可选更新保持 0.0.0。</small></label>
     <label>更新说明<textarea className="compact-textarea" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength={20000} placeholder="修复内容、功能变化和升级注意事项" /></label>
+    <label>备用下载链接<input type="url" aria-label="备用下载链接" value={form.backup_download_url} onChange={(event) => setForm({ ...form, backup_download_url: event.target.value })} maxLength={2000} placeholder="https://pan.example.com/share/..." /><small>可选，填写网盘或其他 HTTP / HTTPS 下载地址后，客户端升级弹窗可复制此链接。</small></label>
     <section className="release-artifacts"><header><strong>签名更新包</strong><small>至少配置一个平台后才能发布；签名内容来自构建产物旁的 .sig 文件。</small></header>{artifactOptions.map((option) => {
       const value = artifact(option.target, option.arch);
       return <article key={`${option.target}-${option.arch}`} className={value ? "enabled" : ""}><label className="release-artifact-toggle"><input type="checkbox" checked={Boolean(value)} onChange={(event) => toggleArtifact(option.target, option.arch, event.target.checked)} /><span><strong>{option.label}</strong><small>{option.hint}</small></span></label>{value && <><label>HTTPS 更新包地址<input type="url" value={value.url} onChange={(event) => updateArtifact(option.target, option.arch, { url: event.target.value })} placeholder="https://cdn.example.com/releases/..." required /></label><label>Updater 签名<textarea className="release-signature" value={value.signature} onChange={(event) => updateArtifact(option.target, option.arch, { signature: event.target.value })} placeholder="粘贴 .sig 文件完整内容" required /></label></>}</article>;

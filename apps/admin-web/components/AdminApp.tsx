@@ -23,10 +23,11 @@ import { ClientRuntimeConfigPanel } from "@/components/ClientRuntimeConfigPanel"
 import { ScriptLibraryPanel } from "@/components/ScriptLibraryPanel";
 import { FinancialOverview } from "@/components/FinancialOverview";
 import { AnnouncementsPanel } from "@/components/AnnouncementsPanel";
+import { TutorialsPanel } from "@/components/TutorialsPanel";
 import { formatDatabaseDateTime, formatInstantDateTime } from "@/lib/admin-date-time";
 
-type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "announcements" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
-type NavigationItem = { id: View; label: string; eyebrow: string };
+type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "announcements" | "tutorials" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
+type NavigationItem = { id: View; label: string; eyebrow: string; permission?: string };
 type NavigationGroup = { id: "product" | "ai" | "growth" | "commerce" | "operations"; label: string; eyebrow: string; mark: string; items: NavigationItem[] };
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
 type ConfigItem = {
@@ -62,6 +63,7 @@ const navigationGroups: NavigationGroup[] = [
     { id: "auth-methods", label: "注册与登录", eyebrow: "ACCESS" },
     { id: "client-distribution", label: "下载与版本", eyebrow: "DELIVERY" },
     { id: "announcements", label: "通知公告", eyebrow: "NOTICES" },
+    { id: "tutorials", label: "教程管理", eyebrow: "TUTORIALS", permission: "tutorials.manage" },
   ] },
   { id: "ai", label: "AI 与创作", eyebrow: "AI & CREATION", mark: "AI", items: [
     { id: "model-routing", label: "模型路由", eyebrow: "ROUTING" },
@@ -131,6 +133,7 @@ export function AdminApp() {
   if (admin.mustChangePassword) return <ChangePasswordScreen token={token} email={admin.email} onChanged={logout} />;
 
   const active = navigation.find((item) => item.id === view) || navigation[0]!;
+  const canManageTutorials = admin.roles.includes("SUPER_ADMIN") || admin.permissions.includes("tutorials.manage");
   return (
     <div className="admin-layout">
       <aside className="sidebar">
@@ -142,7 +145,7 @@ export function AdminApp() {
             const hasActive = group.items.some((item) => item.id === view);
             return <div key={group.id} className={`nav-section ${open ? "open" : ""} ${hasActive ? "has-active" : ""}`}>
               <button className="nav-parent" type="button" aria-expanded={open} onClick={() => setOpenGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}><span>{group.mark}</span><div>{group.label}<small>{group.eyebrow}</small></div><b>⌄</b></button>
-              <div className="subnav">{group.items.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
+              <div className="subnav">{group.items.filter((item) => !item.permission || admin.roles.includes("SUPER_ADMIN") || admin.permissions.includes(item.permission)).map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}><i /> <div>{item.label}<small>{item.eyebrow}</small></div></button>)}</div>
             </div>;
           })}
         </nav>
@@ -160,6 +163,7 @@ export function AdminApp() {
             { id: "client-releases", label: "版本发布", content: <DesktopReleasePanel token={token} /> },
           ]} />}
           {view === "announcements" && <AnnouncementsPanel token={token} />}
+          {view === "tutorials" && canManageTutorials && <TutorialsPanel token={token} />}
           {view === "model-routing" && <DefaultModelConfigPanel token={token} />}
           {view === "providers" && <ProvidersPanel token={token} />}
           {view === "script-analysis" && <><ConfigScope title="剧本提取能力" description="服务端读取提示词并调用默认文本模型；客户端只负责提交剧本和接收结果。" badges={["服务端执行", "保存即生效", "依赖默认文本模型"]} /><ScriptAnalysisModelSummary token={token} onOpenRouting={() => setView("model-routing")} /><ScriptAnalysisConfigPanel token={token} /></>}

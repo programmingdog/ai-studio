@@ -40,6 +40,8 @@ flock -n 9 || fail 'Another deployment is running.'
 [[ -s "$root/shared/api.env" ]] || fail 'Missing /opt/aivs/shared/api.env'
 mkdir -p "$root/shared/reference-images"
 chmod 700 "$root/shared/reference-images"
+mkdir -p "$root/shared/tutorial-media"
+chmod 700 "$root/shared/tutorial-media"
 docker compose version >/dev/null
 previous=''
 if [[ -L "$root/current" ]]; then

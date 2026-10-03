@@ -11,9 +11,10 @@ import { CreditsModule } from "./credits/credits.module";
 import { ModelGatewayModule } from "./gateway/model-gateway.module";
 import { ScriptLibraryModule } from "./script-library/script-library.module";
 import { AnnouncementsModule } from "./announcements/announcements.module";
+import { TutorialsModule } from "./tutorials/tutorials.module";
 
 @Module({
-  imports: [EnvironmentModule, DatabaseModule, CommonModule, AuthModule, UserAuthModule, CreditsModule, ModelGatewayModule, ScriptLibraryModule, AnnouncementsModule, AdminModule, ClientConfigModule],
+  imports: [EnvironmentModule, DatabaseModule, CommonModule, AuthModule, UserAuthModule, CreditsModule, ModelGatewayModule, ScriptLibraryModule, AnnouncementsModule, TutorialsModule, AdminModule, ClientConfigModule],
   controllers: [HealthController],
 })
 export class AppModule {}

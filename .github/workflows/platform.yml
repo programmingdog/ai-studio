@@ -69,11 +69,13 @@ jobs:
           docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/seed-default-configs.js
           docker run --rm --network host --env-file /tmp/aivs-ci/api.env aivs-api:ci node dist/scripts/backfill-invite-codes.js
           sudo install -d -m 700 /opt/aivs/shared
+          sudo install -d -m 700 -o 1000 -g 1000 /opt/aivs/shared/tutorial-media
           sudo install -m 600 /tmp/aivs-ci/api.env /opt/aivs/shared/api.env
           # The runner's user owns Docker; use sudo only for the protected env file.
           sudo API_IMAGE=aivs-api:ci ADMIN_IMAGE=aivs-admin:ci docker compose -f deploy/compose.yml config --quiet
           sudo API_IMAGE=aivs-api:ci ADMIN_IMAGE=aivs-admin:ci docker compose -f deploy/compose.yml up -d --wait --wait-timeout 120
           curl --fail http://127.0.0.1:3101/api/v1/health
+          curl --fail 'http://127.0.0.1:3101/api/v1/tutorials?page=1'
           curl --fail http://127.0.0.1:3200/ >/dev/null
           curl --fail http://127.0.0.1:3200/invite/TEST1234 >/dev/null
       - name: Stop disposable smoke-test containers

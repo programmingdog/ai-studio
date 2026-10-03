@@ -47,6 +47,30 @@ Content-Type: application/json
 
 同一用户重复提交相同 `idempotency_key` 会返回原订单；若换成其他套餐则返回冲突。支付回调完成平台签名验证、AES-GCM 解密、商户/AppID/金额/币种校验后，在一个数据库事务中幂等发放积分。
 
+## 桌面版本更新
+
+`GET /client-config/desktop-updates/:target/:arch/:currentVersion?channel=stable` 是公开接口；`target` 为 `windows` 或 `darwin`，`arch` 为 `x86_64` 或 `aarch64`（当前 Windows 仅支持 x86_64）。可携带稳定的 `X-Update-Cohort` 设备标识参加灰度发布。没有符合规则的新版本返回 HTTP 204；有更新时返回：
+
+```json
+{
+  "version": "1.2.3",
+  "notes": "更新说明",
+  "pub_date": "2026-10-03T00:00:00.000Z",
+  "url": "https://cdn.example.com/client/1.2.3.exe",
+  "signature": "签名更新包的签名",
+  "backup_download_url": "https://pan.example.com/s/installer?pwd=1234#download",
+  "mandatory": false,
+  "min_supported_version": "1.0.0",
+  "rollout_percent": 100
+}
+```
+
+`url` 与 `signature` 继续用于签名校验和在线升级。`backup_download_url` 仅供用户复制后手动下载安装，未配置时为空字符串；旧客户端可忽略该新增字段。备用地址不会绕过发布状态、平台匹配、版本比较、强制升级或灰度规则。
+
+管理端的 `POST /admin/desktop-releases` 和草稿 `PATCH /admin/desktop-releases/:releaseId` 可携带 `backup_download_url`。旧请求未带字段时，新建为空、草稿编辑保留旧值；明确传入空字符串可清空。列表与变更响应均返回该字段。
+
+`PATCH /admin/desktop-releases/:releaseId/backup-download-url` 接收 `{ "backup_download_url": "https://pan.example.com/s/installer#code" }`，可修改草稿、已发布或已归档版本，并记录审计。该接口需要管理员登录和 `releases.manage` 权限。空字符串清空；缺字段或非字符串返回 400。地址必须为不含账号密码的绝对 HTTP/HTTPS URL，最多 2000 字符，允许网盘分享链接的查询和片段。上线前需应用 `066_desktop_release_backup_download.sql`。
+
 ## 模型目录与任务转发
 
 - `GET /client-config/models`：公开读取客户端可选模型、能力、参数规则及积分价格。

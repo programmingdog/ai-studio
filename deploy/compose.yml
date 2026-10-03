@@ -15,11 +15,13 @@ services:
       PORT: "3101"
       TRUST_PROXY: loopback
       REFERENCE_IMAGE_DIRECTORY: /var/lib/aivs/reference-images
+      TUTORIAL_MEDIA_DIRECTORY: /var/lib/aivs/tutorial-media
     init: true
     restart: unless-stopped
     read_only: true
     volumes:
       - /opt/aivs/shared/reference-images:/var/lib/aivs/reference-images:rw
+      - /opt/aivs/shared/tutorial-media:/var/lib/aivs/tutorial-media:rw
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     cap_drop: [ALL]

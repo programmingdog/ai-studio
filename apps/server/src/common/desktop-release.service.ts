@@ -13,6 +13,7 @@ export type DesktopReleaseInput = {
   version: string;
   channel: string;
   notes: string;
+  backupDownloadUrl?: string;
   minSupportedVersion: string;
   rolloutPercent: number;
   artifacts: DesktopReleaseArtifactInput[];
@@ -24,6 +25,7 @@ export interface ReleaseRow extends RowDataPacket {
   channel: string;
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
   notes: string;
+  backup_download_url: string;
   min_supported_version: string;
   rollout_percent: number;
   created_at: Date | string;
@@ -83,7 +85,7 @@ export class DesktopReleaseService {
 
   async list() {
     const releases = await this.database.query<ReleaseRow[]>(
-      `SELECT id, version, channel, status, notes, min_supported_version, rollout_percent,
+      `SELECT id, version, channel, status, notes, backup_download_url, min_supported_version, rollout_percent,
               created_at, updated_at, published_at
        FROM desktop_releases
        ORDER BY created_at DESC`,
@@ -103,9 +105,9 @@ export class DesktopReleaseService {
       await this.database.transaction(async (connection) => {
         await connection.execute(
           `INSERT INTO desktop_releases
-            (id, version, channel, status, notes, min_supported_version, rollout_percent, created_by)
-           VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?)`,
-          [id, input.version, input.channel, input.notes, input.minSupportedVersion, input.rolloutPercent, adminUserId],
+            (id, version, channel, status, notes, backup_download_url, min_supported_version, rollout_percent, created_by)
+           VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?)`,
+          [id, input.version, input.channel, input.notes, input.backupDownloadUrl, input.minSupportedVersion, input.rolloutPercent, adminUserId],
         );
         await this.replaceArtifacts(connection, id, input.artifacts);
       });
@@ -120,14 +122,14 @@ export class DesktopReleaseService {
   async update(adminUserId: string, id: string, rawInput: DesktopReleaseInput) {
     const existing = await this.release(id);
     if (existing.status !== "DRAFT") throw new ConflictException("已发布版本不可修改；请归档后创建新版本");
-    const input = this.validate(rawInput);
+    const input = this.validate({ ...rawInput, backupDownloadUrl: rawInput.backupDownloadUrl === undefined ? existing.backup_download_url || "" : rawInput.backupDownloadUrl });
     try {
       await this.database.transaction(async (connection) => {
         await connection.execute(
           `UPDATE desktop_releases
-           SET version = ?, channel = ?, notes = ?, min_supported_version = ?, rollout_percent = ?
+           SET version = ?, channel = ?, notes = ?, backup_download_url = ?, min_supported_version = ?, rollout_percent = ?
            WHERE id = ? AND status = 'DRAFT'`,
-          [input.version, input.channel, input.notes, input.minSupportedVersion, input.rolloutPercent, id],
+          [input.version, input.channel, input.notes, input.backupDownloadUrl, input.minSupportedVersion, input.rolloutPercent, id],
         );
         await connection.execute("DELETE FROM desktop_release_artifacts WHERE release_id = ?", [id]);
         await this.replaceArtifacts(connection, id, input.artifacts);
@@ -165,7 +167,7 @@ export class DesktopReleaseService {
     const artifacts = await this.artifacts(id);
     if (!artifacts.length) throw new BadRequestException("至少需要一个签名更新包才能发布");
     const published = await this.database.query<ReleaseRow[]>(
-      `SELECT id, version, channel, status, notes, min_supported_version, rollout_percent,
+      `SELECT id, version, channel, status, notes, backup_download_url, min_supported_version, rollout_percent,
               created_at, updated_at, published_at
        FROM desktop_releases
        WHERE channel = ? AND status IN ('PUBLISHED', 'ARCHIVED') AND id <> ?`,
@@ -213,6 +215,15 @@ export class DesktopReleaseService {
     return this.get(id);
   }
 
+  async updateBackupDownloadUrl(adminUserId: string, id: string, rawUrl: unknown) {
+    const release = await this.release(id);
+    const backupDownloadUrl = this.backupDownloadUrl(rawUrl);
+    await this.database.execute("UPDATE desktop_releases SET backup_download_url = ? WHERE id = ?", [backupDownloadUrl, id]);
+    await this.audit.record({ adminUserId, action: "desktop_release.backup_download_url", entityType: "desktop_release", entityId: id,
+      details: { version: release.version, channel: release.channel, before: release.backup_download_url || "", after: backupDownloadUrl } });
+    return this.get(id);
+  }
+
   async removeDraft(adminUserId: string, id: string) {
     const release = await this.release(id);
     if (release.status !== "DRAFT") throw new ConflictException("只能删除尚未发布的草稿");
@@ -227,7 +238,7 @@ export class DesktopReleaseService {
     const target = this.target(input.target);
     const arch = this.arch(input.arch);
     const releases = await this.database.query<ReleaseRow[]>(
-      `SELECT id, version, channel, status, notes, min_supported_version, rollout_percent,
+      `SELECT id, version, channel, status, notes, backup_download_url, min_supported_version, rollout_percent,
               created_at, updated_at, published_at
        FROM desktop_releases
        WHERE channel = ? AND status = 'PUBLISHED' AND published_at <= CURRENT_TIMESTAMP(3)`,
@@ -249,6 +260,7 @@ export class DesktopReleaseService {
       return {
         version: release.version,
         notes: release.notes,
+        backup_download_url: release.backup_download_url || "",
         pub_date: release.published_at,
         url: artifact.url,
         signature: artifact.signature,
@@ -260,14 +272,30 @@ export class DesktopReleaseService {
     return null;
   }
 
-  private validate(input: DesktopReleaseInput): DesktopReleaseInput {
+  private validate(input: DesktopReleaseInput): DesktopReleaseInput & { backupDownloadUrl: string } {
     const version = this.version(input.version, "版本号");
     const minSupportedVersion = this.version(input.minSupportedVersion || "0.0.0", "最低可运行版本");
     if (compareDesktopVersions(minSupportedVersion, version) > 0) throw new BadRequestException("最低可运行版本不能高于发布版本");
     const rolloutPercent = Number(input.rolloutPercent);
     if (!Number.isInteger(rolloutPercent) || rolloutPercent < 1 || rolloutPercent > 100) throw new BadRequestException("灰度比例必须是 1 到 100 的整数");
     const artifacts = this.validateArtifacts(input.artifacts);
-    return { version, minSupportedVersion, channel: this.channel(input.channel), notes: String(input.notes || "").trim().slice(0, 20000), rolloutPercent, artifacts };
+    const backupDownloadUrl = this.backupDownloadUrl(input.backupDownloadUrl === undefined ? "" : input.backupDownloadUrl);
+    return { version, minSupportedVersion, channel: this.channel(input.channel), notes: String(input.notes || "").trim().slice(0, 20000), backupDownloadUrl, rolloutPercent, artifacts };
+  }
+
+  private backupDownloadUrl(rawUrl: unknown): string {
+    if (typeof rawUrl !== "string") throw new BadRequestException("备用下载链接必须是文本，可用空字符串清空");
+    const value = rawUrl.trim();
+    if (!value) return "";
+    if (value.length > 2000) throw new BadRequestException("备用下载链接不能超过 2000 个字符");
+    if (!/^https?:\/\//i.test(value) || /[\u0000-\u001f\u007f\\]/.test(value)) throw new BadRequestException("备用下载链接必须是完整的 HTTP 或 HTTPS 地址");
+    let url: URL;
+    try { url = new URL(value); } catch { throw new BadRequestException("备用下载链接无效"); }
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) throw new BadRequestException("备用下载链接必须使用 HTTP 或 HTTPS");
+    if (url.username || url.password) throw new BadRequestException("备用下载链接不能包含账号或密码");
+    const normalized = url.toString();
+    if (normalized.length > 2000) throw new BadRequestException("备用下载链接不能超过 2000 个字符");
+    return normalized;
   }
 
   private validateArtifacts(rawArtifacts: DesktopReleaseArtifactInput[]): DesktopReleaseArtifactInput[] {
@@ -328,7 +356,7 @@ export class DesktopReleaseService {
 
   private async release(id: string): Promise<ReleaseRow> {
     const [release] = await this.database.query<ReleaseRow[]>(
-      `SELECT id, version, channel, status, notes, min_supported_version, rollout_percent,
+      `SELECT id, version, channel, status, notes, backup_download_url, min_supported_version, rollout_percent,
               created_at, updated_at, published_at
        FROM desktop_releases WHERE id = ? LIMIT 1`,
       [id],
@@ -345,7 +373,7 @@ export class DesktopReleaseService {
   }
 
   private present(release: ReleaseRow, artifacts: ArtifactRow[]) {
-    return { ...release, rollout_percent: Number(release.rollout_percent), artifacts };
+    return { ...release, backup_download_url: release.backup_download_url || "", rollout_percent: Number(release.rollout_percent), artifacts };
   }
 
   private async replaceArtifacts(connection: PoolConnection, releaseId: string, artifacts: DesktopReleaseArtifactInput[]) {
