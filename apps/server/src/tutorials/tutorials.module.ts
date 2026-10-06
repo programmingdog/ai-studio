@@ -8,5 +8,6 @@ import { TutorialsService } from "./tutorials.service";
   imports: [AuthModule],
   controllers: [TutorialsController, TutorialsAdminController],
   providers: [TutorialsService, TutorialMediaService],
+  exports: [TutorialMediaService],
 })
 export class TutorialsModule {}

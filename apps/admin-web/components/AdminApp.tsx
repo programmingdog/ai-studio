@@ -24,9 +24,10 @@ import { ScriptLibraryPanel } from "@/components/ScriptLibraryPanel";
 import { FinancialOverview } from "@/components/FinancialOverview";
 import { AnnouncementsPanel } from "@/components/AnnouncementsPanel";
 import { TutorialsPanel } from "@/components/TutorialsPanel";
+import { ViralRemakesPanel } from "@/components/ViralRemakesPanel";
 import { formatDatabaseDateTime, formatInstantDateTime } from "@/lib/admin-date-time";
 
-type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "announcements" | "tutorials" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
+type View = "overview" | "financials" | "product-brand" | "auth-methods" | "client-distribution" | "announcements" | "tutorials" | "viral-remakes" | "model-routing" | "providers" | "script-analysis" | "script-library" | "configs" | "creative-presets" | "users" | "distribution-config" | "referral-rewards" | "commission-settlement" | "credit-pricing" | "credit-packages" | "orders" | "credit-consumptions" | "integrations" | "ip-access" | "tasks" | "model-tests" | "audit";
 type NavigationItem = { id: View; label: string; eyebrow: string; permission?: string };
 type NavigationGroup = { id: "product" | "ai" | "growth" | "commerce" | "operations"; label: string; eyebrow: string; mark: string; items: NavigationItem[] };
 type AdminPrincipal = { sub: string; email: string; displayName: string; roles: string[]; permissions: string[]; mustChangePassword: boolean; mfaRequired: boolean };
@@ -70,6 +71,7 @@ const navigationGroups: NavigationGroup[] = [
     { id: "providers", label: "供应商与模型", eyebrow: "GATEWAY" },
     { id: "script-analysis", label: "剧本提取", eyebrow: "SCRIPT" },
     { id: "script-library", label: "剧本库", eyebrow: "LIBRARY" },
+    { id: "viral-remakes", label: "爆款复刻", eyebrow: "VIRAL REMAKES", permission: "viral-remakes.manage" },
     { id: "configs", label: "提示词与工作流", eyebrow: "WORKFLOWS" },
     { id: "creative-presets", label: "创作预设", eyebrow: "PRESETS" },
   ] },
@@ -134,6 +136,7 @@ export function AdminApp() {
 
   const active = navigation.find((item) => item.id === view) || navigation[0]!;
   const canManageTutorials = admin.roles.includes("SUPER_ADMIN") || admin.permissions.includes("tutorials.manage");
+  const canManageViralRemakes = admin.roles.includes("SUPER_ADMIN") || admin.permissions.includes("viral-remakes.manage");
   return (
     <div className="admin-layout">
       <aside className="sidebar">
@@ -164,6 +167,7 @@ export function AdminApp() {
           ]} />}
           {view === "announcements" && <AnnouncementsPanel token={token} />}
           {view === "tutorials" && canManageTutorials && <TutorialsPanel token={token} />}
+          {view === "viral-remakes" && canManageViralRemakes && <ViralRemakesPanel token={token} />}
           {view === "model-routing" && <DefaultModelConfigPanel token={token} />}
           {view === "providers" && <ProvidersPanel token={token} />}
           {view === "script-analysis" && <><ConfigScope title="剧本提取能力" description="服务端读取提示词并调用默认文本模型；客户端只负责提交剧本和接收结果。" badges={["服务端执行", "保存即生效", "依赖默认文本模型"]} /><ScriptAnalysisModelSummary token={token} onOpenRouting={() => setView("model-routing")} /><ScriptAnalysisConfigPanel token={token} /></>}
