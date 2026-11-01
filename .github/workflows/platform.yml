@@ -160,6 +160,9 @@ jobs:
           [[ "$current" == "$GITHUB_SHA" ]] || { echo 'main has advanced; deploy its newer workflow instead.'; exit 1; }
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with: {persist-credentials: false}
+      - name: Download tested images for deployment
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with: {name: platform-images, path: /tmp/aivs-images}
       - name: Stage release and deploy over verified SSH
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -176,6 +179,11 @@ jobs:
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
           [[ "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
           [[ "$RELEASE" =~ ^[a-f0-9]{40}-[0-9]+-[0-9]+$ ]]
+          # A deploy-only rerun retains publish's outputs from the older attempt.
+          # Keep its immutable image digests, but give this attempt a fresh directory.
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          RELEASE="${RELEASE%-*}-$GITHUB_RUN_ATTEMPT"
+          printf 'Deployment release: `%s`\n' "$RELEASE" >> "$GITHUB_STEP_SUMMARY"
           [[ "$API_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
           [[ "$ADMIN_IMAGE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$ ]]
           umask 077
@@ -184,6 +192,8 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$sshdir/known_hosts"
           opts=(-i "$sshdir/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$sshdir/known_hosts" -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes)
           ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /opt/aivs/incoming/$RELEASE"
-          scp "${opts[@]}" -P "$DEPLOY_PORT" deploy/compose.yml deploy/deploy.sh "$DEPLOY_USER@$DEPLOY_HOST:/opt/aivs/incoming/$RELEASE/"
+          scp "${opts[@]}" -P "$DEPLOY_PORT" deploy/compose.yml deploy/deploy.sh /tmp/aivs-images/aivs-images.tar.gz "$DEPLOY_USER@$DEPLOY_HOST:/opt/aivs/incoming/$RELEASE/"
+          # Preload tested layers over SSH to reduce large GHCR downloads;
+          # digest-pinned pulls still verify the registry references.
           ssh "${opts[@]}" -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "bash /opt/aivs/incoming/$RELEASE/deploy.sh $RELEASE $API_IMAGE $ADMIN_IMAGE"
+            "docker load -i /opt/aivs/incoming/$RELEASE/aivs-images.tar.gz && rm -f -- /opt/aivs/incoming/$RELEASE/aivs-images.tar.gz && bash /opt/aivs/incoming/$RELEASE/deploy.sh $RELEASE $API_IMAGE $ADMIN_IMAGE"
