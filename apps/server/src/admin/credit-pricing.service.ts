@@ -155,6 +155,7 @@ export class CreditPricingService {
       let credits: number | null = null;
       let error = !source ? "上游实时目录未找到该模型" : baseline === null ? "缺少上次同步基准，保留人工定价" : "";
       if (model.capability === "VIDEO_GENERATION" && model.billing_unit === "PER_REQUEST") error = "按次视频价格由后台手工配置";
+      else if (stored.manual_resolution_pricing === true || Number(stored.remote_numeric_id) === 69) error = "该模型按分辨率配置每秒价格，基础目录未提供分辨率报价，保留后台定价";
       else if (source && baseline !== null) {
         try { credits = allaiinPointsToCredits(source.source_points!, config.cny_per_credit); }
         catch (reason) { error = reason instanceof Error ? reason.message : "价格换算失败"; }

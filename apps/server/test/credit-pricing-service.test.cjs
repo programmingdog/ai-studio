@@ -9,7 +9,7 @@ function fixture(options = {}) {
   const route = { code: options.allaiin ? "allaiin" : "wagaai", base_url: "https://example.com", status: options.providerDisabled ? "DISABLED" : "ACTIVE", credential_id: "key-id", api_key_ciphertext: "cipher" };
   async function query(sql) {
     if (sql.includes("FROM model_credit_pricing_config")) return [{ ...state.config }];
-    if (sql.includes("SELECT id, model_code")) return [{ id: "m1", model_code: options.model || "image", model_alias: "测试图", capability: options.requestVideo ? "VIDEO_GENERATION" : "IMAGE_GENERATION", billing_unit: options.requestVideo ? "PER_REQUEST" : "PER_SECOND", api_protocol: "lingkeai_media", credit_cost: state.cost, parameter_schema_json: [{ name: "resolution", options: ["2k"] }], config_json: options.allaiin ? { remote_numeric_id: 65, source_points_cost: 8 } : { existing_setting: true } }];
+    if (sql.includes("SELECT id, model_code")) return [{ id: "m1", model_code: options.model || "image", model_alias: "测试图", capability: options.requestVideo ? "VIDEO_GENERATION" : "IMAGE_GENERATION", billing_unit: options.requestVideo ? "PER_REQUEST" : "PER_SECOND", api_protocol: "lingkeai_media", credit_cost: state.cost, parameter_schema_json: [{ name: "resolution", options: ["2k"] }], config_json: options.allaiin ? { remote_numeric_id: options.remoteId || 65, source_points_cost: 8 } : { existing_setting: true } }];
     if (sql.includes("FROM provider_model_resolution_prices")) return [{ provider_model_id: "m1", resolution: "2K", credit_cost: state.tier }];
     if (sql.includes("LEFT JOIN provider_credentials")) return [route];
     if (sql.includes("SELECT id, display_name, code, status FROM providers")) return [{ id: "p1", display_name: "WagaAI", code: "wagaai", status: "ACTIVE" }];
@@ -32,7 +32,7 @@ function fixture(options = {}) {
     if (options.ratioChanged) state.config.revision++;
     if (options.keyChanged) route.credential_id = "new-key";
     if (options.failed) throw new Error("upstream unavailable");
-    if (options.allaiin) return { provider_id: "p1", provider_name: "AllAIIn", queried_at: new Date().toISOString(), models: [{ name: options.model || "image", remote_numeric_id: 65, source_points: 8 }] };
+    if (options.allaiin) return { provider_id: "p1", provider_name: "AllAIIn", queried_at: new Date().toISOString(), models: [{ name: options.model || "image", remote_numeric_id: options.remoteId || 65, source_points: 8 }] };
     return { provider_id: "p1", provider_name: "WagaAI", models: [{ name: options.model || "image", available_for_this_key: true,
       channel_groups: [normalizePricingGroup({ is_active: true, in_key_whitelist: true, billing_method: options.token ? "按token" : "按次", base_price: 0.21, min_price: 0.21, option_prices: [] })] }] };
   } };
@@ -46,6 +46,16 @@ test("updates persisted resolution and fallback costs atomically with an audit t
   assert.equal(state.tier, 3); assert.equal(state.cost, 3);
   assert(state.writes.some(({ sql }) => sql.startsWith("INSERT INTO audit_logs")));
   assert(state.writes.every(({ sql }) => !/ledger_|credit_holds|ai_tasks|credit_packages/.test(sql)));
+});
+
+test("Wan official resolution prices survive flat-catalog automatic refresh", async () => {
+  const { instance, state } = fixture({ allaiin: true, remoteId: 69, model: "wan3.0-video" });
+  const result = await instance.refreshProvider("admin", "p1");
+  assert.equal(state.cost, 8);
+  assert.equal(state.tier, 8);
+  assert.equal(result.credit_sync.items[0].status, "SKIPPED");
+  assert.match(result.credit_sync.items[0].reason, /分辨率/);
+  assert.equal(state.writes.some(write => /UPDATE provider_models SET credit_cost|UPDATE provider_model_resolution_prices/.test(write.sql)), false);
 });
 
 test("AllAIIn live refresh converts eight upstream points to 80 credits and preserves manual prices", async () => {

@@ -47,6 +47,17 @@ test("AllAIIn per-request video models keep the upstream points but display requ
   assert.equal(result.models[0].channel_groups[0].base_price, 20);
 });
 
+test("Wan official shows the documented resolution snapshot instead of treating flat catalog points as a second price", async (t) => {
+  upstream(t, () => Response.json({ code: 200, data: [{ id: 69, name: "Wan 3.0 官", type: 3, points_cost: 15 }] }));
+  const { instance } = service({ code: "allaiin", models: [{ model_code: "wan3.0-video", billing_unit: "PER_SECOND", config_json: { remote_numeric_id: 69 } }] });
+  const result = await instance.query("p1");
+  const model = result.models[0];
+  assert.equal(model.source_points, 3);
+  assert.equal(model.price_unit, "秒");
+  assert.match(model.pricing_note, /快照/);
+  assert.deepEqual(model.channel_groups[0].option_prices.map(x => [x.option_value, x.final_price]), [["480P", 1.5], ["720P", 3], ["1080P", 6]]);
+});
+
 test("normalization preserves zero, paused state, token prices and option casing without exposing unknown fields", () => {
   const result = normalizePricingGroup({ ...channel, is_active: false, input_token_price: "0", output_token_price: "1.2", secret: "do-not-forward" });
   assert.equal(result.base_price, 0.02);

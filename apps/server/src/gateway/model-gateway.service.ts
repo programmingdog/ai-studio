@@ -14,6 +14,7 @@ import pdfParse from "pdf-parse";
 import { TemporaryReferenceImageService } from "../common/temporary-reference-image.service";
 import { ReferralsService } from "../referrals/referrals.service";
 import { modelBillingUnit, validVideoSeconds } from "../common/video-billing";
+import { allaiinWan3Official, wan3ReferenceVideoMultiplier } from "../common/allaiin-wan3-official";
 import JSON5 from "json5";
 import { normalizedScriptText, scriptNormalizationInstruction, validateNormalizedScript } from "./script-normalization";
 import { createProviderDispatcher, defaultProviderTimeoutMs, textProviderTimeoutMs } from "./provider-http";
@@ -926,7 +927,9 @@ export class ModelGatewayService {
     const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
     if (!validVideoSeconds(seconds, parseStoredJson(target.model_config_json))) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration，且时长须在模型支持的选项中");
     if (modelBillingUnit(target.capability, target.billing_unit) === "PER_REQUEST") return { credits: base, costCredits: unitCost };
-    return { credits: Math.ceil(multiplyCredits(base, seconds)), costCredits: multiplyCredits(unitCost, seconds) };
+    const referenceMultiplier = target.api_protocol?.toLowerCase() === "allaiin_rest" && Number(parseStoredJson<Record<string, unknown>>(target.model_config_json)?.remote_numeric_id) === allaiinWan3Official.remoteId
+      ? wan3ReferenceVideoMultiplier(payload) : 1;
+    return { credits: Math.ceil(multiplyCredits(base, seconds * referenceMultiplier)), costCredits: multiplyCredits(unitCost, seconds * referenceMultiplier) };
   }
 
   private request(target: TargetRow, payload: Record<string, unknown>, apiKey: string): { url: string; method: string; headers: Record<string, string>; body: Record<string, unknown> | FormData } {

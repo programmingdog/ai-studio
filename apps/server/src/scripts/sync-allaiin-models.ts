@@ -3,6 +3,8 @@ import { createDecipheriv, createHash, randomUUID } from "node:crypto";
 import { createConnection, type Connection, type RowDataPacket } from "mysql2/promise";
 import { loadDatabaseConfig } from "../config/environment";
 import { allaiinPointsToCredits, ALLAIIN_POINT_CNY, previousAllaiinSyncedCredits } from "./allaiin-credit-pricing";
+import { allaiinSeedance25Discount, allaiinSeedance25DiscountSchema } from "../common/allaiin-seedance25-discount";
+import { allaiinWan3Official, allaiinWan3OfficialSchema } from "../common/allaiin-wan3-official";
 
 const BASE_URL = "https://ailingg.store/api/v1";
 const DOCS_URL = "https://ailingg.store/api-docs";
@@ -62,8 +64,9 @@ const videoAliasOverrides = new Map<number, string>([
   [53, "Grok 1.5"],
   [55, "Seedance 2.5"],
   [65, "Seedance 2.0 冲量版"],
-  [69, "Wan3"],
+  [69, "Wan 3.0 官"],
   [76, "MiniMax H3 官"],
+  [81, "Seedance 2.5 特惠版"],
 ]);
 
 const videoCodeOverrides = new Map<number, string>([
@@ -83,6 +86,8 @@ function isHappyHorse11(model: RemoteModel): boolean {
 }
 
 function videoReferenceSupport(model: RemoteModel): { maxReferenceImages: number; supportsReferenceVideo: boolean } {
+  if (model.id === allaiinWan3Official.remoteId) return { maxReferenceImages: 30, supportsReferenceVideo: true };
+  if (model.id === allaiinSeedance25Discount.remoteId) return { maxReferenceImages: 30, supportsReferenceVideo: false };
   if (model.id === 76) return { maxReferenceImages: 9, supportsReferenceVideo: true };
   const code = model.model_id.toLowerCase();
   if (/seedance[-\s_]*2[-.\s_]*0/.test(code)) {
@@ -155,6 +160,11 @@ async function planCreditPrices(db: Connection, providerId: string, remoteById: 
     const remote = remoteById.get(Number(config.remote_numeric_id));
     const previousCredits = Number(row.credit_cost);
     const previousSourceCredits = previousAllaiinSyncedCredits(config);
+    // /models only exposes a flat base price, not Wan's per-resolution rates.
+    if (remote?.id === allaiinWan3Official.remoteId) {
+      return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
+        nextCredits: null, previousSourceCredits, providerPoints: remote.points_cost, status: "MANUAL", config: null };
+    }
     if (row.capability === "VIDEO_GENERATION" && row.billing_unit === "PER_REQUEST") {
       return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
         nextCredits: null, previousSourceCredits, providerPoints: remote ? Number(remote.points_cost) : null, status: "MANUAL", config: null };
@@ -203,6 +213,8 @@ function commonPromptParameter(): Record<string, unknown> {
 }
 
 function parameterSchema(model: CatalogModel): Record<string, unknown>[] {
+  if (model.modelCode === allaiinWan3Official.modelCode) return allaiinWan3OfficialSchema();
+  if (model.modelCode === allaiinSeedance25Discount.modelCode) return allaiinSeedance25DiscountSchema();
   if (model.capability === "TEXT_GENERATION") {
     return [
       commonPromptParameter(),
@@ -346,7 +358,8 @@ async function main(): Promise<void> {
       for (const selected of catalog) {
         const remote = selected.remoteId ? remoteById.get(selected.remoteId)! : remoteByCode.get(selected.modelCode)!;
         const existingPlan = pricePlans.find((plan) => plan.modelCode === selected.modelCode);
-        const convertedCredits = allaiinPointsToCredits(Number(remote.points_cost), cnyPerCredit);
+        const wan3 = selected.modelCode === allaiinWan3Official.modelCode;
+        const convertedCredits = allaiinPointsToCredits(wan3 ? allaiinWan3Official.resolutionPoints["720P"] : Number(remote.points_cost), cnyPerCredit);
         const endpoint = endpointFor(selected.capability);
         const config = {
           ...existingConfig.get(selected.modelCode),
@@ -357,7 +370,7 @@ async function main(): Promise<void> {
           remote_model_id: remote.model_id,
           remote_type: remote.type,
           remote_type_name: remote.type_name,
-          source_points_cost: Number(remote.points_cost),
+          source_points_cost: wan3 ? allaiinWan3Official.resolutionPoints["720P"] : Number(remote.points_cost),
           source_point_cny: ALLAIIN_POINT_CNY,
           source_credit_cost: Number(pricing.auto_sync) === 1 ? convertedCredits : existingPlan?.previousSourceCredits ?? convertedCredits,
           source_cny_per_credit: cnyPerCredit,
@@ -369,10 +382,13 @@ async function main(): Promise<void> {
             aspect_ratio_options: ["16:9", "9:16", "1:1", "3:4", "4:3"],
             resolution_mapping: { "768P": "720P" },
           } : {}),
+          ...(selected.modelCode === allaiinSeedance25Discount.modelCode ? allaiinSeedance25Discount.config : {}),
+          ...(wan3 ? allaiinWan3Official.config : {}),
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
             : undefined,
-          credit_cost_note: selected.capability === "VIDEO_GENERATION" && existingBilling.get(selected.modelCode) === "PER_REQUEST"
+          credit_cost_note: wan3 ? "按分辨率配置每秒积分；参考视频费用翻倍。基础模型目录不包含分辨率价格，自动同步保留后台定价。"
+            : selected.capability === "VIDEO_GENERATION" && (existingBilling.get(selected.modelCode) === "PER_REQUEST" || selected.modelCode === allaiinSeedance25Discount.modelCode)
             ? "每次成本由后台人工配置，不随时长变化；实时价格同步保留该价格。"
             : selected.capability === "VIDEO_GENERATION"
             ? "每秒成本按 AllAIIn 积分 × ¥0.10 ÷ 系统每积分人民币金额换算并向上取整；人工修改的积分定价保留。"
@@ -397,16 +413,26 @@ async function main(): Promise<void> {
            endpoint.protocol, endpoint.generation, endpoint.query, convertedCredits,
            selected.maxReferenceImages, selected.supportsReferenceVideo ? 1 : 0, selected.supportsRealPerson ? 1 : 0,
            endpoint.async ? 1 : 0, selected.sortOrder,
-           `${remote.name}，由 AllAIIn API 提供，上游基础价 ${remote.points_cost} 积分（¥${(Number(remote.points_cost) * ALLAIIN_POINT_CNY).toFixed(2)}）。`,
+           wan3 ? "Wan 3.0 官，4～30 秒，支持 480P/720P/1080P 和多模态参考；按分辨率、时长计价，参考视频费用翻倍。"
+             : `${remote.name}，由 AllAIIn API 提供，上游基础价 ${remote.points_cost} 积分（¥${(Number(remote.points_cost) * ALLAIIN_POINT_CNY).toFixed(2)}）。`,
            JSON.stringify(parameterSchema(selected)), JSON.stringify(config)],
         );
-        if (selected.modelCode === "minimax-h3-official") {
+        if (selected.modelCode === "minimax-h3-official" || selected.modelCode === allaiinSeedance25Discount.modelCode) {
           await db.execute(
             "UPDATE provider_models SET billing_unit = 'PER_REQUEST' WHERE provider_id = ? AND model_code = ? AND capability = 'VIDEO_GENERATION'",
             [provider.id, selected.modelCode],
           );
         }
         if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(selected.capability)) {
+          if (wan3) {
+            await db.execute("UPDATE provider_models SET billing_unit = 'PER_SECOND' WHERE provider_id = ? AND model_code = ?", [provider.id, selected.modelCode]);
+            for (const [resolution, points] of Object.entries(allaiinWan3Official.resolutionPoints)) {
+              await db.execute(`INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
+                SELECT id, ?, ?, ? FROM provider_models WHERE provider_id = ? AND model_code = ?`,
+              [resolution, allaiinPointsToCredits(points, cnyPerCredit), ["480P", "720P", "1080P"].indexOf(resolution), provider.id, selected.modelCode]);
+            }
+            continue;
+          }
           await db.execute(
             `INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
              SELECT id, ?, credit_cost, 0 FROM provider_models
