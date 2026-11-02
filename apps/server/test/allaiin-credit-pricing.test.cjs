@@ -6,6 +6,7 @@ test("AllAIIn points convert through CNY and the configured system credit ratio"
   assert.equal(allaiinPointsToCredits(8, 0.01), 80);
   assert.equal(allaiinPointsToCredits(8, 0.05), 16);
   assert.equal(allaiinPointsToCredits(0.3, 0.01), 3);
+  assert.equal(allaiinPointsToCredits(0.8, 0.01), 8);
   assert.equal(allaiinPointsToCredits(0, 0.01), 1);
   assert.throws(() => allaiinPointsToCredits(-1, 0.01), /价格无效/);
 });

@@ -58,6 +58,18 @@ test("Wan official shows the documented resolution snapshot instead of treating 
   assert.deepEqual(model.channel_groups[0].option_prices.map(x => [x.option_value, x.final_price]), [["480P", 1.5], ["720P", 3], ["1080P", 6]]);
 });
 
+test("Muse pricing shows the duration snapshot instead of the zero catalog placeholder", async (t) => {
+  upstream(t, () => Response.json({ code: 200, data: [{ id: 83, name: "Muse-video", type: 3, points_cost: 0 }] }));
+  const { instance } = service({ code: "allaiin", models: [{ model_code: "muse-video", billing_unit: "PER_SECOND", config_json: { remote_numeric_id: 83 } }] });
+  const result = await instance.query("p1");
+  const model = result.models[0];
+  assert.equal(model.source_points, 0.8);
+  assert.equal(model.price_unit, "秒");
+  assert.equal(model.channel_groups[0].base_price, 0.8);
+  assert.equal(model.channel_groups[0].min_price, 0.8);
+  assert.match(model.pricing_note, /快照.*参考视频不加倍/);
+});
+
 test("normalization preserves zero, paused state, token prices and option casing without exposing unknown fields", () => {
   const result = normalizePricingGroup({ ...channel, is_active: false, input_token_price: "0", output_token_price: "1.2", secret: "do-not-forward" });
   assert.equal(result.base_price, 0.02);

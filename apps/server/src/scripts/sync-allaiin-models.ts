@@ -5,6 +5,7 @@ import { loadDatabaseConfig } from "../config/environment";
 import { allaiinPointsToCredits, ALLAIIN_POINT_CNY, previousAllaiinSyncedCredits } from "./allaiin-credit-pricing";
 import { allaiinSeedance25Discount, allaiinSeedance25DiscountSchema } from "../common/allaiin-seedance25-discount";
 import { allaiinWan3Official, allaiinWan3OfficialSchema } from "../common/allaiin-wan3-official";
+import { allaiinMuseVideo, allaiinMuseVideoSchema } from "../common/allaiin-muse-video";
 
 const BASE_URL = "https://ailingg.store/api/v1";
 const DOCS_URL = "https://ailingg.store/api-docs";
@@ -67,6 +68,7 @@ const videoAliasOverrides = new Map<number, string>([
   [69, "Wan 3.0 官"],
   [76, "MiniMax H3 官"],
   [81, "Seedance 2.5 特惠版"],
+  [83, "Muse-video"],
 ]);
 
 const videoCodeOverrides = new Map<number, string>([
@@ -86,6 +88,7 @@ function isHappyHorse11(model: RemoteModel): boolean {
 }
 
 function videoReferenceSupport(model: RemoteModel): { maxReferenceImages: number; supportsReferenceVideo: boolean } {
+  if (model.id === allaiinMuseVideo.remoteId) return { maxReferenceImages: 7, supportsReferenceVideo: true };
   if (model.id === allaiinWan3Official.remoteId) return { maxReferenceImages: 30, supportsReferenceVideo: true };
   if (model.id === allaiinSeedance25Discount.remoteId) return { maxReferenceImages: 30, supportsReferenceVideo: false };
   if (model.id === 76) return { maxReferenceImages: 9, supportsReferenceVideo: true };
@@ -161,7 +164,7 @@ async function planCreditPrices(db: Connection, providerId: string, remoteById: 
     const previousCredits = Number(row.credit_cost);
     const previousSourceCredits = previousAllaiinSyncedCredits(config);
     // /models only exposes a flat base price, not Wan's per-resolution rates.
-    if (remote?.id === allaiinWan3Official.remoteId) {
+    if (remote?.id === allaiinWan3Official.remoteId || remote?.id === allaiinMuseVideo.remoteId) {
       return { id: row.id, modelCode: row.model_code, alias: row.model_alias, previousCredits,
         nextCredits: null, previousSourceCredits, providerPoints: remote.points_cost, status: "MANUAL", config: null };
     }
@@ -213,6 +216,7 @@ function commonPromptParameter(): Record<string, unknown> {
 }
 
 function parameterSchema(model: CatalogModel): Record<string, unknown>[] {
+  if (model.modelCode === allaiinMuseVideo.modelCode) return allaiinMuseVideoSchema();
   if (model.modelCode === allaiinWan3Official.modelCode) return allaiinWan3OfficialSchema();
   if (model.modelCode === allaiinSeedance25Discount.modelCode) return allaiinSeedance25DiscountSchema();
   if (model.capability === "TEXT_GENERATION") {
@@ -359,7 +363,9 @@ async function main(): Promise<void> {
         const remote = selected.remoteId ? remoteById.get(selected.remoteId)! : remoteByCode.get(selected.modelCode)!;
         const existingPlan = pricePlans.find((plan) => plan.modelCode === selected.modelCode);
         const wan3 = selected.modelCode === allaiinWan3Official.modelCode;
-        const convertedCredits = allaiinPointsToCredits(wan3 ? allaiinWan3Official.resolutionPoints["720P"] : Number(remote.points_cost), cnyPerCredit);
+        const muse = selected.modelCode === allaiinMuseVideo.modelCode;
+        const sourcePoints = muse ? allaiinMuseVideo.pointsPerSecond : wan3 ? allaiinWan3Official.resolutionPoints["720P"] : Number(remote.points_cost);
+        const convertedCredits = allaiinPointsToCredits(sourcePoints, cnyPerCredit);
         const endpoint = endpointFor(selected.capability);
         const config = {
           ...existingConfig.get(selected.modelCode),
@@ -370,7 +376,7 @@ async function main(): Promise<void> {
           remote_model_id: remote.model_id,
           remote_type: remote.type,
           remote_type_name: remote.type_name,
-          source_points_cost: wan3 ? allaiinWan3Official.resolutionPoints["720P"] : Number(remote.points_cost),
+          source_points_cost: sourcePoints,
           source_point_cny: ALLAIIN_POINT_CNY,
           source_credit_cost: Number(pricing.auto_sync) === 1 ? convertedCredits : existingPlan?.previousSourceCredits ?? convertedCredits,
           source_cny_per_credit: cnyPerCredit,
@@ -384,10 +390,12 @@ async function main(): Promise<void> {
           } : {}),
           ...(selected.modelCode === allaiinSeedance25Discount.modelCode ? allaiinSeedance25Discount.config : {}),
           ...(wan3 ? allaiinWan3Official.config : {}),
+          ...(muse ? allaiinMuseVideo.config : {}),
           real_person_support_source: selected.capability === "VIDEO_GENERATION"
             ? "AllAIIn 当前公开模型文档未明确承诺真人支持，按平台默认值关闭。"
             : undefined,
-          credit_cost_note: wan3 ? "按分辨率配置每秒积分；参考视频费用翻倍。基础模型目录不包含分辨率价格，自动同步保留后台定价。"
+          credit_cost_note: muse ? "API 中心组合报价折合 0.8 慧心积分/秒，参考视频不加倍；基础目录价格为 0，自动同步保留后台定价。"
+            : wan3 ? "按分辨率配置每秒积分；参考视频费用翻倍。基础模型目录不包含分辨率价格，自动同步保留后台定价。"
             : selected.capability === "VIDEO_GENERATION" && (existingBilling.get(selected.modelCode) === "PER_REQUEST" || selected.modelCode === allaiinSeedance25Discount.modelCode)
             ? "每次成本由后台人工配置，不随时长变化；实时价格同步保留该价格。"
             : selected.capability === "VIDEO_GENERATION"
@@ -413,7 +421,8 @@ async function main(): Promise<void> {
            endpoint.protocol, endpoint.generation, endpoint.query, convertedCredits,
            selected.maxReferenceImages, selected.supportsReferenceVideo ? 1 : 0, selected.supportsRealPerson ? 1 : 0,
            endpoint.async ? 1 : 0, selected.sortOrder,
-           wan3 ? "Wan 3.0 官，4～30 秒，支持 480P/720P/1080P 和多模态参考；按分辨率、时长计价，参考视频费用翻倍。"
+           muse ? "Muse-video，5/10/15/20/25/30 秒、720P、横竖屏，最多 7 图和 1 视频参考；按秒计费，参考视频不加倍。"
+             : wan3 ? "Wan 3.0 官，4～30 秒，支持 480P/720P/1080P 和多模态参考；按分辨率、时长计价，参考视频费用翻倍。"
              : `${remote.name}，由 AllAIIn API 提供，上游基础价 ${remote.points_cost} 积分（¥${(Number(remote.points_cost) * ALLAIIN_POINT_CNY).toFixed(2)}）。`,
            JSON.stringify(parameterSchema(selected)), JSON.stringify(config)],
         );
@@ -424,6 +433,12 @@ async function main(): Promise<void> {
           );
         }
         if (["IMAGE_GENERATION", "VIDEO_GENERATION"].includes(selected.capability)) {
+          if (muse) {
+            await db.execute("UPDATE provider_models SET billing_unit = 'PER_SECOND' WHERE provider_id = ? AND model_code = ?", [provider.id, selected.modelCode]);
+            await db.execute(`INSERT IGNORE INTO provider_model_resolution_prices (provider_model_id, resolution, credit_cost, sort_order)
+              SELECT id, '720P', credit_cost, 0 FROM provider_models WHERE provider_id = ? AND model_code = ?`, [provider.id, selected.modelCode]);
+            continue;
+          }
           if (wan3) {
             await db.execute("UPDATE provider_models SET billing_unit = 'PER_SECOND' WHERE provider_id = ? AND model_code = ?", [provider.id, selected.modelCode]);
             for (const [resolution, points] of Object.entries(allaiinWan3Official.resolutionPoints)) {

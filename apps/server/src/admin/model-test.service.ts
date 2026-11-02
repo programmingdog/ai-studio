@@ -5,6 +5,8 @@ import { AuditService } from "../common/audit.service";
 import { parseStoredJson } from "../common/input";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
+import { allaiinMuseVideo } from "../common/allaiin-muse-video";
+import { museVideoRequest } from "../gateway/allaiin-muse-video";
 
 interface TestTargetRow extends RowDataPacket {
   provider_id: string;
@@ -413,6 +415,8 @@ export class ModelTestService {
       delete source.prompt;
       delete source.params;
       body = { model: requestModel, prompt: typeof prompt === "string" ? prompt : "模型连接测试", params: { ...source, ...providedParams } };
+    } else if (protocol === "allaiin_rest" && Number(modelConfig.remote_numeric_id) === allaiinMuseVideo.remoteId) {
+      body = museVideoRequest(source, true);
     } else if (protocol === "allaiin_rest") {
       body = { ...source };
       const requestedResolution = String(body.resolution || "").trim();

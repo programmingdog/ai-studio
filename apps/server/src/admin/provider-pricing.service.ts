@@ -2,6 +2,7 @@ import { BadGatewayException, BadRequestException, Inject, Injectable, NotFoundE
 import { RowDataPacket } from "mysql2/promise";
 import { parseStoredJson } from "../common/input";
 import { allaiinWan3Official } from "../common/allaiin-wan3-official";
+import { allaiinMuseVideo } from "../common/allaiin-muse-video";
 import { SecretCryptoService } from "../common/secret-crypto.service";
 import { DatabaseService } from "../database/database.service";
 
@@ -152,16 +153,18 @@ export class ProviderPricingService {
         return (locals.length ? locals : [null]).map((local) => {
           const perRequest = local?.billing_unit === "PER_REQUEST";
           const wan3 = item.id === allaiinWan3Official.remoteId;
-          const priceUnit = wan3 || (item.type === 3 && !perRequest) ? "秒" : "次";
-          const basePoints = wan3 ? allaiinWan3Official.resolutionPoints["720P"] : item.points;
+          const muse = item.id === allaiinMuseVideo.remoteId;
+          const priceUnit = muse || wan3 || (item.type === 3 && !perRequest) ? "秒" : "次";
+          const basePoints = muse ? allaiinMuseVideo.pointsPerSecond : wan3 ? allaiinWan3Official.resolutionPoints["720P"] : item.points;
           return {
             name: local?.model_code || String(item.id), display_name: item.name, type: item.type === 3 ? "video" : item.type === 2 ? "image" : "chat",
             available_for_this_key: true, local_aliases: local ? [local.model_alias || local.display_name] : [],
-            queried_at: queriedAt, error: null, pricing_note: wan3 ? "API 中心 2026-11-01 分辨率报价快照（积分/秒），参考视频翻倍；后台人工维护，不用基础目录价格覆盖。1 慧心积分 = ¥0.10" : "1 慧心积分 = ¥0.10", currency: "积分",
+            queried_at: queriedAt, error: null, pricing_note: muse ? "API 中心 2026-11-02 组合报价快照：720P 每 5 秒 4 慧心积分，折合 0.8 积分/秒，参考视频不加倍；基础目录价格为 0，自动同步保留后台定价。1 慧心积分 = ¥0.10"
+              : wan3 ? "API 中心 2026-11-01 分辨率报价快照（积分/秒），参考视频翻倍；后台人工维护，不用基础目录价格覆盖。1 慧心积分 = ¥0.10" : "1 慧心积分 = ¥0.10", currency: "积分",
             price_unit: priceUnit, remote_numeric_id: item.id, source_points: basePoints,
             channel_groups: [normalizePricingGroup({ group_name: "AllAIIn", is_active: true, in_key_whitelist: true,
               billing_method: `按${priceUnit}`, currency: "积分", price_unit: priceUnit,
-              base_price: basePoints, min_price: wan3 ? 1.5 : item.points,
+              base_price: basePoints, min_price: muse ? basePoints : wan3 ? 1.5 : item.points,
               ...(wan3 ? { option_prices: Object.entries(allaiinWan3Official.resolutionPoints).map(([resolution, points]) => ({
                 param_name: "resolution", option_label: resolution, option_value: resolution, final_price: points,
                 price_multiplier: points / basePoints, price_addition: 0,

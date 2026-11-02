@@ -15,6 +15,8 @@ import { TemporaryReferenceImageService } from "../common/temporary-reference-im
 import { ReferralsService } from "../referrals/referrals.service";
 import { modelBillingUnit, validVideoSeconds } from "../common/video-billing";
 import { allaiinWan3Official, wan3ReferenceVideoMultiplier } from "../common/allaiin-wan3-official";
+import { allaiinMuseVideo } from "../common/allaiin-muse-video";
+import { museVideoInput, museVideoRequest } from "./allaiin-muse-video";
 import JSON5 from "json5";
 import { normalizedScriptText, scriptNormalizationInstruction, validateNormalizedScript } from "./script-normalization";
 import { createProviderDispatcher, defaultProviderTimeoutMs, textProviderTimeoutMs } from "./provider-http";
@@ -898,6 +900,8 @@ export class ModelGatewayService {
   }
 
   private async estimatedPricing(target: TargetRow, payload: Record<string, unknown>): Promise<{ credits: number; costCredits: number }> {
+    const museInput = target.api_protocol?.toLowerCase() === "allaiin_rest" && Number(parseStoredJson<Record<string, unknown>>(target.model_config_json)?.remote_numeric_id) === allaiinMuseVideo.remoteId
+      ? museVideoInput(payload) : undefined;
     if (wagaProfiles[target.model_code] && target.api_protocol?.toLowerCase() === "lingkeai_media") {
       wagaMediaParams(target.model_code, parseStoredJson(target.parameter_schema_json), parseStoredJson(target.model_config_json), payload);
     }
@@ -924,7 +928,7 @@ export class ModelGatewayService {
     base = roundedModelCredits(base, storedModelCreditMultiplier(target.credit_multiplier));
     if (target.capability !== "VIDEO_GENERATION") return { credits: base, costCredits: target.capability === "IMAGE_GENERATION" ? unitCost : 0 };
     const params = asObject(payload.params);
-    const seconds = Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
+    const seconds = museInput?.seconds ?? Number(payload.seconds ?? payload.duration ?? params.seconds ?? params.duration);
     if (!validVideoSeconds(seconds, parseStoredJson(target.model_config_json))) throw new BadRequestException("视频生成任务必须提供有效的 seconds 或 duration，且时长须在模型支持的选项中");
     if (modelBillingUnit(target.capability, target.billing_unit) === "PER_REQUEST") return { credits: base, costCredits: unitCost };
     const referenceMultiplier = target.api_protocol?.toLowerCase() === "allaiin_rest" && Number(parseStoredJson<Record<string, unknown>>(target.model_config_json)?.remote_numeric_id) === allaiinWan3Official.remoteId
@@ -1029,6 +1033,8 @@ export class ModelGatewayService {
       const guide = references.length ? `\n\n参考图对应关系：\n${references.map((reference, index) => `第${index + 1}张：${reference.label}`).join("\n")}` : "";
       body = { model: target.model_code, prompt: target.capability === "VIDEO_GENERATION" ? withVideoReferenceRelationships(typeof prompt === "string" ? prompt : "", references, rawReferences) : `${typeof prompt === "string" ? prompt : ""}${guide}`, params,
         ...(target.capability === "IMAGE_GENERATION" && !wagaProfiles[target.model_code] ? { images: references } : {}) };
+    } else if (protocol === "allaiin_rest" && Number(modelConfig.remote_numeric_id) === allaiinMuseVideo.remoteId) {
+      body = museVideoRequest(payload);
     } else if (protocol === "allaiin_rest") {
       const supplied = { ...asObject(source.params), ...source };
       const rawReferences = Array.isArray(source.reference_images) ? source.reference_images : Array.isArray(asObject(source.params).reference_images) ? asObject(source.params).reference_images as unknown[] : [];

@@ -7,6 +7,7 @@ import { supportsMediaResolution } from "../gateway/media-resolution";
 import { WagaModelMetadataService } from "../common/waga-model-metadata.service";
 import { wagaMediaParams, wagaProfiles } from "../gateway/waga-media";
 import { modelBillingUnit, videoDurationOptions } from "../common/video-billing";
+import { allaiinMuseVideo } from "../common/allaiin-muse-video";
 
 interface PublishedConfigRow extends RowDataPacket {
   config_key: string;
@@ -131,7 +132,8 @@ export class ClientConfigService {
         video_duration_options: row.capability === "VIDEO_GENERATION" ? videoDurationOptions(parseStoredJson(row.config_json)) : [],
         aspect_ratio_options: configuredStringOptions((parseStoredJson<Record<string, unknown>>(row.config_json) || {}).aspect_ratio_options),
         max_reference_images: wagaProfiles[row.model_code]?.max ?? Number(row.max_reference_images),
-        generation_notice: ["viduq3", "viduq3-turbo-cankaosheng"].includes(row.model_code) ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
+        generation_notice: row.provider_code === "allaiin" && row.model_code === allaiinMuseVideo.modelCode ? allaiinMuseVideo.notice
+          : ["viduq3", "viduq3-turbo-cankaosheng"].includes(row.model_code) ? "优惠方案可能采用错峰生成，预计需要 1～5 小时，请耐心等待。"
           : row.model_code === "omni_flash-10s" ? "此方案固定生成 10 秒视频。"
           : wagaProfiles[row.model_code]?.resolution === false ? "此方案由供应商决定输出清晰度，不支持指定分辨率。" : undefined,
         supports_reference_video: Boolean(row.supports_reference_video),

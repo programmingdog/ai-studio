@@ -82,6 +82,16 @@ test("AllAIIn live refresh converts eight upstream points to 80 credits and pres
   assert.equal(perRequest.state.cost, 8); assert.equal(perRequest.state.tier, 8);
 });
 
+test("Muse automatic pricing preserves configured rates even before migration sets the manual pricing flag", async () => {
+  const { instance, state } = fixture({ allaiin: true, remoteId: 83, model: "muse-video" });
+  const result = await instance.refreshProvider("admin", "p1");
+  assert.equal(state.cost, 8);
+  assert.equal(state.tier, 8);
+  assert.equal(result.credit_sync.items[0].status, "SKIPPED");
+  assert.match(result.credit_sync.items[0].reason, /基础目录/);
+  assert.equal(state.writes.some(write => /UPDATE provider_models SET credit_cost|UPDATE provider_model_resolution_prices/.test(write.sql)), false);
+});
+
 test('Waga sync persists generation parameters atomically even when rounded credits are unchanged', async () => {
   const { instance, state } = fixture({ model: 'tt-image-2' });
   state.cost = 3; state.tier = 3;
